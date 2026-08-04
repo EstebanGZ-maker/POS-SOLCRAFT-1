@@ -1,33 +1,17 @@
 "use client"
 
 import Link from "next/link"
+import Image from "next/image"
 import useSWR from "swr"
 import { useCart } from "@/lib/cart-context"
 import { getPublicCommerceConfig } from "@/lib/catalog-actions"
 import { Button } from "@/components/ui/button"
 import { ShoppingBag } from "lucide-react"
 
-/** Rombo dorado — marca de agua de SOLCRAFT */
-function DiamondMark({ className = "" }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 32 32" className={className} aria-hidden focusable="false">
-      <defs>
-        <linearGradient id="solcraft-diamond" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0%" stopColor="hsl(var(--gold-hi))" />
-          <stop offset="50%" stopColor="hsl(var(--gold-mid))" />
-          <stop offset="100%" stopColor="hsl(var(--gold-lo))" />
-        </linearGradient>
-      </defs>
-      <path d="M16 2 L30 16 L16 30 L2 16 Z" fill="url(#solcraft-diamond)" />
-      <path d="M16 7 L25 16 L16 25 L7 16 Z" fill="hsl(var(--background))" opacity=".35" />
-    </svg>
-  )
-}
-
 export function CatalogHeader() {
   const { itemCount } = useCart()
   const { data: config } = useSWR("commerce-config", getPublicCommerceConfig)
-  const brand = config?.business_name || "SOLCRAFT"
+  const brand = config?.business_name || "Taiwy"
 
   return (
     <header className="sticky top-0 z-30 border-b border-gold-soft bg-[hsl(var(--background)/0.85)] backdrop-blur-md">
@@ -36,10 +20,17 @@ export function CatalogHeader() {
           {config?.logo_url ? (
             <img src={config.logo_url} alt={brand} className="h-8 w-8 rounded object-contain" />
           ) : (
-            <DiamondMark className="h-7 w-7 transition-transform duration-300 group-hover:rotate-90 motion-reduce:transition-none" />
+            <Image
+              src="/taiwy-logo.png"
+              alt={brand}
+              width={64}
+              height={64}
+              priority
+              className="h-8 w-8 object-contain transition-transform duration-300 group-hover:rotate-90 motion-reduce:transition-none"
+            />
           )}
           <span className="font-display text-lg tracking-[0.18em] text-gold-gradient">
-            {brand.toUpperCase()}
+            {`${brand.toUpperCase()} STORE`}
           </span>
         </Link>
 

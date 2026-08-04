@@ -154,7 +154,7 @@ export function HeroLogo3D() {
           transition: reduced ? "none" : undefined,
         }}
         role="img"
-        aria-label="Logo SOLCRAFT en 3D — haz clic para girar"
+        aria-label="Logo Taiwy en 3D — haz clic para girar"
         title="Haz clic para girar"
       >
         {/* eslint-disable-next-line @next/next/no-img-element */}

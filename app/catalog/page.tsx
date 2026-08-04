@@ -4,6 +4,7 @@ import type { Metadata } from "next"
 import { Button } from "@/components/ui/button"
 import { GlowCard } from "@/components/catalog/glow-card"
 import { HeroPremium } from "@/components/catalog/hero-3d"
+import { HeroTitle } from "@/components/catalog/HeroTitle"
 import {
   getPublicCommerceConfig, getCatalogFacets, getPublicSites, listPublicCatalog,
 } from "@/lib/catalog-actions"
@@ -43,7 +44,7 @@ export default async function LandingPage() {
   ])
 
   const storeSites = sites.filter((s) => !s.is_central)
-  const brand = config.business_name || "SOLCRAFT"
+  const brand = config.business_name || "Taiwy"
 
   return (
     <div className="relative">
@@ -53,18 +54,15 @@ export default async function LandingPage() {
 
       {/* ─────────────── HERO ─────────────── */}
       <section className="relative z-10 overflow-hidden">
-        <div className="mx-auto flex min-h-[100vh] max-w-4xl flex-col items-center justify-end px-4 pb-20 pt-14 text-center">
-          <p className="mt-8 text-[11px] uppercase tracking-[0.34em] text-[hsl(var(--gold-lo))]">
+        <div className="mx-auto flex min-h-[76vh] max-w-4xl flex-col items-center justify-end px-4 pb-10 pt-14 text-center sm:min-h-[80vh]">
+          <p className="mt-4 text-[11px] uppercase tracking-[0.34em] text-[hsl(var(--gold-lo))]">
             Colección · Temporada
           </p>
 
-          <h1 className="mt-3 font-display text-5xl leading-[0.95] sm:text-7xl text-gold-gradient">
-            {brand.toUpperCase()}
-          </h1>
+          <HeroTitle text={`${brand.toUpperCase()} STORE`} />
 
-          <p className="mt-5 max-w-[46ch] text-base leading-relaxed text-muted-foreground">
-            Piezas que brillan como el oro. Consulta la disponibilidad en nuestras
-            sedes y recibe tu pedido en casa.
+          <p className="mt-5 max-w-[46ch] text-base uppercase tracking-[0.18em] leading-relaxed text-muted-foreground">
+            La casa de la exclusividad
           </p>
 
           <div className="mt-8 flex flex-wrap items-center justify-center gap-3">

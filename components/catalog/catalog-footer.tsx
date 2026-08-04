@@ -6,7 +6,7 @@ import { Phone, Mail, MapPin } from "lucide-react"
 
 export function CatalogFooter() {
   const { data: config } = useSWR("commerce-config", getPublicCommerceConfig)
-  const brand = config?.business_name || "SOLCRAFT"
+  const brand = config?.business_name || "Taiwy"
 
   return (
     <footer className="mt-16 border-t border-gold-soft">
