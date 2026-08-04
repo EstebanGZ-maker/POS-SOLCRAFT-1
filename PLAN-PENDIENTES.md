@@ -416,3 +416,181 @@ ingreso (fotos, pagos) y al final lo que amplifica (SEO).
 5. Ajustamos y cerramos el módulo
 
 Puedes reordenar, partir o descartar cualquier módulo.
+
+---
+
+## M11 · Reconstruir DDL de `user_sites` desde prod (drift de esquema) 🟠 DEUDA TÉCNICA
+
+**Detectado el 2026-08-03** al levantar el stack local con Supabase CLI para
+probar la migración S1-paso1. La tabla `user_sites` existe en prod
+(`nxszaxwsrtlofqimbfig`) — el frontend del POS y `role-guard.ts` la consultan
+para resolver sedes accesibles por usuario — pero **no aparece en ningún
+`scripts/*.sql`**. Consecuencia: `supabase start` limpio deja al header del POS
+sin sedes (`Sede: Sin sede`, combobox vacía) porque el hook falla al leer una
+tabla que no fue creada.
+
+Origen probable: cambio hecho vía Supabase Studio sin pasar por migración
+versionada. `scripts/11_rls_initplan_and_permissive_cleanup.sql` referencia
+`user_sites` (RLS policies), pero no la crea — asume que ya existe.
+
+**Trabajo pendiente**:
+1. Dump del DDL real desde prod (`pg_dump --schema-only --table=user_sites`, o
+   via Studio → "Definition").
+2. Crear `scripts/14_user_sites.sql` con: `CREATE TABLE` + FKs a `auth.users` y
+   `sites` + índices + `ENABLE ROW LEVEL SECURITY` + policies.
+3. Aplicarlo al stack local (idempotente, no re-crea si ya existe).
+4. Verificar que `pos-sale.spec.ts` corre verde contra local.
+
+**No urgente pero repetible**: si otra tabla se crea vía Studio y no se
+versiona, el mismo bloqueo se dará al levantar local. Considerar workflow para
+detectar drift (`supabase db diff` compara prod contra migraciones locales).
+
+---
+
+## M12 · Excluir ventas anuladas del cálculo de `expected_cash` 🟡 MEDIA
+
+**Detectado el 2026-08-03** al revisar el diff de la migración S1-paso1 antes
+del deploy. Tanto la RPC `close_shift` (nueva, aplicada 2026-08-03) como el
+`buildBalance()` en `lib/shift-actions.ts` (usado por `getCurrentShift` para el
+balance en vivo del POS) suman TODAS las ventas del turno al `expected_cash`,
+sin filtrar por `sales.status`. Consecuencia: una venta que se creó dentro del
+turno y luego se anuló con `void_sale` sigue contando como efectivo esperado
+al momento de cerrar caja, generando descuadres artificiales.
+
+Para preservar paridad 1:1 con el comportamiento actual en el deploy del
+paso 1, se dejó **sin** filtro `AND status = 'active'` en la RPC — la mejora
+va aparte.
+
+**Trabajo pendiente**:
+1. Agregar `AND status = 'active'` en el `SELECT SUM(total_amount)` de la RPC
+   `close_shift` (una línea SQL, requiere `CREATE OR REPLACE`).
+2. Aplicar el mismo filtro en `buildBalance()` (`lib/shift-actions.ts`) para
+   que el balance en vivo del POS y el `expected_cash` guardado en DB
+   coincidan.
+3. Nuevo spec `e2e/shift-void-parity.spec.ts`:
+   - Abrir turno, crear 2 ventas en efectivo, anular una vía `void_sale`.
+   - Cerrar turno con `counted_cash = 1 venta`.
+   - Assert: `expected_cash` calculado excluye la anulada → `difference = 0`.
+   - Sin el fix, el test debe fallar; con el fix, verde.
+
+**Prioridad media**: no rompe nada hoy (el comportamiento es consistente
+consigo mismo, solo menos preciso contablemente). Es mejora de exactitud, no
+un incidente.
+
+---
+
+## M13 · Cerrar drift de migraciones 08–12 aplicadas en prod pero no versionadas en git 🟠 DEUDA TÉCNICA
+
+**Detectado el 2026-08-03** al preparar el commit del ciclo S1-paso1. Los
+archivos `scripts/08_perf_fk_indexes.sql`, `09_security_revoke_anon_sensitive_fns.sql`,
+`10_security_fix_function_search_path.sql`, `11_rls_initplan_and_permissive_cleanup.sql`,
+`12_fix_low_stock_use_product_stock.sql` **existen en el working tree del repo
+pero nunca se hicieron commit**. Todos están aplicados en prod (documentado en
+`EJECUCION-LOG.md`) y produjeron los cambios de rendimiento/seguridad ya
+verificados.
+
+Consecuencia: si otro colaborador clona el repo o el working tree se pierde,
+esos DDL desaparecen del historial. También hace que `supabase db reset` local
+no los aplique automáticamente.
+
+**Trabajo pendiente**:
+1. Revisar cada archivo (`git diff --stat`) para confirmar que el contenido
+   coincide con lo aplicado en prod (nada quedó modificado post-aplicación).
+2. Commit dedicado agrupando las 5 migraciones:
+   `git add scripts/08_*.sql scripts/09_*.sql scripts/10_*.sql scripts/11_*.sql scripts/12_*.sql EJECUCION-LOG.md`
+   con mensaje que enlace a `EJECUCION-LOG.md` para el contexto.
+3. Aparte, otros archivos sueltos en working tree (catalog/hero/logo,
+   `app/*/CLAUDE.md`, `ROADMAP.md`, `FLUJO-TRABAJO.md`, `PLAN-TESTING-DESPLIEGUE.md`)
+   son de sesiones previas y merecen sus propios commits temáticos.
+
+**Prioridad media-alta**: no bloquea features, pero cada día que pase sin
+commit aumenta el riesgo de pérdida y confunde la reproducibilidad del
+esquema. Ideal cerrarlo antes de abrir S3.
+
+---
+
+## S3-P0 · RPCs de pago/pedidos ejecutables por `anon` — HOTFIX antes de más features 🔴 P0 SEGURIDAD
+
+**Detectado el 2026-08-03** al auditar el path de webhook Wompi antes de
+arrancar tests del módulo F. La validación de firma HMAC en el route handler
+[app/api/wompi/webhook/route.ts:52](app/api/wompi/webhook/route.ts:52) está
+bien hecha (SHA-256 del payload + secret + timestamp, `timingSafeEqual`), y
+rechaza payloads sin firma o con firma inválida con 401. **Pero la RPC que el
+webhook llama al final es directamente invocable por `anon` con la anon key
+pública**, saltándose la firma por completo.
+
+Estado verificado en prod (`nxszaxwsrtlofqimbfig`):
+
+| RPC | anon puede EXECUTE | Validación interna |
+|---|---|---|
+| `apply_wompi_transaction` | **SÍ** | solo referencia + monto — no verifica existencia real de tx en Wompi |
+| `fulfill_web_order` | (no re-verificado en esta sesión, presumible) | pendiente inspeccionar |
+| `update_online_order_status` | (idem) | pendiente inspeccionar |
+
+**Vector de ataque real**:
+```js
+supabase.rpc('apply_wompi_transaction', {
+  p_reference: '<order_number público>',
+  p_transaction_id: 'FAKE',
+  p_status: 'APPROVED',
+  p_amount_in_cents: <total * 100>,  // leído de public_catalog
+})
+```
+Marca cualquier `web_orders.status = 'pending_payment'` como `paid` sin pago real. Si hay fulfillment automático → mercancía despachada sin cobro.
+
+**Mitigación (bloque S3-P0, separado del resto de S3)**:
+1. `REVOKE EXECUTE` de `anon`+`authenticated` en `apply_wompi_transaction`,
+   `fulfill_web_order`, `update_online_order_status`.
+2. `GRANT EXECUTE ... TO service_role`.
+3. Refactor `app/api/wompi/webhook/route.ts` y `lib/wompi-actions.ts` /
+   `lib/web-orders-actions.ts` para usar un cliente Supabase con
+   `SUPABASE_SERVICE_ROLE_KEY` (nueva env var en Vercel).
+4. Smoke: llamada anon a la RPC → `permission denied for function`.
+5. Smoke: webhook con firma válida sigue funcionando end-to-end.
+6. Verificar en `web_orders` que no hay órdenes con `payment_status='approved'`
+   sin `wompi_transaction_id` que empiece por el prefijo real de Wompi (auditar
+   posibles ataques históricos).
+
+**Prioridad P0**: expone dinero directo. Debe cerrarse **antes** de abrir
+tests de módulos B/C/D/E/F/G/H o cualquier feature nueva. El resto de S3
+(otras 27 funciones expuestas) puede esperar; estas 3 no.
+
+---
+
+## M14 · Cerrar drift de tablas y funciones del flujo web/pedidos/pagos 🟠 DEUDA TÉCNICA
+
+**Detectado el 2026-08-03** al preparar el stack local para el hotfix S3-P0.
+Además de `user_sites` (M11), un grupo entero de objetos del flujo storefront +
+pedidos web + pagos vive en prod (`nxszaxwsrtlofqimbfig`) **sin estar
+versionado en `scripts/*.sql`**:
+
+**Tablas ausentes en scripts**:
+- `web_orders` (~34 columnas — pedidos del storefront público)
+- `payment_events` (bitácora del webhook Wompi con `signature_valid`, `processed`)
+- `online_orders` (referenciada por FK en `scripts/08_perf_fk_indexes.sql` pero no creada)
+- `web_order_items` (idem)
+
+**Funciones ausentes en scripts** (todas `SECURITY DEFINER`):
+- `apply_wompi_transaction`
+- `set_web_order_payment_reference`
+- `log_payment_event`
+- `fulfill_web_order` (presumida — no verificada individualmente en esta
+  sesión, pero referenciada en `09_security_revoke_anon_sensitive_fns.sql`)
+- `update_online_order_status` (idem)
+
+**Workaround aplicado durante S3-P0**: `scripts/13b_drift_wompi_local.sql`
+reproduce el mínimo funcional de las 2 tablas más las 3 RPCs directamente
+tocadas por el flujo Wompi. Sirve para tests locales; NO es la solución
+canónica.
+
+**Trabajo pendiente**:
+1. `pg_dump --schema-only --table='public.web_orders' --table='public.payment_events'
+   --table='public.online_orders' --table='public.web_order_items'` desde prod +
+   `pg_get_functiondef` de las 5 funciones. Volcarlo a
+   `scripts/15_web_orders_and_wompi_schema.sql` con `IF NOT EXISTS`.
+2. Extender el workflow para detectar drift automático (`supabase db diff` en CI).
+3. Retirar `scripts/13b_drift_wompi_local.sql` una vez que `15_...` lo reemplace.
+
+**Prioridad media-alta**: mismo argumento que M11 — no bloquea features hoy,
+pero cada tabla/función unversionada rompe la reproducibilidad del entorno
+local y expande la superficie de sorpresas al levantar Supabase local.

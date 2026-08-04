@@ -1,6 +1,6 @@
 "use server"
 
-import { createServerSupabaseClient } from "@/lib/supabase/server"
+import { createServerSupabaseClient, createServiceRoleSupabaseClient } from "@/lib/supabase/server"
 import {
   getWompiEnv, buildIntegritySignature, buildReference,
   fetchWompiTransaction, WOMPI_CHECKOUT_URL,
@@ -87,8 +87,13 @@ export async function createWompiCheckout(orderId: string): Promise<WompiCheckou
   const currency = "COP"
   const reference = buildReference((order as any).order_number)
 
-  // Guarda la referencia contra el pedido (la usa el webhook para reconciliar)
-  const { data: refRes, error: refErr } = await supabase.rpc("set_web_order_payment_reference", {
+  // Guarda la referencia contra el pedido (la usa el webhook para reconciliar).
+  // set_web_order_payment_reference está revocada para anon/authenticated
+  // desde S3-P0: se llama con service_role. La autorización de esta acción
+  // vive en este Server Action (el caller ya cargó el pedido por orderId
+  // y validó estado); el RPC solo persiste.
+  const admin = createServiceRoleSupabaseClient()
+  const { data: refRes, error: refErr } = await admin.rpc("set_web_order_payment_reference", {
     p_order_id: orderId,
     p_reference: reference,
   })
@@ -150,7 +155,11 @@ export async function verifyAndApplyTransaction(transactionId: string) {
     return { success: false, message: "No se pudo verificar la transacción con Wompi." }
   }
 
-  const { data, error } = await supabase.rpc("apply_wompi_transaction", {
+  // apply_wompi_transaction está revocada para anon/authenticated desde
+  // S3-P0. El monto ya está verificado por fetchWompiTransaction contra la
+  // API real de Wompi (arriba); acá persistimos con service_role.
+  const admin = createServiceRoleSupabaseClient()
+  const { data, error } = await admin.rpc("apply_wompi_transaction", {
     p_reference: tx.reference,
     p_transaction_id: tx.id,
     p_status: tx.status,
