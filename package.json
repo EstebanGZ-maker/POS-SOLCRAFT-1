@@ -6,7 +6,11 @@
     "build": "next build",
     "dev": "next dev",
     "lint": "next lint",
-    "start": "next start"
+    "start": "next start",
+    "test:e2e": "playwright test",
+    "test:e2e:ui": "playwright test --ui",
+    "test:core": "node scripts/smoke-core.mjs",
+    "perf": "node scripts/measure-perf.mjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.9.1",
@@ -74,6 +78,7 @@
     ]
   },
   "devDependencies": {
+    "@playwright/test": "^1.61.1",
     "@types/node": "^22",
     "@types/react": "^19",
     "@types/react-dom": "^19",
