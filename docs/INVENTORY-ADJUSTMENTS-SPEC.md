@@ -781,6 +781,36 @@ no).
 
 ---
 
+## 10.1 Decisiones nuevas surgidas al escribir Fase 2 (DN1/DN2/DN3)
+
+**DN1 — WAC continúa desde valor movido tras void.** Cuando `void_adjustment`
+deja `products.cost=X` (movido, no revertido por D5) y luego se crea un
+nuevo incremento del mismo producto con `cost=Y`, el nuevo WAC se calcula
+sobre X como base. Semánticamente correcto (el promedio "continúa" desde
+donde estaba). Es (a) del D5 llevado a la práctica. Sin cambio de
+comportamiento; documentado en el RPC de Fase 2C.
+
+**DN2 — `movement_type='ajuste'` uniforme post-Fase 2D.** Tras migrar
+`ingressNewProduct` al RPC común (2D), toda entrada de mercancía queda
+como `movement_type='ajuste'` en el kardex; la distinción compra vs ajuste
+migra a `inventory_adjustments.motivo`. Análisis completo del impacto en
+[scripts/17d_adjustments_unify_entries.md](../scripts/17d_adjustments_unify_entries.md)
+(auditoría de lectores, granularidad perdida, recuperación vía join,
+costo residual UI del filtro "Compra" del kardex — mitigado con copy
+"Compra (histórico)" en Fase 3). Aceptable: la info no se pierde, ningún
+consumidor runtime hoy filtra por `movement_type='compra'` (grep
+exhaustivo lo confirma), y gana consistencia.
+
+**DN3 — `adjustment_counters` seed on-the-fly.** El seed inicial de 2A
+crea 1 fila por sede existente, pero sedes creadas DESPUÉS del apply de
+2A no tendrían fila. El RPC de Fase 2A hace `INSERT ... ON CONFLICT` como
+fallback si el UPDATE del counter no retorna filas (sede nueva sin
+counter → crear on-the-fly con `last_numero=1`). Probado en T1 de
+[scripts/17_validation_phase2.sql](../scripts/17_validation_phase2.sql).
+Sin cambio requerido.
+
+---
+
 ## 11. Fuera de alcance
 
 - Ajustes multi-bodega en un solo documento (hoy `warehouse_id` es

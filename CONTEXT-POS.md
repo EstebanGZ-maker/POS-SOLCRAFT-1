@@ -761,4 +761,253 @@ AI (opcional): `AI_GATEWAY_API_KEY` (solo para `/api/analyze-product`).
 
 ---
 
+## 7. Cambios post-2026-08-04 (sesiones 2026-08-05 → 2026-08-11)
+
+Este bloque acumula lo NUEVO desde la última versión estable de CONTEXT-POS.md.
+Para la cola operativa (qué está en cada archivo, gates humanos, orden de
+apply), ver [docs/ESTADO-PENDIENTES.md](docs/ESTADO-PENDIENTES.md).
+
+Todo lo aplicado a prod es solo lo listado en §7.5 "Ya en prod". El resto
+está escrito, commiteado en `s1-s3p0-rpc-hardening`, y sin apply — bloqueado
+por Free plan (branches Supabase requieren Pro).
+
+### 7.1 Módulo de crédito (fiado) — escrito, sin apply
+
+Spec: [docs/CREDIT-SALES-SPEC.md](docs/CREDIT-SALES-SPEC.md).
+
+**Modelo Fase 1**:
+- `sales += is_on_account BOOLEAN, amount_paid NUMERIC, balance_due
+  NUMERIC GENERATED ALWAYS AS (total_amount - amount_paid) STORED`.
+- Nueva `sale_payments` (ledger de abonos, patrón
+  `stock_movements→product_stock`): `payment_id, sale_id, amount>0,
+  payment_method, shift_id?, site_id, received_by, notes, status
+  ('active'|'voided'), created_at`. RLS de escritura CERRADA.
+- `customers += allows_credit BOOLEAN DEFAULT TRUE, is_walk_in BOOLEAN
+  DEFAULT FALSE`. Índice único parcial `WHERE is_walk_in` + CHECK
+  `NOT (is_walk_in AND allows_credit)`. Walk-in bootstrapped por nombre
+  una única vez; runtime detecta por `is_walk_in`.
+- Nueva `customer_credits` (Fase 1 solo emisión desde `void_sale`;
+  redención en Fase 3): `credit_id, customer_id, amount, source_type
+  ('void_sale'|'manual_adjustment'|'redemption'), source_sale_id?,
+  site_id, notes, created_by, created_at`. RLS cerrada.
+
+**RPCs Fase 1** (todos SECDEF + `auth.uid()`):
+- `create_sale` — nueva firma con `p_is_on_account, p_initial_payment`.
+  Ignora `p_user_id` (D11 general). Ventas a cuenta usan
+  `payment_method='crédito'` **como etiqueta** — la lógica de caja usa
+  SOLO `is_on_account`, nunca ILIKE sobre `payment_method` (matiz D8).
+- `register_payment` (Fase 2) — abonos posteriores.
+- `close_shift` — reescrito para consumir `get_shift_balance`.
+- **`get_shift_balance(shift_id)` (nuevo, D10)** — única fuente del
+  arqueo. Suma desde `sale_payments` con `status='active'` filtrando cash
+  por `payment_method ILIKE '%efectivo%'`. Elimina duplicación
+  SQL/TS (M12 se resuelve aquí).
+- `void_sale` — regla asimétrica Casos A/B/C: contado con refund cash en
+  turno actual vía `cash_movements` (aun si es cross-turno del abono);
+  fiado NO toca `sale_payments` ni caja, solo emite `customer_credits`
+  por lo pagado; sin `amount_paid` no genera nada.
+
+**Función `verify_credit_integrity()`** — invariante
+`SUM(sale_payments.amount WHERE active) = sales.amount_paid` por venta.
+
+**Ciclo del saldo a favor (§6.1 del spec)**: traza numérica muestra que
+`apply_customer_credit` (Fase 3) DEBE asentar `income` por el monto
+aplicado (**precondición bloqueante D14**), aunque no entre plata nueva.
+Sin eso la P&L queda debajo del cash real.
+
+### 7.2 Módulo de ajustes de inventario — reescrito completo, sin apply
+
+Spec: [docs/INVENTORY-ADJUSTMENTS-SPEC.md](docs/INVENTORY-ADJUSTMENTS-SPEC.md).
+Reemplaza el `createAdjustment` + `deleteAdjustment` no-transaccionales
+actuales por RPCs SECDEF atómicos.
+
+**Fase 1** — nuevas columnas en `inventory_adjustments`:
+
+```
+inventory_adjustments (post-Fase 1)
+  adjustment_id uuid PK
+  warehouse_id uuid FK warehouses CASCADE
+  notes? text
+  total_adjusted numeric DEFAULT 0
+  adjustment_date timestamptz
+  site_id? uuid FK sites SET NULL          -- NUEVO, derivado de warehouse
+  numero? int                              -- NUEVO, inerte hasta 2A
+  status text DEFAULT 'active'             -- NUEVO 'active'|'voided'
+  motivo? text CHECK IN (NULL,'compra','sobrante','correccion')  -- NUEVO, inerte hasta 2C
+  created_by? uuid FK auth.users SET NULL  -- NUEVO
+  updated_at timestamptz                   -- NUEVO
+  UNIQUE INDEX (site_id, numero) WHERE numero NOT NULL  -- inerte hasta 2A
+```
+
+- Trigger `update_inventory_adjustments_updated_at` reutiliza
+  `update_updated_at_column()`.
+- RLS de `inventory_adjustments` + `adjustment_items` de escritura
+  **cerrada** — solo RPC SECDEF escribe.
+- RPCs SECDEF nuevos: `create_adjustment(warehouse_id, notes, items)` y
+  `void_adjustment(adjustment_id)`. Elimina el `Promise.all`
+  no-transaccional actual (bug de partial-write documentado).
+
+**Fase 2** sub-faseada por riesgo (2A→2B→2C+2D):
+
+- **2A · Numeración** — `adjustment_counters (site_id PK, last_numero
+  int)`. `create_adjustment` numera atómicamente. Backfill de históricos
+  = NO (§7 del spec).
+- **2B · WAC** — recalcula `products.cost` al incrementar con cost>0.
+  Orden estricto documentado en §5.1.1 del spec: LOCK `products` FOR
+  UPDATE → READ `SUM(product_stock.quantity)` global BEFORE → adjust
+  kardex → recalc con valores BEFORE → UPDATE `products.cost`. Loop
+  iterativo. WAC NO cambia al disminuir (D2). Reversión NO revierte WAC
+  (D5) — banner UI lo avisa.
+- **2C · Contabilidad con motivos** (⚠ GATE CONTADOR):
+  - `accounting_entries += adjustment_id UUID FK` (D4).
+  - `create_adjustment` firma cambia a
+    `(warehouse_id, notes, items, motivo TEXT DEFAULT NULL)`. Reglas:
+    motivo obligatorio si hay incrementos; NULL si 100% disminuciones;
+    correccion exige notes no vacío. RAISE en violación.
+  - Asientos: `compra → expense "Compra de mercancía"`,
+    `sobrante → income "Sobrante de inventario"`,
+    `correccion → sin asiento`. Disminuciones → expense
+    "Merma / Ajuste negativo". Referencia `adjustment_id` para
+    trazabilidad.
+  - `void_adjustment` compensa asientos originales (income↔expense
+    inverso, category=`Reversión <cat>`). NO revierte WAC.
+  - Nueva `verify_adjustment_accounting_integrity()`: para cada voided
+    con asientos, `SUM(income) - SUM(expense) = 0`.
+- **2D · Unificar entradas** — `receiveMerchandise` +
+  `ingressNewProduct` migran a `create_adjustment` con `motivo='compra'`.
+  Post-2D toda entrada de mercancía queda como `movement_type='ajuste'`
+  en `stock_movements`; distinción compra vs ajuste migra a
+  `inventory_adjustments.motivo`. Análisis DN2 completo en
+  [scripts/17d_adjustments_unify_entries.md](scripts/17d_adjustments_unify_entries.md).
+
+**Fase 3 UI** — ya deployable independiente de Fase 1 (degrada limpio):
+
+- Nueva ruta `app/inventory/adjustments/[adjustment_id]/page.tsx` —
+  detalle con header (numero o "sin número", sede, bodega, fecha, badges
+  status/motivo, botón Anular), banner de anulado con warning WAC D5
+  condicional, tabla de líneas con totales.
+- Botón Anular visible SOLO si `role='admin'` o
+  `(role='encargado' && assignedSiteId === adjustment.site_id)` —
+  espejo estricto de la regla del RPC. **canVoid es visibilidad, la
+  autorización real vive en el RPC** (comentado explícito).
+- Server Action `voidAdjustment` mapea Postgres `42883` (función no
+  existe) a mensaje amigable para que el UI no muestre stacktraces
+  mientras Fase 1 no está aplicada.
+- `getAdjustmentById` extendido: embed `warehouses(sites(name))` +
+  segundo select a `user_profiles` para `creator` (casos borde
+  `created_by NULL` → sin línea; user_profiles ausente → "Usuario
+  desconocido").
+
+**Decisiones D1–D8 + DN1/DN2/DN3** cerradas en el spec:
+- D1 → motivos (compra/sobrante/correccion), gate contador vigente.
+- D2 → WAC no cambia al disminuir. Confirmado.
+- D3 → `adjustment_counters` propio (no compartir con sales).
+- D4 → FK `adjustment_id` en `accounting_entries`.
+- D5 → WAC NO se revierte al voider; UI avisa.
+- D6 → WAC usa stock global de todas las bodegas.
+- D7 → No editar ajustes, solo anular (analogía void_sale).
+- D8 → 2D migra `ingressNewProduct` al RPC común.
+- DN1 → WAC continúa desde valor movido tras void (sin acción).
+- DN2 → `movement_type='ajuste'` uniforme post-2D; distinción en
+  motivo. Copy kardex "Compra (histórico)" ya aplicado en Fase 3 UI.
+- DN3 → `adjustment_counters` con seed ON CONFLICT para sedes creadas
+  después del apply de 2A.
+
+### 7.3 Fix POS "stock replicado" (APLICADO — sesión 2026-08-08)
+
+Diagnóstico completo en sesión 2026-08-08:
+- Auditoría de `product_stock` de PA-32-120-00 confirmó que **no hay
+  duplicación de datos**: cada sede tiene su cantidad, `stock_movements`
+  cuadra 1:1 por-cell.
+- Bug era de lectura: `getProductsWithStock(null)` (fallback
+  `warehouseStock = totalStock` sumando TODAS las bodegas) se disparaba
+  durante el bootstrap del POS mientras `useSite()` aún no resolvía
+  (`siteId=null → whId=null → refreshData(null)`), y por race condition
+  entre re-runs del `useEffect`.
+- **Vector latente adicional**: sede sin `warehouse.is_primary=true` →
+  `getWarehouseForSite` retorna null → mismo fallback dañino.
+
+**Fix aplicado en commit `5fb37fd`**:
+- `lib/inventory-actions.ts:getProductsWithStock` — sin `warehouse_id`
+  devuelve `warehouseStock=null` (en vez de `totalStock`). `totalStock`
+  se sigue exponiendo por separado.
+- `app/pos/page.tsx` — `useEffect` con `if (!siteId) return` (evita
+  disparar sin sede resuelta) + flag `cancelled` en closure con
+  cleanup (evita race entre re-runs). Estado nuevo `warehouseError`
+  bloquea el POS con mensaje si `getWarehouseForSite` retorna null.
+- `app/inventory/products/page.tsx` — usa `warehouseStock ?? totalStock`
+  para preservar la vista "todas las bodegas".
+- `app/inventory/kardex/page.tsx` — `TYPE_LABELS.compra = "Compra
+  (histórico)"` prepara post-Fase 2D.
+
+Verificado end-to-end en navegador contra prod sede "El Carmen Hombres"
+(PA-32-120-00 muestra "Inv. 8" = cantidad real de esa sede, no la suma
+33).
+
+**Task #15 backlog** creada: enforce "exactamente 1 warehouse.is_primary
+por sede" — app + BD (todas las 6 sedes de prod cumplen hoy, pero el
+código no valida).
+
+### 7.4 Feature celular obligatorio al crear cliente (APLICADO)
+
+Aplicado en commit `5fb37fd`:
+- `lib/validators/customer.ts` — schema Zod compartido
+  (`normalizePhoneCO`, `phoneCORequired`, `PHONE_CO_ERROR`) — 10 dígitos
+  empezando en 3, strip automático de `+57` prefix.
+- `components/pos/new-contact-dialog.tsx` — campo Celular obligatorio
+  con feedback inline.
+- `app/customers/page.tsx` — misma validación en el CRUD.
+- `lib/actions.ts:createContact` y `:createCustomer` — validan phone en
+  servidor y persisten valor normalizado. Walk-in exento (venta rápida
+  no pide celular).
+
+### 7.5 Ya en prod (verificado)
+
+- Fix POS stock por sede (§7.3).
+- Feature celular obligatorio (§7.4).
+- `app/layout.tsx` — `lang="es" translate="no"` + meta
+  `google:notranslate` (fix del bug de reconciliación React vs Google
+  Translate).
+- El commit `5fb37fd` de la rama `s1-s3p0-rpc-hardening` está pusheado a
+  origin (verificado en la sesión 2026-08-11).
+
+### 7.6 Regresiones atrapadas antes de romper prod
+
+- **Filtros `.eq("status","active")` revertidos** en `getAdjustments()`
+  y `getCentralPurchases()` de `lib/inventory-actions.ts`. Los había
+  puesto como parte del commit de Fase 1 de ajustes; sin la migración 16
+  aplicada, la columna `status` no existe en prod y esos filtros
+  romperían la lista y el reporte. Revertidos con `TODO(fase-1-ajustes)`
+  para re-agregarse en el commit que aplique la 16. Ver §0 de
+  ESTADO-PENDIENTES.md — DEPENDENCIA CRÍTICA #1.
+
+### 7.7 Actualizaciones al drift documentado
+
+De la sesión de introspección MCP (baseline monolítico
+[supabase/migrations/20260807042453_baseline_monolithic.sql](supabase/migrations/20260807042453_baseline_monolithic.sql)):
+
+- Al concatenar `scripts/00-14` en orden emergieron **stubs adicionales
+  de drift** que faltaban en §6.5.4 original:
+  `business_settings, online_orders, online_order_items, product_images,
+  web_order_items, user_sites, customer_accounts` (además de los ya
+  documentados). El archivo `00_stubs.sql` en scratchpad los define
+  minimal para poder aplicar el baseline en PG puro.
+- **Ordenamiento**: `02_rls.sql` referencia tablas de `05_merge_features.sql`
+  (stock_movements, user_profiles, suspended_sales, promotion_products).
+  El baseline monolítico aplica 05 antes de 02.
+- `scripts/09_security_revoke_anon_sensitive_fns.sql` referencia 4
+  funciones drift (`admin_create_user`, `admin_reset_password`,
+  `fulfill_web_order`, `update_online_order_status`). Saltado en el
+  baseline para desbloquear el apply local.
+
+### 7.8 Task #14 sigue pendiente
+
+Captura canónica del baseline vía `supabase db pull` (o introspección
+MCP exhaustiva). Requiere Pro para vía CLI; alternativa: introspección
+por SELECT sobre `pg_catalog`/`information_schema` vía MCP
+`execute_sql` — factible pero lenta por intermitencia del MCP. Ver §5 de
+ESTADO-PENDIENTES.md.
+
+---
+
 Fin del contexto.
