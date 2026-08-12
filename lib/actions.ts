@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache"
 import { createServerSupabaseClient } from "@/lib/supabase/server"
 import { getUserProfile } from "@/lib/auth-helpers"
 import { requireRole } from "@/lib/role-guard"
+import { phoneCORequired, PHONE_CO_ERROR } from "@/lib/validators/customer"
 
 // --- Customer Actions ---
 export async function getCustomers() {
@@ -24,12 +25,18 @@ export async function createCustomer(formData: FormData) {
 
   // Handle empty strings as null
   const emailValue = email && email.trim() !== "" ? email : null
-  const phoneValue = phone && phone.trim() !== "" ? phone : null
+  const phoneResult = phoneCORequired.safeParse(phone ?? "")
+  if (!phoneResult.success) {
+    return {
+      success: false,
+      message: phoneResult.error.issues[0]?.message ?? PHONE_CO_ERROR,
+    }
+  }
 
   const { error } = await supabase.from("customers").insert({
     name: name.trim(),
     email: emailValue,
-    phone: phoneValue,
+    phone: phoneResult.data,
   })
 
   if (error) {
@@ -118,11 +125,21 @@ export async function createContact(input: {
   second_name?: string | null
   last_names: string
   email?: string | null
+  phone: string
   city_state?: string | null
   address?: string | null
   postal_code?: string | null
 }) {
   const supabase = await createServerSupabaseClient()
+
+  const phoneResult = phoneCORequired.safeParse(input.phone)
+  if (!phoneResult.success) {
+    return {
+      success: false,
+      message: phoneResult.error.issues[0]?.message ?? PHONE_CO_ERROR,
+      customer: null,
+    }
+  }
 
   const fullName = [input.first_name, input.second_name, input.last_names]
     .filter((p) => p && p.trim() !== "")
@@ -136,6 +153,7 @@ export async function createContact(input: {
     .insert({
       name: fullName,
       email: clean(input.email),
+      phone: phoneResult.data,
       id_type: clean(input.id_type),
       id_number: clean(input.id_number),
       first_name: clean(input.first_name),

@@ -22,7 +22,7 @@ import { ScrollText, Search, ShieldCheck, ArrowDown, ArrowUp, RefreshCw } from "
 
 const TYPE_LABELS: Record<string, string> = {
   apertura: "Apertura",
-  compra: "Compra",
+  compra: "Compra (histórico)",
   venta: "Venta",
   traslado_salida: "Traslado (salida)",
   traslado_entrada: "Traslado (entrada)",

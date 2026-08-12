@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/select"
 import { X, Sparkles, ChevronUp } from "lucide-react"
 import { createContact } from "@/lib/actions"
+import { normalizePhoneCO, PHONE_CO_ERROR } from "@/lib/validators/customer"
 import { toast } from "@/components/ui/use-toast"
 
 interface NewContactDialogProps {
@@ -47,12 +48,16 @@ export function NewContactDialog({ open, onOpenChange, onCreated }: NewContactDi
   const [secondName, setSecondName] = useState("")
   const [lastNames, setLastNames] = useState("")
   const [email, setEmail] = useState("")
+  const [phone, setPhone] = useState("")
   const [cityState, setCityState] = useState("")
   const [address, setAddress] = useState("")
   const [postalCode, setPostalCode] = useState("")
   const [saving, setSaving] = useState(false)
 
-  const canSave = firstName.trim() !== "" && lastNames.trim() !== ""
+  const normalizedPhone = normalizePhoneCO(phone)
+  const phoneValid = /^3\d{9}$/.test(normalizedPhone)
+  const canSave =
+    firstName.trim() !== "" && lastNames.trim() !== "" && phoneValid
 
   const reset = () => {
     setIdType("")
@@ -61,6 +66,7 @@ export function NewContactDialog({ open, onOpenChange, onCreated }: NewContactDi
     setSecondName("")
     setLastNames("")
     setEmail("")
+    setPhone("")
     setCityState("")
     setAddress("")
     setPostalCode("")
@@ -77,6 +83,7 @@ export function NewContactDialog({ open, onOpenChange, onCreated }: NewContactDi
       second_name: secondName,
       last_names: lastNames,
       email,
+      phone,
       city_state: cityState,
       address,
       postal_code: postalCode,
@@ -193,20 +200,38 @@ export function NewContactDialog({ open, onOpenChange, onCreated }: NewContactDi
                   />
                 </div>
                 <div className="space-y-1.5">
-                  <Label>Municipio / Departamento</Label>
-                  <Select value={cityState} onValueChange={setCityState}>
-                    <SelectTrigger>
-                      <SelectValue placeholder="Seleccionar" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {DEPARTMENTS.map((d) => (
-                        <SelectItem key={d} value={d}>
-                          {d}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  <Label>
+                    Celular <span className="text-primary">*</span>
+                  </Label>
+                  <Input
+                    type="tel"
+                    inputMode="numeric"
+                    placeholder="3001234567"
+                    value={phone}
+                    onChange={(e) => setPhone(e.target.value)}
+                    required
+                    aria-invalid={phone.length > 0 && !phoneValid}
+                  />
+                  {phone.length > 0 && !phoneValid && (
+                    <p className="text-xs text-destructive">{PHONE_CO_ERROR}</p>
+                  )}
                 </div>
+              </div>
+
+              <div className="space-y-1.5">
+                <Label>Municipio / Departamento</Label>
+                <Select value={cityState} onValueChange={setCityState}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Seleccionar" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {DEPARTMENTS.map((d) => (
+                      <SelectItem key={d} value={d}>
+                        {d}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
 
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">

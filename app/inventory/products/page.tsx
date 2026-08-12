@@ -232,7 +232,9 @@ export default function ProductsPage() {
                     {p.is_service ? (
                       <span className="text-muted-foreground">N/A</span>
                     ) : (
-                      <span className={p.warehouseStock <= 0 ? "text-destructive" : ""}>{p.warehouseStock}</span>
+                      <span className={(p.warehouseStock ?? p.totalStock) <= 0 ? "text-destructive" : ""}>
+                        {p.warehouseStock ?? p.totalStock}
+                      </span>
                     )}
                   </TableCell>
                   <TableCell>
