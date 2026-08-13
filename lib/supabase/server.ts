@@ -1,4 +1,5 @@
 import { createServerClient } from "@supabase/ssr"
+import { createClient } from "@supabase/supabase-js"
 import { cookies } from "next/headers"
 
 export async function createServerSupabaseClient() {
@@ -19,5 +20,21 @@ export async function createServerSupabaseClient() {
         }
       },
     },
+  })
+}
+
+/**
+ * Cliente Supabase con service_role — SIEMPRE bypasa RLS.
+ * Úsalo SOLO en server code que ya validó autorización o que corre en un
+ * contexto sin usuario (webhooks externos como Wompi).
+ * Requiere SUPABASE_SERVICE_ROLE_KEY (env server-only, sin NEXT_PUBLIC_).
+ */
+export function createServiceRoleSupabaseClient() {
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY
+  if (!key) {
+    throw new Error("SUPABASE_SERVICE_ROLE_KEY no está configurado")
+  }
+  return createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, key, {
+    auth: { persistSession: false, autoRefreshToken: false },
   })
 }

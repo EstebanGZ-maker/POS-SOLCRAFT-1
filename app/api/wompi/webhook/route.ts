@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server"
-import { createServerSupabaseClient } from "@/lib/supabase/server"
+import { createServiceRoleSupabaseClient } from "@/lib/supabase/server"
 import { getWompiEnv, verifyEventChecksum } from "@/lib/wompi"
 
 // Wompi reintenta si no recibe 2xx. Respondemos 200 salvo error real de proceso.
@@ -22,7 +22,10 @@ export async function POST(req: Request) {
   const amountInCents: number | null = tx.amount_in_cents ?? null
   const eventType: string | null = payload?.event ?? null
 
-  const supabase = await createServerSupabaseClient()
+  // Cliente service_role: Wompi golpea este endpoint sin sesión de usuario,
+  // y las RPCs sensibles (log_payment_event, apply_wompi_transaction) están
+  // revocadas para anon/authenticated tras S3-P0.
+  const supabase = createServiceRoleSupabaseClient()
 
   const logEvent = async (valid: boolean, processed: boolean, errorMsg: string | null) => {
     try {
