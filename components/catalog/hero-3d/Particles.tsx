@@ -13,7 +13,7 @@ interface Props {
  * ShaderMaterial + Points es la forma más barata:
  * ~200 partículas animadas cuestan una llamada de draw.
  */
-export function Particles({ count = 160 }: Props) {
+export function Particles({ count = 500 }: Props) {
   const matRef = useRef<THREE.ShaderMaterial>(null)
 
   const geo = useMemo(() => {

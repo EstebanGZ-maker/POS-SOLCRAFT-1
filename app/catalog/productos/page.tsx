@@ -10,7 +10,7 @@ import {
 export const revalidate = 60
 
 export const metadata: Metadata = {
-  title: "Catálogo — SOLCRAFT",
+  title: "Catálogo — Taiwy",
   description: "Piezas disponibles en nuestras sedes. Consulta y pide en línea.",
 }
 

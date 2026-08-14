@@ -142,28 +142,13 @@ export async function openShift(input: {
   opened_by?: string | null
 }) {
   const supabase = await createServerSupabaseClient()
-
-  // Verifica que no haya turno abierto
-  const { data: existing } = await supabase
-    .from("pos_shifts")
-    .select("shift_id")
-    .eq("site_id", input.site_id)
-    .eq("status", "open")
-    .maybeSingle()
-
-  if (existing) {
-    return { success: false, message: "Ya hay un turno abierto en esta sede." }
-  }
-
-  const { error } = await supabase.from("pos_shifts").insert({
-    site_id: input.site_id,
-    warehouse_id: input.warehouse_id ?? null,
-    initial_cash: input.initial_cash,
-    bank_base: input.bank_base ?? "Caja general",
-    opened_by: input.opened_by ?? null,
-    status: "open",
+  const { error } = await supabase.rpc("open_shift", {
+    p_site_id: input.site_id,
+    p_warehouse_id: input.warehouse_id ?? null,
+    p_initial_cash: input.initial_cash,
+    p_bank_base: input.bank_base ?? null,
+    p_opened_by: input.opened_by ?? null,
   })
-
   if (error) return { success: false, message: error.message }
   revalidatePath("/pos")
   return { success: true, message: "Turno abierto." }
@@ -176,11 +161,11 @@ export async function addCashMovement(input: {
   description?: string | null
 }) {
   const supabase = await createServerSupabaseClient()
-  const { error } = await supabase.from("cash_movements").insert({
-    shift_id: input.shift_id,
-    type: input.type,
-    amount: input.amount,
-    description: input.description ?? null,
+  const { error } = await supabase.rpc("add_cash_movement", {
+    p_shift_id: input.shift_id,
+    p_type: input.type,
+    p_amount: input.amount,
+    p_description: input.description ?? null,
   })
   if (error) return { success: false, message: error.message }
   revalidatePath("/pos")
@@ -194,36 +179,23 @@ export async function closeShift(input: {
   notes?: string | null
 }) {
   const supabase = await createServerSupabaseClient()
-
-  const { data: shift, error: shiftError } = await supabase
-    .from("pos_shifts")
-    .select("*")
-    .eq("shift_id", input.shift_id)
-    .single()
-
-  if (shiftError || !shift) return { success: false, message: "Turno no encontrado." }
-
-  const balance = await buildBalance(supabase, shift)
-  const difference = input.counted_cash - balance.expected_cash
-
-  const { error } = await supabase
-    .from("pos_shifts")
-    .update({
-      status: "closed",
-      closed_at: new Date().toISOString(),
-      closed_by: input.closed_by ?? null,
-      counted_cash: input.counted_cash,
-      expected_cash: balance.expected_cash,
-      difference,
-      notes: input.notes ?? null,
-    })
-    .eq("shift_id", input.shift_id)
-
+  const { data, error } = await supabase.rpc("close_shift", {
+    p_shift_id: input.shift_id,
+    p_counted_cash: input.counted_cash,
+    p_closed_by: input.closed_by ?? null,
+    p_notes: input.notes ?? null,
+  })
   if (error) return { success: false, message: error.message }
 
   revalidatePath("/pos")
   revalidatePath("/accounting")
-  return { success: true, message: "Turno cerrado.", difference, expected_cash: balance.expected_cash }
+  const summary = (data ?? {}) as { expected_cash?: number; difference?: number }
+  return {
+    success: true,
+    message: "Turno cerrado.",
+    difference: Number(summary.difference ?? 0),
+    expected_cash: Number(summary.expected_cash ?? 0),
+  }
 }
 
 // Historial de turnos por sede

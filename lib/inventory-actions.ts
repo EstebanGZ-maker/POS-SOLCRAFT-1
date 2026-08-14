@@ -20,9 +20,15 @@ export async function getProductsWithStock(warehouse_id?: string | null) {
   return (data || []).map((p: any) => {
     const stockRows = p.product_stock || []
     const totalStock = stockRows.reduce((s: number, r: any) => s + (r.quantity || 0), 0)
-    const warehouseStock = warehouse_id
-      ? (stockRows.find((r: any) => r.warehouse_id === warehouse_id)?.quantity ?? 0)
-      : totalStock
+    // Disponibilidad por sede. Sin `warehouse_id` no hay respuesta válida
+    // per-sede: devolvemos null en vez de sumar todas las bodegas (que sería
+    // un dato semánticamente incorrecto — un código puede estar disponible en
+    // una sede y agotado en otra al mismo tiempo). Consumidores agregados
+    // deben leer `totalStock` explícitamente.
+    const warehouseStock =
+      warehouse_id
+        ? (stockRows.find((r: any) => r.warehouse_id === warehouse_id)?.quantity ?? 0)
+        : null
     return { ...p, totalStock, warehouseStock }
   })
 }
@@ -350,6 +356,9 @@ export async function getAdjustments() {
   const { data, error } = await supabase
     .from("inventory_adjustments")
     .select("*, warehouses ( name, sites ( name ) ), adjustment_items ( adjustment_item_id )")
+    // TODO(fase-1-ajustes): agregar .eq("status", "active") cuando se aplique
+    // la migración 16 que crea la columna. Antes de eso, el filtro rompe con
+    // "column status does not exist" en cualquier ambiente sin Fase 1.
     .order("adjustment_date", { ascending: false })
   if (error) {
     console.error("Error fetching adjustments:", error)
@@ -362,11 +371,66 @@ export async function getAdjustmentById(adjustment_id: string) {
   const supabase = await createServerSupabaseClient()
   const { data, error } = await supabase
     .from("inventory_adjustments")
-    .select("*, warehouses ( warehouse_id, name ), adjustment_items ( *, products ( name, code ) )")
+    .select(
+      "*, " +
+        "warehouses ( warehouse_id, name, sites ( name ) ), " +
+        "adjustment_items ( *, products ( name, code ) )",
+    )
     .eq("adjustment_id", adjustment_id)
     .single()
   if (error) return null
-  return data
+
+  // Lookup del creador. auth.users.id no se puede embed vía PostgREST; se hace
+  // un segundo select a user_profiles. Casos borde:
+  //   - created_by NULL (históricos pre-Fase 1): creator = null → la UI omite
+  //     limpiamente la línea "Creado por".
+  //   - user_profiles no encuentra el id (usuario eliminado): degrada a
+  //     "Usuario desconocido", no rompe.
+  let creator: { full_name: string | null; email: string | null } | null = null
+  if ((data as any).created_by) {
+    const { data: prof } = await supabase
+      .from("user_profiles")
+      .select("full_name, email")
+      .eq("id", (data as any).created_by)
+      .maybeSingle()
+    if (prof) {
+      creator = { full_name: prof.full_name ?? null, email: prof.email ?? null }
+    } else {
+      creator = { full_name: "Usuario desconocido", email: null }
+    }
+  }
+
+  return { ...data, creator }
+}
+
+// -----------------------------------------------------------------------------
+// voidAdjustment — wrapper del RPC void_adjustment (Fase 1 ajustes).
+// Convive con deleteAdjustment(id) legacy (que hace DELETE físico y morirá
+// cuando la lista migre al nuevo flow). Este wrapper es exclusivamente para la
+// página de detalle app/inventory/adjustments/[adjustment_id].
+// -----------------------------------------------------------------------------
+export async function voidAdjustment(adjustment_id: string) {
+  await requireRole("admin", "encargado")
+  const supabase = await createServerSupabaseClient()
+  const { error } = await supabase.rpc("void_adjustment", {
+    p_adjustment_id: adjustment_id,
+  })
+  if (error) {
+    // Postgres 42883 = undefined_function. Aparece si el ambiente aún no tiene
+    // aplicada la migración de Fase 1 de ajustes. Mensaje amigable en vez del
+    // stacktrace de Supabase.
+    if ((error as any).code === "42883") {
+      return {
+        success: false,
+        message:
+          "La función de anular ajustes aún no está disponible en este ambiente. Contacta al administrador para aplicar la migración de Fase 1.",
+      }
+    }
+    return { success: false, message: error.message }
+  }
+  revalidatePath("/inventory/adjustments")
+  revalidatePath(`/inventory/adjustments/${adjustment_id}`)
+  return { success: true, message: "Ajuste anulado y stock revertido." }
 }
 
 export async function createAdjustment(input: {
@@ -1411,6 +1475,8 @@ export async function getCentralPurchases(opts?: { from?: string; to?: string })
   let query = supabase
     .from("inventory_adjustments")
     .select("adjustment_id, notes, adjustment_date, adjustment_items ( product_id, cost, quantity, products ( name, code, price ) )")
+    // TODO(fase-1-ajustes): agregar .eq("status", "active") cuando se aplique
+    // la migración 16. Antes de eso, el filtro rompe (columna inexistente).
     .ilike("notes", "%[Entrada]%")
     .order("adjustment_date", { ascending: false })
   if (opts?.from) query = query.gte("adjustment_date", opts.from)

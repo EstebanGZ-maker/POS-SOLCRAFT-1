@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { getCustomers, createCustomer, updateCustomer, deleteCustomer } from "@/lib/actions"
+import { normalizePhoneCO, PHONE_CO_ERROR } from "@/lib/validators/customer"
 import { PlusCircle, Pencil, Trash2 } from "lucide-react"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog"
 import { Label } from "@/components/ui/label"
@@ -14,10 +15,10 @@ import { Input } from "@/components/ui/input"
 import { useFormStatus } from "react-dom"
 import { toast } from "@/components/ui/use-toast"
 
-function SubmitButton({ children }: { children: React.ReactNode }) {
+function SubmitButton({ children, disabled }: { children: React.ReactNode; disabled?: boolean }) {
   const { pending } = useFormStatus()
   return (
-    <Button type="submit" disabled={pending}>
+    <Button type="submit" disabled={pending || disabled}>
       {pending ? "Saving..." : children}
     </Button>
   )
@@ -27,6 +28,8 @@ export default function CustomersPage() {
   const [customers, setCustomers] = useState<any[]>([])
   const [createDialogOpen, setCreateDialogOpen] = useState(false)
   const [editDialogOpen, setEditDialogOpen] = useState<{ [id: string]: boolean }>({})
+  const [createPhone, setCreatePhone] = useState("")
+  const createPhoneValid = /^3\d{9}$/.test(normalizePhoneCO(createPhone))
 
   useEffect(() => {
     getCustomers().then(setCustomers)
@@ -42,6 +45,7 @@ export default function CustomersPage() {
     if (result.success) {
       setCustomers(await getCustomers())
       setCreateDialogOpen(false)
+      setCreatePhone("")
     }
   }
 
@@ -80,7 +84,13 @@ export default function CustomersPage() {
           <h1 className="text-3xl font-bold tracking-tight">Customers</h1>
           <p className="text-muted-foreground">Manage your customer database.</p>
         </div>
-        <Dialog open={createDialogOpen} onOpenChange={setCreateDialogOpen}>
+        <Dialog
+          open={createDialogOpen}
+          onOpenChange={(open) => {
+            setCreateDialogOpen(open)
+            if (!open) setCreatePhone("")
+          }}
+        >
           <DialogTrigger asChild>
             <Button>
               <PlusCircle className="mr-2 h-4 w-4" />
@@ -106,12 +116,27 @@ export default function CustomersPage() {
               </div>
               <div className="grid grid-cols-4 items-center gap-4">
                 <Label htmlFor="phone" className="text-right">
-                  Phone
+                  Celular *
                 </Label>
-                <Input id="phone" name="phone" className="col-span-3" />
+                <div className="col-span-3 space-y-1">
+                  <Input
+                    id="phone"
+                    name="phone"
+                    type="tel"
+                    inputMode="numeric"
+                    placeholder="3001234567"
+                    value={createPhone}
+                    onChange={(e) => setCreatePhone(e.target.value)}
+                    required
+                    aria-invalid={createPhone.length > 0 && !createPhoneValid}
+                  />
+                  {createPhone.length > 0 && !createPhoneValid && (
+                    <p className="text-xs text-destructive">{PHONE_CO_ERROR}</p>
+                  )}
+                </div>
               </div>
               <DialogFooter>
-                <SubmitButton>Save Customer</SubmitButton>
+                <SubmitButton disabled={!createPhoneValid}>Save Customer</SubmitButton>
               </DialogFooter>
             </form>
           </DialogContent>

@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react"
 import useSWR from "swr"
+import Link from "next/link"
 import { Plus, Trash2 } from "lucide-react"
 import { PageHeader } from "@/components/page-header"
 import { Button } from "@/components/ui/button"
@@ -95,7 +96,14 @@ export default function AdjustmentsPage() {
             ) : (
               adjustments.map((a: any) => (
                 <TableRow key={a.adjustment_id}>
-                  <TableCell>{new Date(a.adjustment_date).toLocaleString("es-CO")}</TableCell>
+                  <TableCell>
+                    <Link
+                      href={`/inventory/adjustments/${a.adjustment_id}`}
+                      className="text-primary hover:underline"
+                    >
+                      {new Date(a.adjustment_date).toLocaleString("es-CO")}
+                    </Link>
+                  </TableCell>
                   <TableCell>
                     {a.warehouses?.sites?.name} - {a.warehouses?.name}
                   </TableCell>
@@ -127,14 +135,15 @@ export default function AdjustmentsPage() {
       <AlertDialog open={!!toDelete} onOpenChange={(o) => !o && setToDelete(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>¿Eliminar ajuste?</AlertDialogTitle>
+            <AlertDialogTitle>¿Anular ajuste?</AlertDialogTitle>
             <AlertDialogDescription>
-              Se revertirá el efecto de este ajuste sobre el stock de la bodega.
+              Se revertirá el efecto de este ajuste sobre el stock de la bodega. El
+              ajuste queda registrado como anulado (no se borra) para trazabilidad.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancelar</AlertDialogCancel>
-            <AlertDialogAction onClick={confirmDelete}>Eliminar</AlertDialogAction>
+            <AlertDialogAction onClick={confirmDelete}>Anular</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

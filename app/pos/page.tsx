@@ -114,6 +114,7 @@ export default function POSPage() {
   const [searchTerm, setSearchTerm] = useState("")
   const [activeCategories, setActiveCategories] = useState<string[]>([])
   const [loading, setLoading] = useState(true)
+  const [warehouseError, setWarehouseError] = useState<string | null>(null)
   const [processingSale, setProcessingSale] = useState(false)
   const [priceLists, setPriceLists] = useState<PriceListOption[]>([])
   const [priceMap, setPriceMap] = useState<Record<string, Record<string, number>>>({})
@@ -201,18 +202,37 @@ export default function POSPage() {
   }
 
   useEffect(() => {
+    // No dispares carga sin sede resuelta. useSite() aún bootstrapeando →
+    // loading queda en true (estado inicial) y se muestra "Cargando…".
+    if (!siteId) return
+
+    let cancelled = false
     async function init() {
       setLoading(true)
-      const whId = siteId ? await getWarehouseForSite(siteId) : null
+      setWarehouseError(null)
+      const whId = await getWarehouseForSite(siteId)
+      if (cancelled) return
+      if (!whId) {
+        // Vector latente: la sede no tiene warehouse is_primary=true.
+        // No caemos en un fallback numérico — bloqueamos el POS con mensaje.
+        setWarehouseError(
+          "Esta sede no tiene bodega asignada. Contacta al administrador para asignar una bodega principal antes de vender.",
+        )
+        setWarehouseId(null)
+        setLoading(false)
+        return
+      }
       setWarehouseId(whId)
       const [, customersData] = await Promise.all([
         refreshShift(siteId),
         refreshData(whId),
       ])
+      if (cancelled) return
       const [plData, promoData] = await Promise.all([
         getPriceListsForPOS(),
         getActivePromotionsForPOS(siteId),
       ])
+      if (cancelled) return
       setPriceLists(plData.lists)
       setPriceMap(plData.priceMap)
       setPromoMap(promoData.promoMap)
@@ -227,6 +247,12 @@ export default function POSPage() {
       setLoading(false)
     }
     init()
+    return () => {
+      // Guarda anti stale-closure: si el effect se re-ejecuta (cambio de sede)
+      // antes de que el run anterior termine sus awaits, marcamos cancelled
+      // para que ese run no sobreescriba estado con datos de la sede vieja.
+      cancelled = true
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [siteId])
 
@@ -487,6 +513,17 @@ export default function POSPage() {
     return (
       <div className="flex h-64 items-center justify-center">
         <p className="text-muted-foreground">Cargando punto de venta...</p>
+      </div>
+    )
+  }
+
+  if (warehouseError) {
+    return (
+      <div className="flex h-64 flex-col items-center justify-center gap-2 px-6 text-center">
+        <p className="text-lg font-semibold text-destructive">
+          No se puede iniciar el punto de venta
+        </p>
+        <p className="max-w-md text-sm text-muted-foreground">{warehouseError}</p>
       </div>
     )
   }

@@ -156,6 +156,13 @@ body {
     letter-spacing: -0.02em;
   }
 
+  /* En la tienda pública, .font-display usa Cinzel (definido en
+     app/catalog/layout.tsx). El POS interno mantiene Inter. */
+  .catalog-theme .font-display {
+    font-family: var(--font-cinzel), Georgia, serif;
+    letter-spacing: 0.02em;
+  }
+
   /* Resplandor dorado para CTAs y elementos destacados */
   .glow-gold {
     box-shadow: 0 8px 30px -8px hsl(var(--gold-mid) / 0.55);
@@ -202,8 +209,33 @@ body {
   }
 }
 
+@layer utilities {
+  .hero-title {
+    animation: hero-title-in 900ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+    transform-origin: 50% 60%;
+  }
+  @keyframes hero-title-in {
+    0% {
+      opacity: 0;
+      transform: translate3d(0, 28px, 0) scale(0.94);
+      letter-spacing: 0.18em;
+    }
+    60% {
+      opacity: 1;
+    }
+    100% {
+      opacity: 1;
+      transform: translate3d(0, 0, 0) scale(1);
+      letter-spacing: normal;
+    }
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .shimmer-gold {
+    animation: none;
+  }
+  .hero-title {
     animation: none;
   }
 }

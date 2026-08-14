@@ -1,7 +1,7 @@
 "use client"
 
 /**
- * Diamante 3D con Three.js — versión SOLCRAFT.
+ * Diamante 3D con Three.js — versión Taiwy.
  *
  * Portado del motor original (talla brillante Lathe + PMREM env map +
  * shader de destellos) quitando el logo TAIWY hardcodeado.

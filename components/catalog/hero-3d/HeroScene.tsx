@@ -7,6 +7,7 @@ import { Diamond, DiamondGLB } from "./Diamond"
 import { Lights } from "./Lights"
 import { HeroEnvironment } from "./Environment"
 import { Particles } from "./Particles"
+import { BackgroundLogo } from "./BackgroundLogo"
 import { CameraRig } from "./CameraRig"
 import { Effects } from "./Effects"
 import { useClickPulse } from "@/hooks/useClickPulse"
@@ -52,7 +53,7 @@ export function HeroScene({ scrollContainer, useGLB = false }: Props) {
 
   // DPR conservador en móvil
   const dpr: [number, number] =
-    typeof window !== "undefined" && window.innerWidth < 640 ? [1, 1.25] : [1, 1.75]
+    typeof window !== "undefined" && window.innerWidth < 640 ? [1, 1] : [1, 1.75]
 
   return (
     <div
@@ -89,6 +90,7 @@ export function HeroScene({ scrollContainer, useGLB = false }: Props) {
         <Suspense fallback={null}>
           <HeroEnvironment />
           <Lights />
+          <BackgroundLogo />
           <Particles />
           {useGLB ? (
             <DiamondGLB onClickPulse={pulse.trigger} pulse={pulse} />
