@@ -28,7 +28,7 @@ import {
 } from "@/components/ui/alert-dialog"
 import { toast } from "@/components/ui/use-toast"
 import { formatCurrency } from "@/lib/utils"
-import { getAdjustments, deleteAdjustment, getProductsWithStock } from "@/lib/inventory-actions"
+import { getAdjustments, voidAdjustment, getProductsWithStock } from "@/lib/inventory-actions"
 import { getSitesWithWarehouses } from "@/lib/site-actions"
 import { AdjustmentDialog } from "@/components/inventory/adjustment-dialog"
 
@@ -50,7 +50,7 @@ export default function AdjustmentsPage() {
 
   const confirmDelete = async () => {
     if (!toDelete) return
-    const res = await deleteAdjustment(toDelete.adjustment_id)
+    const res = await voidAdjustment(toDelete.adjustment_id)
     if (res.success) toast({ title: "Listo", description: res.message })
     else toast({ title: "Error", description: res.message, variant: "destructive" })
     setToDelete(null)

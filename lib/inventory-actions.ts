@@ -356,9 +356,7 @@ export async function getAdjustments() {
   const { data, error } = await supabase
     .from("inventory_adjustments")
     .select("*, warehouses ( name, sites ( name ) ), adjustment_items ( adjustment_item_id )")
-    // TODO(fase-1-ajustes): agregar .eq("status", "active") cuando se aplique
-    // la migración 16 que crea la columna. Antes de eso, el filtro rompe con
-    // "column status does not exist" en cualquier ambiente sin Fase 1.
+    .eq("status", "active")
     .order("adjustment_date", { ascending: false })
   if (error) {
     console.error("Error fetching adjustments:", error)
@@ -403,12 +401,7 @@ export async function getAdjustmentById(adjustment_id: string) {
   return { ...data, creator }
 }
 
-// -----------------------------------------------------------------------------
 // voidAdjustment — wrapper del RPC void_adjustment (Fase 1 ajustes).
-// Convive con deleteAdjustment(id) legacy (que hace DELETE físico y morirá
-// cuando la lista migre al nuevo flow). Este wrapper es exclusivamente para la
-// página de detalle app/inventory/adjustments/[adjustment_id].
-// -----------------------------------------------------------------------------
 export async function voidAdjustment(adjustment_id: string) {
   await requireRole("admin", "encargado")
   const supabase = await createServerSupabaseClient()
@@ -485,42 +478,6 @@ export async function createAdjustment(input: {
   revalidatePath("/inventory/adjustments")
   revalidatePath("/inventory/products")
   return { success: true, message: "Ajuste creado correctamente." }
-}
-
-export async function deleteAdjustment(adjustment_id: string) {
-  await requireRole("admin", "encargado")
-  const supabase = await createServerSupabaseClient()
-  const profile = await getUserProfile()
-  const { data: adj } = await supabase
-    .from("inventory_adjustments")
-    .select("warehouse_id, adjustment_items ( product_id, objective, quantity )")
-    .eq("adjustment_id", adjustment_id)
-    .single()
-  if (adj) {
-    const revertResults = await Promise.all(
-      ((adj as any).adjustment_items || []).map((it: any) =>
-        supabase.rpc("adjust_warehouse_stock", {
-          p_product_id: it.product_id,
-          p_warehouse_id: (adj as any).warehouse_id,
-          p_delta: it.objective === "incrementar" ? -it.quantity : it.quantity,
-          p_movement_type: "ajuste",
-          p_reference_type: "adjustment",
-          p_reference_id: adjustment_id,
-          p_user_id: profile?.id ?? null,
-          p_notes: "Reversión por eliminación de ajuste",
-        }),
-      ),
-    )
-    const revertErr = revertResults.find((r) => r.error)
-    if (revertErr?.error) {
-      return { success: false, message: revertErr.error.message }
-    }
-  }
-  const { error } = await supabase.from("inventory_adjustments").delete().eq("adjustment_id", adjustment_id)
-  if (error) return { success: false, message: error.message }
-  revalidatePath("/inventory/adjustments")
-  revalidatePath("/inventory/products")
-  return { success: true, message: "Ajuste eliminado y stock revertido." }
 }
 
 // ============ TRANSFERS (envíos) ============
@@ -1475,8 +1432,7 @@ export async function getCentralPurchases(opts?: { from?: string; to?: string })
   let query = supabase
     .from("inventory_adjustments")
     .select("adjustment_id, notes, adjustment_date, adjustment_items ( product_id, cost, quantity, products ( name, code, price ) )")
-    // TODO(fase-1-ajustes): agregar .eq("status", "active") cuando se aplique
-    // la migración 16. Antes de eso, el filtro rompe (columna inexistente).
+    .eq("status", "active")
     .ilike("notes", "%[Entrada]%")
     .order("adjustment_date", { ascending: false })
   if (opts?.from) query = query.gte("adjustment_date", opts.from)
