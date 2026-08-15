@@ -112,7 +112,7 @@ export function CloseShiftDialog({
         </div>
 
         <div className="flex items-center justify-between border-b pb-3">
-          <span className="text-base font-semibold">Total de ventas</span>
+          <span className="text-base font-semibold">Total recibido en el turno</span>
           <span className="text-base font-semibold">{formatCurrency(balance.total_sales)}</span>
         </div>
 
@@ -126,7 +126,7 @@ export function CloseShiftDialog({
           <Row label="Devolución de dinero" value={balance.refunds} negative={balance.refunds > 0} />
           <Row label="Ingresos en efectivo" value={balance.cash_in} />
           <Row label="Retiros de efectivo" value={balance.cash_out} negative={balance.cash_out > 0} />
-          <Row label="Total de movimientos" value={balance.total_movements} bold />
+          <Row label="Total recibido" value={balance.total_movements} bold />
         </div>
 
         <div className="flex items-center justify-between rounded-md bg-muted/50 px-3 py-3">

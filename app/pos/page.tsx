@@ -559,7 +559,7 @@ export default function POSPage() {
                 Turno abierto
               </span>
               <span className="text-xs text-muted-foreground">
-                Ventas hoy: <span className="font-semibold text-foreground">{formatCurrency(shift.total_sales)}</span>
+                Recibido hoy: <span className="font-semibold text-foreground">{formatCurrency(shift.total_sales)}</span>
               </span>
               <span className="hidden text-xs text-muted-foreground sm:inline">
                 Efectivo: <span className="font-medium text-foreground">{formatCurrency(shift.cash_sales)}</span>

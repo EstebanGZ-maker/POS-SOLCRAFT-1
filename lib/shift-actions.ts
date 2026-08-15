@@ -72,18 +72,24 @@ async function fetchShiftBalance(supabase: any, shift: any): Promise<ShiftBalanc
   }
   const initial = Number(rpc.initial_cash) || 0
   const cash = Number(rpc.cash_in_shift) || 0
+  const nonCash = Number(rpc.non_cash_in_shift) || 0
   const cashIn = Number(rpc.cash_movements_income) || 0
   const cashOut = Number(rpc.cash_movements_expense) || 0
   const refunds = Number(rpc.cash_movements_refund) || 0
   const expected = Number(rpc.expected_cash) || 0
 
-  // 2. Total facturado + conteo — filtrando active (cierra M12 en la vista en vivo).
-  const { data: sales } = await supabase
+  // Total del turno = lo REALMENTE recibido (cash + non-cash de sale_payments).
+  // NO usar SUM(sales.total_amount): incluye el saldo no cobrado de ventas
+  // a crédito, inflando la métrica del turno. Mismo bug D8 que se corrigió
+  // para el cash en Fase 1 crédito.
+  const total = cash + nonCash
+
+  // Conteo de ventas del turno (solo para "N ventas" — no para monto).
+  const { count: salesCount } = await supabase
     .from("sales")
-    .select("total_amount")
+    .select("sale_id", { count: "exact", head: true })
     .eq("shift_id", shift.shift_id)
     .eq("status", "active")
-  const total = (sales || []).reduce((s: number, r: any) => s + (Number(r.total_amount) || 0), 0)
 
   // 3. Buckets no-cash desde sale_payments (fuente correcta) — el método REAL
   //    del pago, no el label 'crédito' del header. Cash ya vino del RPC.
@@ -131,7 +137,7 @@ async function fetchShiftBalance(supabase: any, shift: any): Promise<ShiftBalanc
     credit_sales: credit,
     transfer_sales: transfer,
     other_sales: other,
-    sales_count: (sales || []).length,
+    sales_count: salesCount ?? 0,
     cash_in: cashIn,
     cash_out: cashOut,
     refunds,
