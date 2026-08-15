@@ -8,12 +8,22 @@
 
 ## 0. LEE ESTO PRIMERO — estado tras sesión 2026-08-15
 
-### ✅ CERRADO — Ajustes Fase 1 (scripts/16)
-Aplicado a prod (`nxszaxwsrtlofqimbfig`) vía `apply_migration` en la sesión
-2026-08-15. Baseline kardex pre-apply: 0 violaciones; post-apply: 0
-violaciones — invariante `SUM(stock_movements) = product_stock` intacto.
-Validado previamente en branch `credit-sales-phase1-validation`
-(`oxramdmsllprpxbhkhmi`) con T1..T8 OK del script 16_validation_phase1.sql.
+### ✅ CERRADO Y DEPLOYED — Ajustes Fase 1 (scripts/16)
+- **BD**: aplicado a prod (`nxszaxwsrtlofqimbfig`) vía `apply_migration` en
+  la sesión 2026-08-15. Baseline kardex pre-apply: 0 violaciones; post-apply:
+  0 violaciones — invariante `SUM(stock_movements) = product_stock` intacto.
+- **Código**: mergeado a main en commit `af31a01` (merge --no-ff de
+  `s2-adjustments-phase1` con commit interno `231838d`).
+- **Vercel prod**: deploy `dpl_48wp7r2XHp4iRcepGBVCscBDR1sS` READY en 47s
+  el 2026-08-15. Alias `pos-solcraft-1.vercel.app` sirviendo el nuevo build.
+  Runtime logs limpios (0 errors/warnings/fatals últimos 30 min).
+- **Smoke post-deploy prod**: `GET /api/wompi/webhook` → HTTP 200
+  `{"ok":true,"configured":false,"endpoint":"wompi/webhook"}` (mismo estado
+  que pre-merge — Wompi no tocado, sin regresión colateral).
+- Validado previamente en branch `credit-sales-phase1-validation`
+  (`oxramdmsllprpxbhkhmi`) con T1..T8 OK del script 16_validation_phase1.sql,
+  y en Vercel preview del branch antes del merge (crear/anular ajuste +
+  lista refleja status OK).
 
 Cambios en el mismo commit atómico:
 - `lib/inventory-actions.ts`: re-agregado `.eq("status","active")` en
