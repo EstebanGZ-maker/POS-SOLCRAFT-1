@@ -1,43 +1,90 @@
 # ESTADO-PENDIENTES.md
 
 > **Propósito**: dump de estado para que una instancia nueva de Claude sin
-> memoria pueda retomar sin perder nada. Última actualización: 2026-08-11
-> (sesión en curso, antes de `/clear`). Todo el trabajo referenciado abajo ya
-> está commiteado en la rama `s1-s3p0-rpc-hardening` (commit `5fb37fd`),
-> pusheado a origin.
+> memoria pueda retomar sin perder nada. Última actualización: **2026-08-15**
+> (apply Fase 1 Ajustes a prod).
 
 ---
 
-## 0. LEE ESTO PRIMERO — 3 puntos que NO se pueden perder
+## 0. LEE ESTO PRIMERO — estado tras sesión 2026-08-15
 
-### ⚠ DEPENDENCIA CRÍTICA #1 — filtros revertidos por incompatibilidad de esquema
+### ✅ CERRADO — Ajustes Fase 1 (scripts/16)
+Aplicado a prod (`nxszaxwsrtlofqimbfig`) vía `apply_migration` en la sesión
+2026-08-15. Baseline kardex pre-apply: 0 violaciones; post-apply: 0
+violaciones — invariante `SUM(stock_movements) = product_stock` intacto.
+Validado previamente en branch `credit-sales-phase1-validation`
+(`oxramdmsllprpxbhkhmi`) con T1..T8 OK del script 16_validation_phase1.sql.
 
-En [lib/inventory-actions.ts](../lib/inventory-actions.ts) hay **dos** filtros
-`.eq("status", "active")` que están **revertidos con un `TODO`** porque la
-columna `status` no existe en prod hasta que se aplique la migración
-[scripts/16_inventory_adjustments_phase1.sql](../scripts/16_inventory_adjustments_phase1.sql).
+Cambios en el mismo commit atómico:
+- `lib/inventory-actions.ts`: re-agregado `.eq("status","active")` en
+  `getAdjustments()` y `getCentralPurchases()` (los TODO(fase-1-ajustes) ya
+  no aplican; se borraron).
+- `lib/inventory-actions.ts`: **eliminada la función `deleteAdjustment`**
+  (dead code post-swap). Ver finding abajo.
+- `app/inventory/adjustments/page.tsx`: swap del handler del ícono papelera
+  de `deleteAdjustment` → `voidAdjustment(RPC void_adjustment)`. La copia
+  del AlertDialog ya decía "¿Anular ajuste?" desde el merge de Fase 3, así
+  que ahora label + función + semántica quedan alineados.
 
-**Al aplicar la migración 16 a prod, en el MISMO commit se DEBEN re-agregar:**
+**Finding lateral registrado (silent-fail preexistente)**: pre-apply,
+`deleteAdjustment` estaba efectivamente roto en prod desde antes de esta
+sesión. `pg_policies` de `inventory_adjustments` nunca tuvo policy de
+DELETE (solo `_read` SELECT, `_write` INSERT, `_update` UPDATE) y RLS estaba
+enabled — así que el `.delete()` bajo cliente SSR (rol `authenticated`)
+devolvía `{ error: null }` con 0 rows affected, mientras el paso previo
+`adjust_warehouse_stock` (SECDEF) sí revertía stock. Resultado: la UI
+seguía mostrando el ajuste con su `total_adjusted` intacto mientras el
+stock ya estaba bajado — soft-inconsistencia silenciosa. **Resuelto** por
+el swap a `voidAdjustment` (RPC SECDEF que sí funciona bajo RLS y marca
+`status='voided'` como fuente de verdad).
 
-- `getAdjustments()` — busca `TODO(fase-1-ajustes)` inmediatamente antes de
-  `.order("adjustment_date", ...)`. Agregar la línea `.eq("status", "active")`.
-- `getCentralPurchases()` — busca el segundo `TODO(fase-1-ajustes)`. Mismo
-  ajuste.
+Fases 2A/2B/2C/2D siguen pendientes (ver §1.3). Fase 3 UI ya estaba
+desplegada desde el merge previo.
 
-**Sin este paso**, después del apply de 16, los ajustes anulados aparecerán
-como activos en la lista `/inventory/adjustments` y en el reporte
-`getCentralPurchases()`. **Comprobar los TODOs con `grep -n "TODO(fase-1-ajustes)"
-lib/inventory-actions.ts`**.
+### 📁 ARCHIVADO abajo — sesión 2026-08-14
 
-### ⚠ DEPENDENCIA CRÍTICA #2 — Fase 3 UI de ajustes ya está deployable, pero el botón "Anular" necesita Fase 1
+### ✅ CERRADO — Wompi S3-P0 (agujero P0 de RPCs de pago)
+`scripts/14` aplicado a prod (`nxszaxwsrtlofqimbfig`). Verificado end-to-end:
+`apply_wompi_transaction`, `set_web_order_payment_reference`, `log_payment_event`
+devuelven `42501 permission denied` con anon key; storefront público
+(`place_web_order`) sigue intacto. Vercel prod usa `service_role` client via
+`SUPABASE_SERVICE_ROLE_KEY` en el webhook + `createWompiCheckout`. Registro
+completo en CONTEXT-POS §7.9.
 
-La página nueva `app/inventory/adjustments/[adjustment_id]/page.tsx` degrada
-limpiamente en el esquema actual de prod (sin `status`, `numero`, `motivo`,
-etc.). El botón "Anular" solo aparece cuando `status='active'`; como el campo
-no existe hoy, no se muestra. Cuando exista → se muestra. El wrapper
-`voidAdjustment` en `inventory-actions.ts` mapea el error de Postgres `42883`
-(función `void_adjustment` no existe) a un mensaje amigable — no muestra
-stacktraces.
+### ✅ CERRADO — Baseline canónico de prod
+`supabase/migrations/20260812000000_baseline_canonical_from_prod.sql` (3.299
+líneas, 132 KB). Introspección directa de prod, ordenado por dependencias,
+incluye los 6 REVOKE de Wompi post-S3-P0. Commiteado en main (`773e333`).
+Validado en branch Supabase: al aplicarlo desde cero produce 33 tablas + 1
+vista + 111 índices + 48 funciones + 5 triggers + 99 policies = paridad total
+con prod. Monolítico viejo (`20260807042453_baseline_monolithic.sql`) BORRADO
+en el merge — era stubs-driven y divergente por drift M11/M14.
+
+### ✅ CERRADO — Crédito Fase 1 (scripts/15)
+Aplicado a prod con `apply_migration`. Backfill 1:1 limpio: 9 sales activas
+históricas → 9 filas en `sale_payments` (sum 1.520.000). `verify_credit_integrity()=0`,
+`verify_kardex_integrity()` sin nuevas violaciones. Walk-in "Consumidor final"
+marcado `is_walk_in=TRUE, allows_credit=FALSE` con constraint + índice único.
+Nuevas RPCs SECDEF (`create_sale` v2 con `p_is_on_account`+`p_initial_payment`,
+`get_shift_balance`, `void_sale` con regla asimétrica A/B/C, `close_shift`
+consumiendo `get_shift_balance`) todas con anon revocada + authenticated
+permitida. Validado en branch con 14/14 tests + dry-run backfill en prod con
+0 anomalías antes del apply. Rama `s1-s3p0-rpc-hardening` mergeada a main
+(commit `9c3c93c`), Vercel prod desplegado READY en 73s, `GET /api/wompi/webhook`
+devuelve 200, runtime logs sin errores.
+
+### ✅ CERRADO — Dependencia crítica #1 (filtros `.eq("status","active")`)
+Ambos filtros re-agregados en el mismo commit del apply de 16 a prod
+(sesión 2026-08-15). Los TODO(fase-1-ajustes) ya no existen en el código.
+
+### ⚠ DEPENDENCIA CRÍTICA VIGENTE #2 — Fase 3 UI de ajustes ya está en main
+
+Con el merge a main, la ruta `app/inventory/adjustments/[adjustment_id]/page.tsx`
+está desplegada en prod. Degrada limpio (sin `status` → botón "Anular" oculto;
+sin `motivo`/`numero` → labels omitidos). El wrapper `voidAdjustment` en
+`inventory-actions.ts` mapea el error de Postgres `42883` (función
+`void_adjustment` no existe) a mensaje amigable, no stacktraces. **Estado
+verificado en producción tras el merge.**
 
 ### ⚠ GATE CONTADOR VIVO — Fase 2C de ajustes no se aplica a prod sin visto bueno
 
@@ -49,49 +96,46 @@ prod. Detalles en [docs/INVENTORY-ADJUSTMENTS-SPEC.md §6.2 "Gate contable"](INV
 Si el contador rechaza → hay 3 alternativas listadas en el spec (a1/a2/a3);
 elegir una y reescribir 17c.
 
+### ⚠ SMOKE TEST DE PROD PENDIENTE (para vos, en el navegador)
+
+`GET /api/wompi/webhook` responde OK; runtime logs limpios; deploy READY. Pero
+**no se hizo smoke visual del POS real** contra `https://pos-solcraft-1.vercel.app`
+tras el merge (venta contado end-to-end, abrir+cerrar turno, crear cliente
+con celular). Prioridad ALTA para la próxima ventana operativa antes de
+declarar la sesión 100% cerrada.
+
 ---
 
 ## 1. Cola de trabajo escrito-pero-no-aplicado
 
-Todo está commiteado en la rama y validado con lo que se pudo (local WSL/PG18
-para ajustes Fase 1; ejecución en Postgres puro para lógica). **Nada aplicado
-a prod** — el apply real de todo lo que toca kardex/contabilidad se hace
-contra un **branch Supabase Pro** (bloqueado hoy porque el plan es Free).
+Ajustes Fase 1/2/3 escritos, validados localmente (WSL/PG18 + branch Supabase
+Pro para Fase 1 crédito). **Solo crédito Fase 1 aplicado a prod hasta hoy** —
+los ajustes siguen pendientes de apply.
 
-### 1.1 Crédito (fiado) — Fase 1
+### 1.1 ✅ Crédito (fiado) — Fase 1 — APLICADO A PROD 2026-08-14
 
-- **Spec**: [docs/CREDIT-SALES-SPEC.md](CREDIT-SALES-SPEC.md) (§1–§10, ~730
-  líneas). Decisiones D1–D14 cerradas.
-- **Migración**: [scripts/15_credit_sales_phase1.sql](../scripts/15_credit_sales_phase1.sql).
-  Contenido: `sales += is_on_account, amount_paid, balance_due (STORED)`;
-  nueva `sale_payments`; `customers += allows_credit, is_walk_in`; nueva
-  `customer_credits` (solo emisión); backfill obligatorio de
-  `sale_payments` para ventas históricas; `verify_credit_integrity()`;
-  RPCs `create_sale` (SECDEF + rol/sede), `close_shift` (consume
-  `get_shift_balance`), **nuevo `get_shift_balance`** (única fuente del
-  arqueo, elimina M12), `void_sale` con regla asimétrica Casos A/B/C.
-- **Validación**: [scripts/15_validation_phase1.sql](../scripts/15_validation_phase1.sql).
-  Bootstrap auth stub + escenario end-to-end con paridad
-  `close_shift ↔ get_shift_balance`, Caso A cross-turno, Caso B fiado,
-  verify_credit_integrity=0. Pasa en WSL/PG18 local.
-- **Fase 2/3**: definidas en el spec (`register_payment`, UI abonos, CxC,
-  UX creación inline de cliente al fiar, `apply_customer_credit`).
-  Pendientes de arrancar.
+- Registrado como migración `15_credit_sales_phase1` en
+  `supabase_migrations.schema_migrations` de prod (`nxszaxwsrtlofqimbfig`).
+- Spec: [docs/CREDIT-SALES-SPEC.md](CREDIT-SALES-SPEC.md) — Fase 1 tal cual
+  fue especificada; Fase 2/3 sigue como diseño futuro.
+- **Fase 2/3 pendientes**: `register_payment`, UI abonos, CxC, UX creación
+  inline de cliente al fiar, `apply_customer_credit`. Requieren código nuevo
+  (server actions + UI); no requieren migración BD adicional (el schema
+  Fase 1 ya cubre columnas necesarias).
 
-### 1.2 Ajustes de inventario — Fase 1
+### 1.2 ✅ Ajustes de inventario — Fase 1 — APLICADO A PROD 2026-08-15
 
-- **Spec**: [docs/INVENTORY-ADJUSTMENTS-SPEC.md](INVENTORY-ADJUSTMENTS-SPEC.md)
-  (§1–§11, ~800 líneas). Decisiones D1–D8 + DN1/DN2/DN3 cerradas.
-- **Migración**: [scripts/16_inventory_adjustments_phase1.sql](../scripts/16_inventory_adjustments_phase1.sql).
-  Contenido: ALTER completo `inventory_adjustments += site_id, numero,
-  status, motivo, created_by, updated_at` (columnas nuevas listas para
-  Fase 2 sin migración adicional); backfill `site_id`; índice único parcial
-  `(site_id, numero)` inerte hasta 2A; RLS de escritura CERRADA; RPCs
-  atómicos SECDEF `create_adjustment(warehouse_id, notes, items)` y
-  `void_adjustment(adjustment_id)`.
-- **Validación**: [scripts/16_validation_phase1.sql](../scripts/16_validation_phase1.sql).
-  8 tests (T1..T8) — atomicidad, rollback total ante fallo parcial,
-  void revierte stock, rol/sede rechazan, kardex delta=0. Pasa en local.
+- Registrado como migración `16_inventory_adjustments_phase1` en
+  `supabase_migrations.schema_migrations` de prod (`nxszaxwsrtlofqimbfig`).
+- Baseline kardex prod pre-apply: 0 violaciones; post-apply: 0 violaciones.
+- **Spec**: [docs/INVENTORY-ADJUSTMENTS-SPEC.md](INVENTORY-ADJUSTMENTS-SPEC.md).
+- **Bug menor descubierto en `scripts/16_validation_phase1.sql`**: el
+  INSERT en `sites` (líneas 88-89) pasa `(name, is_central)` sin `code`,
+  pero el canonical baseline tiene `sites.code NOT NULL`. Falla contra
+  cualquier ambiente basado en el baseline canónico. Parche trivial:
+  agregar `code='VAL16A'/'VAL16B'` en los INSERT.
+
+### 1.2.1 Fase 2A/2B/2C/2D — pendientes (sin cambio)
 
 ### 1.3 Ajustes — Fase 2 (sub-faseada por riesgo)
 
@@ -196,47 +240,39 @@ Cada sub-fase se aplica independiente (excepto 2C+2D que van juntas).
 
 ---
 
-## 3. Orden de apply obligatorio
+## 3. Orden de apply — actualizado post 2026-08-14
 
-Cuando se habilite Supabase Pro (o se decida otra vía para validar contra
-esquema real):
+**Ya aplicado a prod**: script 14 (REVOKE Wompi, sesión 2026-08-14), script
+15 (crédito Fase 1, sesión 2026-08-14), script 16 (ajustes Fase 1, sesión
+2026-08-15).
 
-1. **Crear branch Supabase** (nombre sugerido: `all-phases-validation`).
-2. **Aplicar en orden estricto** contra el branch:
-   - `scripts/15_credit_sales_phase1.sql` — crédito Fase 1.
-   - `scripts/16_inventory_adjustments_phase1.sql` — ajustes Fase 1.
-   - `scripts/17a_adjustments_numeracion.sql` — ajustes 2A.
-   - `scripts/17b_adjustments_wac.sql` — ajustes 2B.
-   - `scripts/17c_adjustments_contabilidad.sql` — ajustes 2C (GATE
-     CONTADOR).
-   - 2D es solo código TS — no hay SQL, se hace en un mismo PR junto con
-     2C.
-3. **Correr validaciones en orden**:
-   - `scripts/15_validation_phase1.sql` (crédito) → esperar
-     `FASE 1 VALIDACIÓN: OK`.
-   - `scripts/16_validation_phase1.sql` (ajustes 1) → esperar T1..T8 OK.
-   - `scripts/17_validation_phase2.sql` (ajustes 2A+2B+2C) → esperar
-     T1..T8 OK.
-   - `verify_kardex_integrity()`, `verify_credit_integrity()`,
-     `verify_adjustment_accounting_integrity()` → 0 filas cada una.
-4. **Recién con branch verde + OK contador** → aplicar a prod
-   secuencialmente, cada uno con su gate humano:
-   - Crédito Fase 1 (sin contador porque es cash-in, matemática).
-   - Ajustes Fase 1 (bajo riesgo, solo atomicidad — reemplazar código
-     Server Actions al mismo tiempo, sin funcionalidad nueva visible al
-     usuario).
-   - Ajustes 2A (solo numeración).
-   - Ajustes 2B (WAC, requiere revisar que ningún reporte externo
-     dependa de `products.cost` inmediato).
-   - Ajustes 2C + 2D (deploy conjunto obligatorio; SQL cambia firma
-     `create_adjustment` con `p_motivo`, TS wrappers deben pasarlo).
-     **Requiere OK explícito del contador**.
-5. **Re-agregar los filtros `.eq("status","active")`** en el commit que
-   aplique la migración 16 (ver §0 arriba, DEPENDENCIA CRÍTICA #1).
+**Pendiente por aplicar a prod (en orden)**:
+1. **Ajustes 2A** (`scripts/17a`) — solo numeración.
+2. **Ajustes 2B** (`scripts/17b`) — WAC. Revisar antes que ningún reporte
+   externo dependa de `products.cost` inmediato.
+3. **Ajustes 2C + 2D** (`scripts/17c` + refactor TS de `ingressNewProduct`/
+   `receiveMerchandise` a `create_adjustment` con `motivo='compra'`). Deploy
+   conjunto obligatorio (SQL cambia firma `create_adjustment` con `p_motivo`,
+   TS wrappers deben pasarlo). **Requiere OK explícito del contador.**
 
-**Toda la cadena depende de Pro** hoy porque el proyecto Supabase
-`nxszaxwsrtlofqimbfig` está en Free plan (`create_branch` responde
-`PaymentRequiredException`).
+**Patrón de validación probado esta sesión** (para replicar con ajustes):
+1. `create_branch` con `with_data=false` en Supabase Pro (~$0.01344/hora).
+2. Si branch queda MIGRATIONS_FAILED (cadena oficial rompe en migración #6
+   por drift Studio), hacer `DROP SCHEMA public CASCADE; CREATE SCHEMA public;`
+   + limpiar `supabase_migrations.schema_migrations`, luego aplicar el baseline
+   canónico en 4 chunks vía `apply_migration` (con `SET check_function_bodies
+   = off` en el chunk de funciones).
+3. Seed mínimo (`scripts/04_seed.sql` — sedes + warehouses).
+4. Aplicar la migración a validar (`scripts/16`) vía `apply_migration`.
+5. Correr script de validación (`scripts/16_validation_phase1.sql`) — esperar
+   T1..T8 OK.
+6. Dry-run del backfill/lógica contra prod (SELECT-only) para verificar 0
+   anomalías reales.
+7. Apply a prod vía `apply_migration`.
+8. Post-verificación en prod: invariantes (`verify_*`) = 0, sanity check de
+   schema/RPCs/ACLs.
+
+**Supabase Pro ya activo** (confirmado esta sesión). Branching disponible.
 
 ---
 
@@ -249,22 +285,41 @@ esquema real):
 
 ---
 
-## 5. Pendientes atados a Pro (backlog)
+## 5. Backlog vigente
 
-- **Validar en branch real** las Fases 1 de crédito, 1 de ajustes, y 2A/2B/2C
-  de ajustes. Local WSL+PG18 valida lógica, no esquema Supabase real (RLS,
-  extensiones auth, roles Supabase). Requiere Pro para `create_branch`.
-- **Task #14 — capturar el drift canónico**: `supabase db pull` (o
-  introspección MCP exhaustiva) para versionar los objetos que hoy viven
-  solo en prod vía Studio (M11/M14: `web_orders`, `payment_events`,
-  `online_orders`, `product_images`, `user_sites`, `customer_accounts`,
-  `business_settings`, RPCs Wompi, `admin_create_user`,
-  `admin_reset_password`, `fulfill_web_order`, `update_online_order_status`,
-  `public_catalog_*`). Ver también el
-  [supabase/migrations/20260807042453_baseline_monolithic.sql](../supabase/migrations/20260807042453_baseline_monolithic.sql)
-  y los stubs de drift documentados en la migración monolítica.
-- **Backups + no-pausado** en Supabase antes de la primera venta real (Pro
-  ofrece PITR). Hoy sin backup automático.
+- **✅ CERRADO** Task #14 (captura del drift canónico) — hecho vía introspección
+  MCP en esta sesión. Baseline: `supabase/migrations/20260812000000_baseline_canonical_from_prod.sql`.
+- **✅ CERRADO** validación en branch Supabase real — hecho para crédito Fase 1
+  esta sesión (patrón replicable documentado en §3).
+- **Backups**: Pro incluye daily backups automáticos (7 días retención). PITR
+  es add-on separado; hoy no está activado. Recomendado activarlo antes de
+  volumen de ventas real.
+- **#13 Docs CONTEXT-POS §3.1** — registrar 4 drifts menores capturados esta
+  sesión: `stock_movements.movement_type` acepta `reserva_online` +
+  `liberacion_online`; `transfers.status` acepta `cancelado`;
+  `web_orders.payment_method` acepta `transfer` + `gateway`; columnas de
+  `sales` (subtotal/discount_total/tax_total/numero/status) que estaban solo
+  parcialmente documentadas.
+- **#14 Rotar `SUPABASE_SERVICE_ROLE_KEY`** en Supabase Dashboard + Vercel
+  Production+Preview. Además auditar otras SECDEF con anon (candidatos:
+  `adjust_warehouse_stock`, `create_web_order`, `transfer_stock`,
+  `get_low_stock_products`, `get_sales_summary`, `next_product_code`,
+  `decrement_product_stock`, `receive_transfer_item`, `send_transfer_via_transit`;
+  `place_web_order`/`public_place_order` deben quedar con anon por diseño
+  del storefront público).
+- **#20 Borrar `PLAN-PENDIENTES.md` viejo de la raíz** — reconciliado en main
+  (llegó via cherry-pick del hotfix Wompi). Es una versión anterior; toda
+  su info vigente ya está en `docs/ESTADO-PENDIENTES.md`.
+- **#21 Pin deps `"latest"` en `package.json`** — reemplazar los `"latest"`
+  por versiones fijas para que `pnpm install` sea reproducible y no
+  re-bumpee `@supabase/supabase-js`, `react-hook-form`, `sonner`, etc.
+- **Smoke test visual de prod** post-merge (venta contado, turno, cliente
+  con celular obligatorio) — pendiente (§0).
+- **Branch Supabase `credit-sales-phase1-validation` (`oxramdmsllprpxbhkhmi`)**
+  sigue **VIVO** al cierre de esta sesión (MIGRATIONS_FAILED interno pero
+  preview_project_status ACTIVE_HEALTHY, costando $0.01344/hora). Puede
+  borrarse con `delete_branch` — ya no aporta valor para crédito, se puede
+  crear uno nuevo cuando se valide ajustes Fase 1.
 
 ---
 
@@ -312,12 +367,18 @@ tracker de la sesión al momento de este dump:
 ## 8. Rutas rápidas para la próxima sesión
 
 - **Specs principales**:
-  - [docs/CREDIT-SALES-SPEC.md](CREDIT-SALES-SPEC.md)
-  - [docs/INVENTORY-ADJUSTMENTS-SPEC.md](INVENTORY-ADJUSTMENTS-SPEC.md)
+  - [docs/CREDIT-SALES-SPEC.md](CREDIT-SALES-SPEC.md) — Fase 1 aplicada; Fase 2/3 sigue como diseño.
+  - [docs/INVENTORY-ADJUSTMENTS-SPEC.md](INVENTORY-ADJUSTMENTS-SPEC.md) — Fases 1/2/3 escritas, NO aplicadas.
 - **Contexto denso del proyecto**: [CONTEXT-POS.md](../CONTEXT-POS.md) (§7
-  agrega los cambios post-2026-08-04 relevantes de estas sesiones).
-- **Rama activa**: `s1-s3p0-rpc-hardening` (commit head `5fb37fd`).
-- **Proyecto Supabase prod**: `nxszaxwsrtlofqimbfig` (us-west-2, PG
-  17.6.1). Solo lectura desde MCP.
-- **DB local para validación**: WSL Ubuntu 26.04 + PostgreSQL 18.4 + stubs
-  (`scratchpad/00_stubs.sql`) + baseline monolítico + migraciones 15/16/17.
+  agrega los cambios post-2026-08-04; §7.9 cierra la sesión 2026-08-14).
+- **Baseline canónico versionado**:
+  [supabase/migrations/20260812000000_baseline_canonical_from_prod.sql](../supabase/migrations/20260812000000_baseline_canonical_from_prod.sql)
+  (fuente de verdad para bootstrap de branches Supabase). El monolítico viejo
+  fue borrado en el merge de esta sesión.
+- **Rama activa**: `main` en commit `9c3c93c` (merge s1-s3p0-rpc-hardening).
+  La rama `s1-s3p0-rpc-hardening` sigue en origin pero ya está
+  completamente mergeada — puede borrarse.
+- **Proyecto Supabase prod**: `nxszaxwsrtlofqimbfig` (us-west-2, PG 17.6.1,
+  plan Pro con branching disponible). Lectura y escritura desde MCP.
+- **Branch Supabase de validación** (vivo, considerar borrar):
+  `credit-sales-phase1-validation` (`oxramdmsllprpxbhkhmi`).

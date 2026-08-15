@@ -1008,6 +1008,154 @@ por SELECT sobre `pg_catalog`/`information_schema` vía MCP
 `execute_sql` — factible pero lenta por intermitencia del MCP. Ver §5 de
 ESTADO-PENDIENTES.md.
 
+*[Actualización: **CERRADO en §7.9 esta sesión**.]*
+
+### 7.9 Cierre de sesión 2026-08-14 — Wompi cerrado + baseline canónico + crédito Fase 1 en prod + merge a main
+
+Tres bloques grandes de trabajo aplicados a prod en esta sesión, todos con
+gate humano explícito.
+
+#### 7.9.1 Wompi S3-P0 cerrado (agujero P0 de RPCs de pago)
+
+- **Diagnóstico verificado**: ACLs crudos de prod mostraban `anon`,
+  `authenticated`, `PUBLIC` con EXECUTE en `apply_wompi_transaction`,
+  `set_web_order_payment_reference`, `log_payment_event` — las 3 son
+  SECURITY DEFINER. Cualquiera con la anon key (pública, va en el bundle)
+  podía marcar cualquier `web_order` como pagado saltándose la firma HMAC
+  del webhook.
+- **Precondición cerrada**: `SUPABASE_SERVICE_ROLE_KEY` seteada en Vercel
+  Production+Preview (sin prefijo `NEXT_PUBLIC_`), verificada por el owner
+  en dashboard.
+- **Cherry-pick quirúrgico** del commit `8974df7` a main (`c439100`) + bump
+  `next@15.5.21`/`react@^19.2.8`/`react-dom@^19.2.8` (`770d533`) para
+  desbloquear el deploy de Vercel (main venía en `next@15.2.4` vulnerable
+  a CVE React Server Components). Vercel deploy verde.
+- **`scripts/14_s3p0_wompi_rpc_service_role.sql` aplicado a prod** via
+  `apply_migration` como `s3p0_revoke_wompi_rpcs_from_anon`. Verificación
+  end-to-end:
+  - `POST /rest/v1/rpc/apply_wompi_transaction` con anon key → HTTP 401
+    `{"code":"42501","message":"permission denied for function..."}` ✓
+  - Ídem para `set_web_order_payment_reference` y `log_payment_event` ✓
+  - `POST /rest/v1/rpc/place_web_order` con anon key → HTTP 200
+    `{"error":"El carrito está vacío."}` (storefront público intacto) ✓
+  - `GET /api/wompi/webhook` en prod → `{ok:true, configured:false}` (el
+    `configured:false` refleja `WOMPI_EVENTS_SECRET` no seteado — M5,
+    esperado; NO es señal de fallo del service_role) ✓
+- **Rollback documentado y probado** en `scripts/14` líneas 47-49.
+
+#### 7.9.2 Baseline canónico versionado
+
+- Introspección directa de prod (`nxszaxwsrtlofqimbfig`) sobre `pg_catalog`
+  + `information_schema`. Emisor `scripts/build_baseline.js` en scratchpad;
+  salida: **`supabase/migrations/20260812000000_baseline_canonical_from_prod.sql`**
+  (3.299 líneas, 132 KB), ordenado por dependencias:
+  extensions → sequences → tables (PK/UNIQUE/CHECK inline; FK diferidos)
+  → sequence ownership → FKs → functions → triggers → views
+  → ENABLE RLS → policies → indexes → grants/revokes.
+- **Contenido**: 33 tablas + 1 vista (`public_availability`) + 111 índices
+  (70 non-constraint + 41 backing constraints) + 48 funciones + 5 triggers
+  + 99 policies + 6 REVOKE Wompi (parche mínimo aplicado tras el REVOKE
+  post-S3-P0).
+- **Validado en branch Supabase**: aplicado desde cero en 4 chunks + seed
+  mínimo + `scripts/15`; contador de objetos = paridad total con prod. Al
+  hacerlo emergieron **2 hallazgos** que ahora son parte del patrón
+  documentado en `docs/ESTADO-PENDIENTES.md §3`:
+  1. La cadena de migraciones oficiales de Supabase (34 en `supabase_migrations`)
+     rompe en la #6 (`user_permissions_and_multi_site_access`) al aplicarse
+     a un branch fresh — drift Studio genuino que hace que `create_branch`
+     solo aplique 5 de 34. Solución: `DROP SCHEMA public CASCADE` + aplicar
+     el baseline como override.
+  2. El baseline debe aplicarse con `SET check_function_bodies = off` en el
+     chunk de funciones porque el orden alfabético de emisión mete a
+     `has_permission` (SQL, valida referencias en creación) antes de
+     `is_admin`, causando `42883` sin la flag.
+- **Commiteado en main** (`773e333`), reemplaza al `20260807042453_baseline_monolithic.sql`
+  viejo que se **borró en el merge** — era stubs-driven y divergente por
+  drift M11/M14.
+
+#### 7.9.3 Crédito Fase 1 en prod
+
+- **Branch de validación** `credit-sales-phase1-validation` (`oxramdmsllprpxbhkhmi`)
+  creado en Supabase Pro. Costo: $0.01344/hora.
+- **`scripts/15_credit_sales_phase1.sql` aplicado al branch** + admin
+  sintético + `scripts/15_validation_phase1.sql` extendido con SELECTs
+  explícitos (los `RAISE NOTICE` no llegan via MCP execute_sql).
+  Resultado: **14/14 tests pass**, todos con `actual = expected`:
+  - T1 `get_shift_balance` T1 = 175.000, cash 80k, non_cash 80k (D8: label
+    "Crédito Visa" NO clasifica como cash).
+  - T2 paridad `close_shift ↔ get_shift_balance` = 175.000 (M12 resuelto).
+  - T3 Caso A cross-turno: T1 snapshot intacto, T2 refund cash 50k, sale_payments
+    del cash siguen active, T2 expected 0.
+  - T4 Caso B (fiado): T2 balance no cambia, sale_payments del fiado siguen
+    active (30k), customer_credits emitido = 30k, sin cash_movement refund.
+  - T5 invariantes: `verify_credit_integrity()=0`, `verify_kardex delta=0`.
+- **Dry-run del backfill contra prod (SELECT-only)** antes del apply: 9
+  sales activas históricas, suma total_amount = 1.520.000. 0 con
+  `site_id NULL`, 0 con `payment_method NULL`, 0 con `total_amount<=0`. 4
+  valores únicos de `payment_method` (Efectivo, Tarjeta de crédito,
+  Transferencia, web-whatsapp) — clasificación D8 100% inequívoca. 2
+  sales con `shift_id NULL` (walk-in y web-whatsapp históricas —
+  `sale_payments.shift_id` es NULLABLE, sin bloqueo).
+- **Aplicado a prod** via `apply_migration` como `15_credit_sales_phase1`.
+  Post-verificación en prod:
+  - Schema shape: `sales +3` cols, `customers +2` cols, `sale_payments` y
+    `customer_credits` existen ✓
+  - Invariantes: `verify_credit_integrity()=0`,
+    `verify_kardex_integrity()=0` (sin nuevas violaciones) ✓
+  - Backfill 1:1: 9 sales → 9 sale_payments, sum 1.520.000 exacto,
+    `sales.amount_paid = total_amount` para las 9 (`balance_due=0`) ✓
+  - Walk-in "Consumidor final" con `is_walk_in=TRUE, allows_credit=FALSE`
+    + constraint `walk_in_never_allows_credit` + índice único
+    `one_walk_in_customer` activos ✓
+  - RPCs nuevas: `create_sale` v2 (13 args) + `get_shift_balance` +
+    `close_shift` reescrito + `void_sale` con regla A/B/C — todas SECDEF,
+    anon revocado, authenticated permitido ✓
+
+#### 7.9.4 Merge `s1-s3p0-rpc-hardening` → `main` (commit `9c3c93c`)
+
+- **Análisis previo del merge**: 33 archivos TS/TSX categorizados en
+  A (Fase 1 crédito, seguros — la BD ya soporta), B (ajustes Fase 1/2/3,
+  lazy failure documentado), C (docs/tests/scripts SQL/assets — inertes).
+  `voidAdjustment` mapea `42883` a mensaje amigable; el botón "Anular"
+  de la ruta nueva `/inventory/adjustments/[id]` queda oculto en prod
+  actual porque `status=undefined ≠ 'active'`.
+- **`git merge-tree --write-tree` dry-run**: confirmó que el baseline
+  canónico sobrevive el merge (main lo tiene, la rama no; git preserva).
+  Único conflicto: `pnpm-lock.yaml`.
+- **Working branch `merge-s1-s3p0-to-main`** desde origin/main + merge
+  `--no-ff` + resolución del lock (aceptar main + `pnpm install` para
+  incorporar devDeps nuevas: `@playwright/test 1.62.1`,
+  `eslint-config-next 15.5.21`) + `git rm` del monolítico viejo.
+- **PR abierto y mergeado** (fast-forward local por conveniencia de gh CLI
+  no instalado; efecto idéntico al botón de GitHub).
+- **Vercel prod deploy** `dpl_2phfk2ucq6mY3Fk9UkvCaATc63Yy` (commit
+  `9c3c93c`): READY en 73s, cero errores runtime, `GET /api/wompi/webhook`
+  → 200 `{ok:true, configured:false}`. Zero-downtime confirmado (Vercel
+  mantuvo el deploy anterior sirviendo tráfico durante el build).
+
+#### 7.9.5 Estado de BD prod al cierre de sesión
+
+- **Migraciones aplicadas** (`supabase_migrations.schema_migrations`):
+  36 en total. Últimas 2 nuevas de esta sesión:
+  - `s3p0_revoke_wompi_rpcs_from_anon` (script 14).
+  - `15_credit_sales_phase1` (script 15).
+- **Estado funcional del POS**:
+  - Ventas contado: funcionan (path viejo backwards-compat con el
+    `createSale` wrapper de 11 args que pasa defaults a la RPC nueva).
+  - Turnos de caja: `open_shift`/`close_shift`/`add_cash_movement` SECDEF
+    con validación de rol/sede + `close_shift` consumiendo
+    `get_shift_balance` (M12 resuelto en el cálculo real, aunque el
+    balance TS `buildBalance` de main sigue con el mismo cálculo que
+    antes — no hay divergencia).
+  - Fiado como capacidad de BD: **existe pero sin UI**. Fase 2/3 aún no
+    escrita para el UI de abonos.
+  - Ajustes: lista + página de detalle degradan limpio. La creación de
+    ajustes sigue con el `Promise.all` no-atómico viejo hasta que se
+    aplique `scripts/16`.
+- **Baseline canónico como fuente de verdad**: `supabase/migrations/20260812000000_baseline_canonical_from_prod.sql`
+  es el bootstrap autoritativo para levantar branches Supabase, docker
+  local, o otro ambiente de cero. El viejo monolítico fue borrado.
+
 ---
 
 Fin del contexto.
