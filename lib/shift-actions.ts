@@ -30,6 +30,9 @@ export interface ShiftBalance {
   expected_cash: number
 }
 
+// Clasifica el método de pago de un abono real (sale_payments.payment_method).
+// Ojo: NO se debe usar sobre sales.payment_method para decidir "es fiado" (D8);
+// la venta a cuenta se detecta por sales.is_on_account.
 function classifyMethod(method: string | null): "cash" | "debit" | "credit" | "transfer" | "other" {
   const m = (method || "").toLowerCase()
   if (m.includes("efectivo") || m.includes("cash")) return "cash"
@@ -39,7 +42,9 @@ function classifyMethod(method: string | null): "cash" | "debit" | "credit" | "t
   return "other"
 }
 
-// Obtiene el turno abierto de una sede junto con su balance del día
+// Obtiene el turno abierto de una sede junto con su balance del día.
+// Fuente de verdad del cash: RPC get_shift_balance (mismo que consume close_shift).
+// Elimina la divergencia con close_shift y cierra D10 del spec.
 export async function getCurrentShift(site_id: string): Promise<ShiftBalance | null> {
   if (!site_id) return null
   const supabase = await createServerSupabaseClient()
@@ -53,29 +58,49 @@ export async function getCurrentShift(site_id: string): Promise<ShiftBalance | n
 
   if (error || !shift) return null
 
-  return buildBalance(supabase, shift)
+  return fetchShiftBalance(supabase, shift)
 }
 
-async function buildBalance(supabase: any, shift: any): Promise<ShiftBalance> {
-  // Ventas del turno
+async function fetchShiftBalance(supabase: any, shift: any): Promise<ShiftBalance> {
+  // 1. RPC unificado: cash real recibido + movimientos + expected_cash.
+  const { data: rpc, error: rpcErr } = await supabase.rpc("get_shift_balance", {
+    p_shift_id: shift.shift_id,
+  })
+  if (rpcErr) {
+    console.error("get_shift_balance:", rpcErr)
+    throw rpcErr
+  }
+  const initial = Number(rpc.initial_cash) || 0
+  const cash = Number(rpc.cash_in_shift) || 0
+  const cashIn = Number(rpc.cash_movements_income) || 0
+  const cashOut = Number(rpc.cash_movements_expense) || 0
+  const refunds = Number(rpc.cash_movements_refund) || 0
+  const expected = Number(rpc.expected_cash) || 0
+
+  // 2. Total facturado + conteo — filtrando active (cierra M12 en la vista en vivo).
   const { data: sales } = await supabase
     .from("sales")
-    .select("total_amount, payment_method")
+    .select("total_amount")
     .eq("shift_id", shift.shift_id)
+    .eq("status", "active")
+  const total = (sales || []).reduce((s: number, r: any) => s + (Number(r.total_amount) || 0), 0)
 
-  let cash = 0,
-    debit = 0,
+  // 3. Buckets no-cash desde sale_payments (fuente correcta) — el método REAL
+  //    del pago, no el label 'crédito' del header. Cash ya vino del RPC.
+  const { data: payments } = await supabase
+    .from("sale_payments")
+    .select("amount, payment_method")
+    .eq("shift_id", shift.shift_id)
+    .eq("status", "active")
+  let debit = 0,
     credit = 0,
     transfer = 0,
-    other = 0,
-    total = 0
-  for (const s of sales || []) {
-    const amount = Number(s.total_amount) || 0
-    total += amount
-    switch (classifyMethod(s.payment_method)) {
+    other = 0
+  for (const p of payments || []) {
+    const amount = Number(p.amount) || 0
+    switch (classifyMethod(p.payment_method)) {
       case "cash":
-        cash += amount
-        break
+        break // ya contado por el RPC
       case "debit":
         debit += amount
         break
@@ -89,25 +114,6 @@ async function buildBalance(supabase: any, shift: any): Promise<ShiftBalance> {
         other += amount
     }
   }
-
-  // Movimientos manuales de efectivo
-  const { data: movements } = await supabase
-    .from("cash_movements")
-    .select("type, amount")
-    .eq("shift_id", shift.shift_id)
-
-  let cashIn = 0,
-    cashOut = 0,
-    refunds = 0
-  for (const m of movements || []) {
-    const amount = Number(m.amount) || 0
-    if (m.type === "income") cashIn += amount
-    else if (m.type === "expense") cashOut += amount
-    else if (m.type === "refund") refunds += amount
-  }
-
-  const initial = Number(shift.initial_cash) || 0
-  const expected = initial + cash + cashIn - cashOut - refunds
 
   return {
     shift_id: shift.shift_id,
