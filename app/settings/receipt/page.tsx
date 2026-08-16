@@ -6,6 +6,7 @@ import { PageHeader } from "@/components/page-header"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { MoneyInput } from "@/components/ui/money-input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Switch } from "@/components/ui/switch"
@@ -304,20 +305,17 @@ export default function ReceiptSettingsPage() {
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <Label>Costo de envío</Label>
-                  <Input
-                    type="number"
-                    min={0}
+                  <MoneyInput
                     value={form.shipping_cost ?? 0}
-                    onChange={(e) => update("shipping_cost", Number(e.target.value))}
+                    onChange={(n) => update("shipping_cost", n ?? 0)}
                   />
                 </div>
                 <div>
                   <Label>Envío gratis desde</Label>
-                  <Input
-                    type="number"
-                    min={0}
-                    value={form.free_shipping_over ?? ""}
-                    onChange={(e) => update("free_shipping_over", e.target.value === "" ? null : Number(e.target.value))}
+                  <MoneyInput
+                    value={form.free_shipping_over}
+                    onChange={(n) => update("free_shipping_over", n)}
+                    emptyAsNull
                     placeholder="Sin umbral"
                   />
                   <p className="text-xs text-muted-foreground mt-1">Déjalo vacío para cobrar siempre el envío.</p>

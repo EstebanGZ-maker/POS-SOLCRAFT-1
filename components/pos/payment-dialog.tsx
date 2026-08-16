@@ -4,6 +4,7 @@ import { useEffect, useState } from "react"
 import { Dialog, DialogContent } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { MoneyInput } from "@/components/ui/money-input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import {
@@ -93,21 +94,21 @@ export function PaymentDialog({
 }: PaymentDialogProps) {
   const [step, setStep] = useState<"methods" | "detail">("methods")
   const [method, setMethod] = useState<string>("Efectivo")
-  const [amount, setAmount] = useState<string>("")
+  const [amount, setAmount] = useState<number>(0)
   const [seller, setSeller] = useState("")
   const [notes, setNotes] = useState("")
   // Abono inicial en modo fiar
-  const [initialAmount, setInitialAmount] = useState<string>("0")
+  const [initialAmount, setInitialAmount] = useState<number>(0)
   const [initialMethod, setInitialMethod] = useState<string>("Efectivo")
 
   useEffect(() => {
     if (open) {
       setStep("methods")
       setMethod("Efectivo")
-      setAmount("")
+      setAmount(0)
       setSeller("")
       setNotes("")
-      setInitialAmount("0")
+      setInitialAmount(0)
       setInitialMethod("Efectivo")
     }
   }, [open])
@@ -116,13 +117,13 @@ export function PaymentDialog({
   const canFiar = !!customer && !customer.is_walk_in && customer.allows_credit
 
   // === Rama contado (existente) ===
-  const received = Number.parseFloat(amount) || 0
+  const received = amount
   const pending = Math.max(0, total - received)
   const change = Math.max(0, received - total)
   const isCashLike = method === "Efectivo" || method === "Combinado"
 
   // === Rama fiado ===
-  const initialReceived = Number.parseFloat(initialAmount) || 0
+  const initialReceived = initialAmount
   const initialIsCash = initialMethod === "Efectivo"
   const initialInRange = initialReceived >= 0 && initialReceived <= total
   const initialCashNeedsShift = isOnAccount && initialReceived > 0 && initialIsCash && !hasOpenShift
@@ -140,11 +141,11 @@ export function PaymentDialog({
   const selectMethod = (id: string) => {
     setMethod(id)
     if (id === METHOD_ID_CREDIT) {
-      setAmount(String(total)) // amount_received queda como total para el header contable (no se usa para arqueo)
+      setAmount(total) // amount_received queda como total para el header contable (no se usa para arqueo)
     } else if (id !== "Efectivo" && id !== "Combinado") {
-      setAmount(String(total))
+      setAmount(total)
     } else {
-      setAmount("")
+      setAmount(0)
     }
     setStep("detail")
   }
@@ -270,12 +271,9 @@ export function PaymentDialog({
                         <Label>
                           Abono inicial (opcional)
                         </Label>
-                        <Input
-                          type="number"
-                          min={0}
-                          max={total}
+                        <MoneyInput
                           value={initialAmount}
-                          onChange={(e) => setInitialAmount(e.target.value)}
+                          onChange={(n) => setInitialAmount(n ?? 0)}
                           className="mt-1.5"
                           placeholder="0"
                           autoFocus
@@ -306,14 +304,14 @@ export function PaymentDialog({
                         <div className="space-y-2">
                           <button
                             type="button"
-                            onClick={() => setInitialAmount("0")}
+                            onClick={() => setInitialAmount(0)}
                             className="w-full rounded-md border py-2.5 text-center font-medium text-foreground transition-colors hover:border-primary hover:bg-accent"
                           >
                             Sin abono (fiar el total)
                           </button>
                           <button
                             type="button"
-                            onClick={() => setInitialAmount(String(total))}
+                            onClick={() => setInitialAmount(total)}
                             className="w-full rounded-md border py-2.5 text-center font-medium text-foreground transition-colors hover:border-primary hover:bg-accent"
                           >
                             {formatCurrency(total)}
@@ -331,11 +329,9 @@ export function PaymentDialog({
                           Valor del pago en {method === "Efectivo" ? "efectivo" : "combinado"}{" "}
                           <span className="text-primary">*</span>
                         </Label>
-                        <Input
-                          type="number"
-                          min={0}
+                        <MoneyInput
                           value={amount}
-                          onChange={(e) => setAmount(e.target.value)}
+                          onChange={(n) => setAmount(n ?? 0)}
                           className="mt-1.5"
                           placeholder="0"
                           autoFocus
@@ -348,7 +344,7 @@ export function PaymentDialog({
                             <button
                               key={opt}
                               type="button"
-                              onClick={() => setAmount(String(opt))}
+                              onClick={() => setAmount(opt)}
                               className="w-full rounded-md border py-2.5 text-center font-medium text-foreground transition-colors hover:border-primary hover:bg-accent"
                             >
                               {formatCurrency(opt)}

@@ -4,6 +4,7 @@ import { useEffect, useState } from "react"
 import { Dialog, DialogContent } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { MoneyInput } from "@/components/ui/money-input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import {
@@ -126,11 +127,9 @@ export function EditLineDialog({ line, open, onOpenChange, onSave, onDelete }: E
             <div className="flex items-end gap-2">
               <div className="flex-1 space-y-1.5">
                 <Label>Precio base</Label>
-                <Input
-                  type="number"
-                  min={0}
+                <MoneyInput
                   value={basePrice}
-                  onChange={(e) => setBasePrice(Number.parseFloat(e.target.value) || 0)}
+                  onChange={(n) => setBasePrice(n ?? 0)}
                 />
               </div>
               <span className="pb-2 text-lg text-muted-foreground">+</span>

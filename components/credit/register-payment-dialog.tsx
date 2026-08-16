@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { MoneyInput } from "@/components/ui/money-input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import {
@@ -63,7 +64,7 @@ export function RegisterPaymentDialog({
   shiftId,
   onDone,
 }: RegisterPaymentDialogProps) {
-  const [amount, setAmount] = useState("")
+  const [amount, setAmount] = useState<number | null>(null)
   const [method, setMethod] = useState<string>("Efectivo")
   const [notes, setNotes] = useState("")
   const [saving, setSaving] = useState(false)
@@ -73,7 +74,7 @@ export function RegisterPaymentDialog({
   // Reset + carga saldo a favor al abrir
   useEffect(() => {
     if (!open || !sale) return
-    setAmount("")
+    setAmount(null)
     setMethod("Efectivo")
     setNotes("")
     setCreditBalance(0)
@@ -87,7 +88,7 @@ export function RegisterPaymentDialog({
   if (!sale) return null
 
   const balance = sale.balance_due
-  const numeric = Number(amount)
+  const numeric = amount ?? 0
   const validAmount = numeric > 0 && numeric <= balance
   const cashWithoutShift = isCash(method) && !shiftId
   const canSubmit = validAmount && !cashWithoutShift && !saving
@@ -97,7 +98,7 @@ export function RegisterPaymentDialog({
   const showCreditCTA = !loadingCredit && creditBalance > 0
 
   function fillTotal() {
-    setAmount(String(balance))
+    setAmount(balance)
   }
 
   async function handleSubmit() {
@@ -200,14 +201,11 @@ export function RegisterPaymentDialog({
           <div className="space-y-2">
             <Label htmlFor="pay-amount">Monto del abono</Label>
             <div className="flex gap-2">
-              <Input
+              <MoneyInput
                 id="pay-amount"
-                type="number"
-                min="0"
-                max={balance}
                 value={amount}
-                onChange={(e) => setAmount(e.target.value)}
-                onFocus={(e) => e.target.select()}
+                onChange={setAmount}
+                emptyAsNull
                 placeholder="0"
               />
               <Button type="button" variant="outline" size="sm" onClick={fillTotal}>

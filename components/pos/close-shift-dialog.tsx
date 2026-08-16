@@ -3,7 +3,7 @@
 import { useState } from "react"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
+import { MoneyInput } from "@/components/ui/money-input"
 import { Label } from "@/components/ui/label"
 import { Separator } from "@/components/ui/separator"
 import { toast } from "@/components/ui/use-toast"
@@ -61,10 +61,10 @@ export function CloseShiftDialog({
   onClosed,
   onNewMovement,
 }: CloseShiftDialogProps) {
-  const [countedCash, setCountedCash] = useState("")
+  const [countedCash, setCountedCash] = useState<number | null>(null)
   const [saving, setSaving] = useState(false)
 
-  const counted = Number(countedCash) || 0
+  const counted = countedCash ?? 0
   const difference = counted - balance.expected_cash
 
   const openedDate = new Date(balance.opened_at).toLocaleString("es-CO", {
@@ -91,7 +91,7 @@ export function CloseShiftDialog({
             ? "La caja cuadra exactamente."
             : `Diferencia de ${formatCurrency(difference)} respecto a lo esperado.`,
       })
-      setCountedCash("")
+      setCountedCash(null)
       onOpenChange(false)
       onClosed()
     } else {
@@ -136,16 +136,14 @@ export function CloseShiftDialog({
 
         <div className="space-y-2">
           <Label htmlFor="counted-cash">Dinero contado en caja</Label>
-          <Input
+          <MoneyInput
             id="counted-cash"
-            type="number"
-            min="0"
             value={countedCash}
-            onChange={(e) => setCountedCash(e.target.value)}
-            onFocus={(e) => e.target.select()}
+            onChange={setCountedCash}
+            emptyAsNull
             placeholder="0"
           />
-          {countedCash !== "" && (
+          {countedCash !== null && (
             <p className={`text-sm ${difference === 0 ? "text-muted-foreground" : "text-destructive"}`}>
               Diferencia: {formatCurrency(difference)}{" "}
               {difference > 0 ? "(sobrante)" : difference < 0 ? "(faltante)" : "(cuadra)"}
@@ -166,7 +164,7 @@ export function CloseShiftDialog({
             <Button variant="outline" onClick={() => onOpenChange(false)}>
               Cancelar
             </Button>
-            <Button onClick={handleClose} disabled={saving || countedCash === ""}>
+            <Button onClick={handleClose} disabled={saving || countedCash === null}>
               {saving ? "Cerrando..." : "Guardar"}
             </Button>
           </div>
