@@ -13,6 +13,7 @@ import { getShiftReceivables } from "@/lib/actions"
 import { formatCurrency } from "@/lib/utils"
 import { HandCoins, Info } from "lucide-react"
 import { RegisterPaymentDialog } from "./register-payment-dialog"
+import { useAuth } from "@/lib/auth-context"
 
 interface ShiftReceivablesSheetProps {
   open: boolean
@@ -43,6 +44,8 @@ export function ShiftReceivablesSheet({
   refreshKey,
   onChange,
 }: ShiftReceivablesSheetProps) {
+  const { role } = useAuth()
+  const canMutate = role !== "contador"
   const [sales, setSales] = useState<ShiftSale[]>([])
   const [loading, setLoading] = useState(false)
   const [paymentTarget, setPaymentTarget] = useState<ShiftSale | null>(null)
@@ -118,11 +121,13 @@ export function ShiftReceivablesSheet({
                     </div>
                   </div>
                 </div>
-                <div className="mt-2 flex justify-end">
-                  <Button size="sm" onClick={() => setPaymentTarget(s)}>
-                    Registrar abono
-                  </Button>
-                </div>
+                {canMutate && (
+                  <div className="mt-2 flex justify-end">
+                    <Button size="sm" onClick={() => setPaymentTarget(s)}>
+                      Registrar abono
+                    </Button>
+                  </div>
+                )}
               </div>
             ))}
           </div>

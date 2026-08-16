@@ -56,7 +56,11 @@ interface PaymentTarget {
 }
 
 export default function ReceivablesPage() {
-  const { profile } = useAuth()
+  const { role } = useAuth()
+  // Rol contador puede leer /receivables (defensa en profundidad ya está en
+  // getReceivables), pero no puede mutar. Ocultamos el CTA de "Registrar
+  // abono" para no mostrar un botón que fallaría server-side.
+  const canMutate = role !== "contador"
   const [siteFilter, setSiteFilter] = useState<string>("all")
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [paymentTarget, setPaymentTarget] = useState<PaymentTarget | null>(null)
@@ -117,7 +121,11 @@ export default function ReceivablesPage() {
     <div className="mx-auto max-w-6xl p-4 sm:p-6">
       <PageHeader
         title="Cuentas por cobrar"
-        description="Ventas a crédito con saldo pendiente, agrupadas por cliente."
+        description={
+          canMutate
+            ? "Ventas a crédito con saldo pendiente, agrupadas por cliente."
+            : "Vista de solo lectura. Los abonos se registran desde el POS."
+        }
       >
         <Select value={siteFilter} onValueChange={setSiteFilter}>
           <SelectTrigger className="w-[220px]">
@@ -255,16 +263,18 @@ export default function ReceivablesPage() {
                                       <span>{s.age_days} días</span>
                                     </div>
                                   </div>
-                                  <Button
-                                    size="sm"
-                                    onClick={(e) => {
-                                      e.stopPropagation()
-                                      openPayment(s, g)
-                                    }}
-                                  >
-                                    <HandCoins className="mr-1.5 h-4 w-4" />
-                                    Registrar abono
-                                  </Button>
+                                  {canMutate && (
+                                    <Button
+                                      size="sm"
+                                      onClick={(e) => {
+                                        e.stopPropagation()
+                                        openPayment(s, g)
+                                      }}
+                                    >
+                                      <HandCoins className="mr-1.5 h-4 w-4" />
+                                      Registrar abono
+                                    </Button>
+                                  )}
                                 </div>
                               ))}
                             </div>
