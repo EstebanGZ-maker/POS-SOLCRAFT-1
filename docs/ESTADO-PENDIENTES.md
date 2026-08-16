@@ -7,7 +7,33 @@
 
 ---
 
-## 0. LEE ESTO PRIMERO — estado tras sesión 2026-08-15
+## 0. LEE ESTO PRIMERO — estado tras sesión 2026-08-16
+
+**Estado de ramas**: ninguna rama de trabajo abierta. `main` en `b95a4f1`
+con todo lo de esta sesión mergeado. Ramas `s2-adjustments-phase1`,
+`s3-credit-fiar-ui`, `s4-inventory-products-scope` borradas de origin
+tras merge.
+
+**Prod (`nxszaxwsrtlofqimbfig`)**: kardex OK (verify_kardex_integrity=0),
+credit OK (verify_credit_integrity=0). Sirviendo `dpl_8NZNqZ5bkCMRFXWvmFgBw7qvTwWd`
+(sha `344bbd2`) tras el merge de crédito Fase 2 mínimo; los edits de docs
+posteriores (`b95a4f1`) no forzaron redeploy porque solo tocan .md.
+
+### ✅ CERRADO Y DEPLOYED — Ajustes Fase 1 (scripts/16 + swap deleteAdjustment)
+Rama `s2-adjustments-phase1` mergeada a main (merge commit `af31a01`, commit
+interno `231838d`). BD: `apply_migration` a prod OK, invariante kardex
+intacto (pre=0, post=0). Código: `.eq("status","active")` re-agregado en
+`getAdjustments` y `getCentralPurchases`, función `deleteAdjustment` borrada
+(dead code post-swap), lista de ajustes ahora usa `voidAdjustment` (RPC
+SECDEF). Ver detalle abajo (§1.2).
+
+### ✅ CERRADO Y DEPLOYED — Scope productos por sede
+Rama `s4-inventory-products-scope` mergeada a main (merge commit `e16b976`,
+commit interno `f71fc2b`). `/inventory/products` ahora arranca por default
+en la bodega primary de `currentSite` (misma que el POS), con badge de
+scope + subtítulo de columna en modo "Todas las bodegas". Elimina la
+confusión "Inv. 2 en POS vs. 29 en Productos y Servicios" que no era bug
+sino UX diferencial (default agregado vs. sede activa).
 
 ### ✅ CERRADO Y DEPLOYED — Crédito Fase 2 (mínimo) "fiar desde POS"
 Rama `s3-credit-fiar-ui` mergeada a main (commit `344bbd2`). Vercel prod

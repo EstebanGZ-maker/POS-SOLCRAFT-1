@@ -628,12 +628,35 @@ E2E de Fase 1:
 
 ### Fase 2 — Abonos + UI + CxC
 
+> **Nota de nomenclatura (2026-08-16)**: Fase 2 se partió en dos bloques
+> por scope de deploy:
+>
+> - **Fase 2A "mínimo fiar POS" — YA DEPLOYED** (commit `344bbd2`):
+>   solo habilitación del botón "Fiar (crédito)" en el diálogo del POS.
+>   Consume `create_sale` v2 (que ya acepta `p_is_on_account` +
+>   `p_initial_payment` desde Fase 1). Cierra deuda D10: `buildBalance()`
+>   TS reemplazada por llamada al RPC `get_shift_balance`. Fix crítico:
+>   `total_sales` pasa a ser "recibido" (no facturado) para no inflar el
+>   arqueo con saldo no cobrado de fiados.
+> - **Fase 2B — PENDIENTE** (este bloque, próxima sesión): todo lo de
+>   abajo. Coloquialmente lo llamamos "Fase 3" en las conversaciones
+>   recientes pero técnicamente es la Fase 2 completa según este spec.
+>   Precondición nueva: endurecer `create_sale` v2 con validación
+>   `p_shift_id NOT NULL` cuando abono cash (mismo patrón D9); hoy vive
+>   solo cliente-side.
+
 - RPC `register_payment` (§4.2) + Server Action wrapper.
 - UI abono en `/pos` (dialog "Registrar abono" desde una venta a cuenta del
   turno actual) y en `/customers/[id]` (historial de ventas + botón abono).
-- **UX creación inline de cliente al fiar** (§8.1).
+- **UX creación inline de cliente al fiar** (§8.1) — hoy solo hay tooltip
+  informativo en el dialog; falta CTA "Crear cliente nuevo →" que abra el
+  `NewContactDialog` existente (ya nace con `allows_credit=true`).
 - Página `/receivables` (CxC): ventas con `is_on_account AND balance_due > 0`,
-  agrupadas por cliente, con edad de saldo.
+  agrupadas por cliente, con edad de saldo. Columnas: Total facturado /
+  Total abonado / Por cobrar. Botón "Registrar abono" por fila.
+- Deuda menor a cerrar en el mismo bloque: migrar walk-in detection en
+  `app/pos/page.tsx:240-241` de match por nombre a `is_walk_in=true`
+  (spec Fase 1 §8.11 pendiente).
 - E2E: abono parcial → abono final → `balance_due = 0`; N asientos en
   contabilidad; UI muestra Total / Cobrado / Por cobrar por venta.
 

@@ -1156,6 +1156,120 @@ gate humano explícito.
   es el bootstrap autoritativo para levantar branches Supabase, docker
   local, o otro ambiente de cero. El viejo monolítico fue borrado.
 
+### 7.10 Cierre de sesión 2026-08-15/16 — Ajustes F1 + scope productos + Crédito F2 mínimo en prod
+
+Tres bloques mergeados a main y desplegados a prod en secuencia esta sesión:
+
+#### 7.10.1 Ajustes Fase 1 (scripts/16) — aplicado y deployed
+
+- `apply_migration('16_inventory_adjustments_phase1', ...)` a prod
+  (`nxszaxwsrtlofqimbfig`). Baseline `verify_kardex_integrity()`:
+  pre-apply=0, post-apply=0 (invariante `SUM(stock_movements)=product_stock`
+  intacto). Validado previo en branch Supabase
+  `credit-sales-phase1-validation` (`oxramdmsllprpxbhkhmi`) con T1..T8 OK
+  de `scripts/16_validation_phase1.sql`.
+- Schema post-apply: `inventory_adjustments += site_id, numero, status,
+  motivo, created_by, updated_at`. Backfill `site_id` (0 filas quedaron
+  NULL). CHECK constraints `status IN ('active','voided')` y `motivo IN
+  (NULL,'compra','sobrante','correccion')`. Índice único parcial
+  `(site_id, numero) WHERE numero IS NOT NULL` — inerte hasta Fase 2A.
+  Trigger `updated_at`. RLS de escritura CERRADA (solo `_read` queda),
+  escritura EXCLUSIVA vía RPC.
+- RPCs nuevos SECDEF: `create_adjustment(warehouse, notes, items)` y
+  `void_adjustment(adjustment_id)`. REVOKE anon, GRANT authenticated.
+- Frontend: re-agregado `.eq("status","active")` en `getAdjustments()` y
+  `getCentralPurchases()` (TODOs borrados). Función `deleteAdjustment`
+  **eliminada** (dead code post-swap). Lista de ajustes ahora usa
+  `voidAdjustment` (RPC SECDEF).
+- Finding lateral registrado: `deleteAdjustment` estaba silent-failing en
+  prod desde antes de esta sesión — `pg_policies` nunca tuvo policy de
+  DELETE, RLS enabled → `.delete()` bajo SSR client devolvía
+  `{error:null}` con 0 rows affected mientras el paso previo `adjust_warehouse_stock`
+  (SECDEF) sí revertía stock. UI mostraba el ajuste con total intacto
+  mientras el stock estaba bajado. Resuelto por swap a `voidAdjustment`.
+- Merge: `s2-adjustments-phase1` → main como `af31a01` (commit interno
+  `231838d`). Vercel prod `dpl_48wp7r2XHp4iRcepGBVCscBDR1sS` READY en 47s.
+
+#### 7.10.2 Fix scope productos por sede (paridad con POS)
+
+- Bug reportado: "Inv. 2 en POS vs. 29 en Productos y Servicios" para el
+  mismo producto en la misma sede. Diagnóstico: no era bug, era default
+  agregado (`warehouseId="all"` → `SUM(product_stock)` global) vs. POS
+  siempre scoped a la sede activa. Semánticamente correcto en ambos lados
+  pero UX confuso.
+- Fix `s4-inventory-products-scope`: `/inventory/products` arranca por
+  default en la bodega primary de `currentSite` (misma que el POS).
+  Re-alineación al cambiar `currentSite` en el top-bar. `userOverride`
+  flag para respetar la elección manual del usuario dentro de la misma
+  sede. Badge de scope + subtítulo de columna "Cantidad total / suma de
+  todas las bodegas" en modo `"all"`. `useSite()` verificado: siempre
+  resuelve `currentSite` para todos los roles, no hay bifurcación
+  admin/vendedor.
+- Merge: `s4-inventory-products-scope` → main como `e16b976` (commit
+  interno `f71fc2b`). Vercel prod `dpl_DXhrPZAZ18K67MxPqhcM67T6r92Y`
+  READY.
+
+#### 7.10.3 Crédito Fase 2 mínimo "fiar desde POS" — deployed
+
+Alcance: habilitar botón "Fiar (crédito)" en el diálogo de pago del POS
+usando el RPC `create_sale` v2 ya desplegado en Fase 1. **Sin**
+`register_payment`, sin CxC, sin redención — todo eso queda para Fase 3.
+
+- **Backend (deuda D10 cerrada)**: `lib/shift-actions.ts:buildBalance()`
+  reemplazada por llamada al RPC `get_shift_balance`. El RPC existía desde
+  Fase 1 pero el TS seguía usando `classifyMethod()` sobre
+  `sales.payment_method` — bug latente que habría reportado arqueos
+  incorrectos ni bien alguien fiara con abono cash inicial
+  (`sales.payment_method='crédito'` es hardcoded por el RPC → classifier
+  lo mandaba a bucket "credit", el cash real no aparecía en
+  `expected_cash`). Ahora vista en vivo y `close_shift` comparten fuente
+  única (`sale_payments.amount WHERE status='active'`).
+- **`total_sales` = recibido, no facturado** (bug encontrado en preview):
+  antes sumaba `sales.total_amount` — para fiado sin abono inflaba
+  "Ventas hoy" con el total no cobrado. Ahora `total_sales = cash_in_shift
+  + non_cash_in_shift` del RPC. Label "Ventas hoy" → "Recibido hoy" y
+  "Total de ventas" → "Total recibido en el turno" para eliminar
+  ambigüedad.
+- **UI**: `MethodCard "Fiar (crédito)"` en step 1 del diálogo, deshabilitado
+  con tooltip si no hay cliente / walk-in / `!allows_credit`. Step 2 en
+  modo fiado: input abono inicial (0..total, quick-options `[Sin abono,
+  total]`) + dropdown método del abono (solo si abono>0, default Efectivo).
+  Guard inline `initialCashNeedsShift`. Copy header "TOTAL A FIAR" +
+  "Saldo por cobrar tras la venta" + toast diferenciado.
+- **Wiring**: `createSale` acepta `payment.is_on_account` +
+  `payment.initial_payment`. `app/pos/page.tsx` extendió `Customer`
+  interface con `allows_credit + is_walk_in` (los datos ya venían del
+  `select("*")` de `getCustomers()`).
+- **Findings del RPC `create_sale` v2** confirmados en el source real:
+  `sales.payment_method` siempre queda `'crédito'` (hardcoded) cuando
+  `is_on_account=true`; `p_payment_method` controla el método del abono
+  inicial en `sale_payments`. `p_shift_id` **no es validado** por el RPC
+  (ni siquiera con abono cash). Guard vive cliente-side. Deuda: endurecer
+  cuando se agregue `register_payment` (mismo patrón D9).
+- Merge: `s3-credit-fiar-ui` → main como `344bbd2` (commits internos
+  `6abcd1f` UI fiar + D10 y `a6ff0a5` fix total_sales). Vercel prod
+  `dpl_8NZNqZ5bkCMRFXWvmFgBw7qvTwWd` READY. Webhook Wompi intacto post-deploy.
+
+#### 7.10.4 Estado BD prod al cierre de sesión 2026-08-16
+
+- **Migraciones aplicadas**: 37 en total. Nueva de esta sesión:
+  `16_inventory_adjustments_phase1`.
+- **Estado funcional del POS**:
+  - Ventas contado: OK.
+  - Ventas fiado: **habilitadas desde UI**. Un fiado nace y se queda "por
+    cobrar" hasta que se implemente Fase 3 (register_payment + CxC).
+  - Turnos de caja: vista en vivo y cierre comparten `get_shift_balance`
+    (fuente única, cierra D10). `total_sales = recibido` (no facturado).
+  - Ajustes: creación/anulación vía RPCs SECDEF atómicos. Lista y detalle
+    usan `voidAdjustment`. Fases 2A/2B/2C/2D siguen pendientes (ver
+    ESTADO-PENDIENTES §1.2.1).
+  - `/inventory/products`: default por sede activa, alineado con POS.
+- **Deuda técnica nueva registrada**: `create_sale` v2 SECDEF **no valida
+  `p_shift_id`** — el RPC en prod acepta NULL incluso cuando
+  `is_on_account=true` con abono cash. Guard vive cliente-side. Endurecer
+  el RPC en la misma migración que agregue `register_payment` (mismo
+  patrón D9 del spec).
+
 ---
 
 Fin del contexto.
