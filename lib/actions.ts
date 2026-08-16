@@ -508,3 +508,278 @@ export async function getDashboardStats() {
     }
   }
 }
+
+// =============================================================================
+// Crédito Fase 3 — abonos posteriores, CxC, redención saldo a favor
+// =============================================================================
+// Wrappers delgados sobre los RPCs SECDEF (register_payment, apply_customer_credit).
+// Toda la validación (rol, sede, D9 turno-cash, D14 income redención, FOR UPDATE)
+// vive en los RPCs (script 18). Aquí solo mapeamos errores y disparamos
+// revalidatePath para las rutas afectadas.
+
+export async function registerPayment(
+  sale_id: string,
+  amount: number,
+  payment_method: string,
+  shift_id?: string | null,
+  notes?: string | null,
+) {
+  await requireRole("admin", "encargado", "vendedor")
+  const supabase = await createServerSupabaseClient()
+  const { data, error } = await supabase.rpc("register_payment", {
+    p_sale_id: sale_id,
+    p_amount: amount,
+    p_payment_method: payment_method,
+    p_shift_id: shift_id ?? null,
+    p_notes: notes ?? null,
+  })
+  if (error) {
+    console.error("registerPayment:", error)
+    return { success: false, message: error.message }
+  }
+  revalidatePath("/pos")
+  revalidatePath("/receivables")
+  revalidatePath("/sales")
+  revalidatePath("/customers")
+  revalidatePath("/accounting")
+  return {
+    success: true,
+    message: "Abono registrado correctamente.",
+    payment_id: data?.payment_id as string | undefined,
+    new_amount_paid: Number(data?.new_amount_paid) || 0,
+    new_balance_due: Number(data?.new_balance_due) || 0,
+  }
+}
+
+export async function applyCustomerCredit(
+  sale_id: string,
+  amount: number,
+  shift_id?: string | null,
+) {
+  await requireRole("admin", "encargado", "vendedor")
+  const supabase = await createServerSupabaseClient()
+  const { data, error } = await supabase.rpc("apply_customer_credit", {
+    p_sale_id: sale_id,
+    p_credit_amount: amount,
+    p_shift_id: shift_id ?? null,
+  })
+  if (error) {
+    console.error("applyCustomerCredit:", error)
+    return { success: false, message: error.message }
+  }
+  revalidatePath("/pos")
+  revalidatePath("/receivables")
+  revalidatePath("/sales")
+  revalidatePath("/customers")
+  revalidatePath("/accounting")
+  return {
+    success: true,
+    message: "Saldo a favor aplicado correctamente.",
+    payment_id: data?.payment_id as string | undefined,
+    new_amount_paid: Number(data?.new_amount_paid) || 0,
+    new_balance_due: Number(data?.new_balance_due) || 0,
+    remaining_credit: Number(data?.remaining_credit) || 0,
+  }
+}
+
+export type AgeBucket = "0-30" | "31-60" | "60+"
+
+function toAgeBucket(days: number): AgeBucket {
+  if (days <= 30) return "0-30"
+  if (days <= 60) return "31-60"
+  return "60+"
+}
+
+export interface ReceivableSale {
+  sale_id: string
+  numero: number | null
+  sale_date: string
+  total_amount: number
+  amount_paid: number
+  balance_due: number
+  site_id: string | null
+  age_days: number
+  age_bucket: AgeBucket
+}
+
+export interface ReceivableGroup {
+  customer_id: string
+  customer_name: string
+  customer_phone: string | null
+  sales_count: number
+  total_facturado: number
+  total_abonado: number
+  total_pendiente: number
+  oldest_days: number
+  // Bucket del cliente = bucket de su venta MÁS vieja. Es lo que muestra la
+  // fila colapsada del listado (semáforo del cliente). Cada venta individual
+  // trae su propio bucket para el detalle expandido.
+  oldest_bucket: AgeBucket
+  customer_credit_balance: number
+  sales: ReceivableSale[]
+}
+
+// Ventas con is_on_account AND balance_due>0 AND status='active', agrupadas por
+// cliente. RLS filtra por sede automáticamente (has_site_access):
+// admin/contador ven todas; encargado/vendedor solo su sede.
+// El param opcional site_id agrega un filtro extra para admin viewing 1 sede.
+//
+// customer_credit_balance viene EN EL LISTADO (2 queries en total, no N+1):
+// primero traemos las ventas con saldo, luego un único SUM agrupado de
+// customer_credits para los customer_id ya listados. Decisión: útil para
+// mostrar "puede pagar Y con saldo a favor" en la vista, y evita que la UI
+// dispare N llamadas a getCustomerCreditBalance al pintar la tabla.
+export async function getReceivables(opts?: { site_id?: string | null }) {
+  await requireRole("admin", "contador", "encargado", "vendedor")
+  const supabase = await createServerSupabaseClient()
+  let q = supabase
+    .from("sales")
+    .select(
+      "sale_id, numero, site_id, total_amount, amount_paid, balance_due, sale_date, customer_id, customers(customer_id, name, phone, email)",
+    )
+    .eq("is_on_account", true)
+    .eq("status", "active")
+    .gt("balance_due", 0)
+    .order("sale_date", { ascending: true })
+  if (opts?.site_id) q = q.eq("site_id", opts.site_id)
+
+  const { data, error } = await q
+  if (error) {
+    console.error("getReceivables:", error)
+    return { success: false, message: error.message, groups: [] as ReceivableGroup[] }
+  }
+
+  const map = new Map<string, ReceivableGroup>()
+  const now = Date.now()
+  for (const row of data ?? []) {
+    const cust = (row as any).customers
+    const cid = row.customer_id as string
+    const g =
+      map.get(cid) ??
+      ({
+        customer_id: cid,
+        customer_name: cust?.name ?? "Sin nombre",
+        customer_phone: cust?.phone ?? null,
+        sales_count: 0,
+        total_facturado: 0,
+        total_abonado: 0,
+        total_pendiente: 0,
+        oldest_days: 0,
+        oldest_bucket: "0-30" as AgeBucket,
+        customer_credit_balance: 0,
+        sales: [] as ReceivableSale[],
+      } as ReceivableGroup)
+    const days = Math.floor((now - new Date(row.sale_date).getTime()) / 86400000)
+    g.sales_count += 1
+    g.total_facturado += Number(row.total_amount) || 0
+    g.total_abonado += Number(row.amount_paid) || 0
+    g.total_pendiente += Number(row.balance_due) || 0
+    if (days > g.oldest_days) g.oldest_days = days
+    g.sales.push({
+      sale_id: row.sale_id as string,
+      numero: (row.numero as number | null) ?? null,
+      sale_date: row.sale_date as string,
+      total_amount: Number(row.total_amount) || 0,
+      amount_paid: Number(row.amount_paid) || 0,
+      balance_due: Number(row.balance_due) || 0,
+      site_id: (row.site_id as string | null) ?? null,
+      age_days: days,
+      age_bucket: toAgeBucket(days),
+    })
+    map.set(cid, g)
+  }
+
+  // 2do query único (no N+1): SUM customer_credits para los clientes listados.
+  const customerIds = Array.from(map.keys())
+  if (customerIds.length > 0) {
+    const { data: creditRows, error: creditErr } = await supabase
+      .from("customer_credits")
+      .select("customer_id, amount")
+      .in("customer_id", customerIds)
+    if (creditErr) {
+      console.error("getReceivables (credits):", creditErr)
+      // Deja balances en 0; no rompe el listado.
+    } else {
+      const creditByCustomer = new Map<string, number>()
+      for (const c of creditRows ?? []) {
+        const prev = creditByCustomer.get(c.customer_id as string) ?? 0
+        creditByCustomer.set(c.customer_id as string, prev + (Number(c.amount) || 0))
+      }
+      for (const g of map.values()) {
+        g.customer_credit_balance = creditByCustomer.get(g.customer_id) ?? 0
+      }
+    }
+  }
+
+  // Cierra el bucket del cliente en base al oldest_days final.
+  for (const g of map.values()) {
+    g.oldest_bucket = toAgeBucket(g.oldest_days)
+  }
+
+  const groups = Array.from(map.values()).sort((a, b) => b.total_pendiente - a.total_pendiente)
+  return { success: true, groups }
+}
+
+// Suma de customer_credits (positivos por emisión, negativos por redención).
+export async function getCustomerCreditBalance(customer_id: string) {
+  await requireRole("admin", "contador", "encargado", "vendedor")
+  const supabase = await createServerSupabaseClient()
+  const { data, error } = await supabase
+    .from("customer_credits")
+    .select("amount")
+    .eq("customer_id", customer_id)
+  if (error) {
+    console.error("getCustomerCreditBalance:", error)
+    return { success: false, message: error.message, balance: 0 }
+  }
+  const balance = (data ?? []).reduce((s, r) => s + (Number(r.amount) || 0), 0)
+  return { success: true, balance }
+}
+
+// Fiados abiertos del turno actual (para el botón "Fiados del turno" en /pos).
+// Sin agrupación por cliente: mostramos una fila por venta con abono directo.
+export async function getShiftReceivables(shift_id: string) {
+  await requireRole("admin", "contador", "encargado", "vendedor")
+  const supabase = await createServerSupabaseClient()
+  const { data, error } = await supabase
+    .from("sales")
+    .select("sale_id, numero, sale_date, total_amount, amount_paid, balance_due, customer_id, customers(customer_id, name, phone)")
+    .eq("shift_id", shift_id)
+    .eq("is_on_account", true)
+    .eq("status", "active")
+    .gt("balance_due", 0)
+    .order("sale_date", { ascending: false })
+  if (error) {
+    console.error("getShiftReceivables:", error)
+    return { success: false, message: error.message, sales: [] as any[] }
+  }
+  const sales = (data ?? []).map((s: any) => ({
+    sale_id: s.sale_id,
+    numero: s.numero,
+    sale_date: s.sale_date,
+    total_amount: Number(s.total_amount) || 0,
+    amount_paid: Number(s.amount_paid) || 0,
+    balance_due: Number(s.balance_due) || 0,
+    customer_id: s.customer_id,
+    customer_name: s.customers?.name ?? "?",
+    customer_phone: s.customers?.phone ?? null,
+  }))
+  return { success: true, sales }
+}
+
+// Historial de abonos activos de una venta (para el drawer de detalle).
+export async function getSalePayments(sale_id: string) {
+  await requireRole("admin", "contador", "encargado", "vendedor")
+  const supabase = await createServerSupabaseClient()
+  const { data, error } = await supabase
+    .from("sale_payments")
+    .select("payment_id, amount, payment_method, shift_id, received_by, notes, status, created_at")
+    .eq("sale_id", sale_id)
+    .eq("status", "active")
+    .order("created_at", { ascending: true })
+  if (error) {
+    console.error("getSalePayments:", error)
+    return { success: false, message: error.message, payments: [] as any[] }
+  }
+  return { success: true, payments: data ?? [] }
+}
