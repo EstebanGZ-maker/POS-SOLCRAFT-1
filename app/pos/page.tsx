@@ -82,6 +82,8 @@ interface Customer {
   customer_id: string
   name: string
   id_number?: string | null
+  allows_credit?: boolean
+  is_walk_in?: boolean
 }
 
 interface TabState {
@@ -487,6 +489,8 @@ export default function POSPage() {
         amount_received: payment.amount_received,
         seller: payment.seller,
         notes: payment.notes,
+        is_on_account: payment.is_on_account,
+        initial_payment: payment.initial_payment,
       },
       { site_id: siteId, warehouse_id: warehouseId, shift_id: shift?.shift_id ?? null },
       selectedPriceList,
@@ -495,7 +499,14 @@ export default function POSPage() {
 
     if (result.success) {
       const saleId = (result as any).sale_id as string | undefined
-      toast({ title: "Venta realizada", description: `Pago con ${payment.payment_method} registrado.` })
+      toast({
+        title: payment.is_on_account ? "Venta a crédito registrada" : "Venta realizada",
+        description: payment.is_on_account
+          ? payment.initial_payment && payment.initial_payment > 0
+            ? `Abono inicial de ${payment.initial_payment.toLocaleString("es-CO")} recibido; saldo por cobrar registrado.`
+            : "Saldo por cobrar registrado."
+          : `Pago con ${payment.payment_method} registrado.`,
+      })
       setCart([])
       setPaymentOpen(false)
       if (saleId) {
@@ -548,7 +559,7 @@ export default function POSPage() {
                 Turno abierto
               </span>
               <span className="text-xs text-muted-foreground">
-                Ventas hoy: <span className="font-semibold text-foreground">{formatCurrency(shift.total_sales)}</span>
+                Recibido hoy: <span className="font-semibold text-foreground">{formatCurrency(shift.total_sales)}</span>
               </span>
               <span className="hidden text-xs text-muted-foreground sm:inline">
                 Efectivo: <span className="font-medium text-foreground">{formatCurrency(shift.cash_sales)}</span>
@@ -949,6 +960,17 @@ export default function POSPage() {
         total={total}
         processing={processingSale}
         onConfirm={confirmPayment}
+        customer={(() => {
+          const c = customers.find((x: Customer) => x.customer_id === selectedCustomerId)
+          if (!c) return null
+          return {
+            customer_id: c.customer_id,
+            name: c.name,
+            allows_credit: c.allows_credit ?? true,
+            is_walk_in: c.is_walk_in ?? false,
+          }
+        })()}
+        hasOpenShift={!!shift}
       />
 
       <ReceiptDialog

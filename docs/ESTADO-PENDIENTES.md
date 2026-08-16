@@ -8,6 +8,66 @@
 
 ## 0. LEE ESTO PRIMERO — estado tras sesión 2026-08-15
 
+### 🟡 EN PREVIEW — Crédito Fase 2/3 "mínimo para fiar desde POS"
+Rama `s3-credit-fiar-ui`. Pendiente smoke test en Vercel preview → merge a main.
+Alcance mínimo (sin `register_payment`/CxC): habilitar botón "Fiar (crédito)"
+en el diálogo de pago del POS, permitiendo abono inicial 0..total en
+`Efectivo/Tarjeta débito/Tarjeta crédito/Transferencia`.
+
+Cambios:
+- **[lib/shift-actions.ts]** `buildBalance()` reemplazada por llamada al
+  RPC `get_shift_balance` (fuente única compartida con `close_shift`).
+  Cierra **D10** del spec crédito (deuda que quedó abierta en el deploy de
+  Fase 1: el RPC existía pero el TS seguía usando la clasificación por
+  substring sobre `sales.payment_method` — bug que hubiera reportado
+  arqueos incorrectos apenas alguien fíe con abono cash). Buckets no-cash
+  (`debit/credit/transfer/other_sales`) ahora vienen de `sale_payments`
+  filtrando `status='active'` con el classifier operando sobre el método
+  REAL del pago; no del label `'crédito'` del header.
+- **[lib/actions.ts]** `createSale()` extendida: `payment` acepta
+  `is_on_account?: boolean` + `initial_payment?: number | null`. Se propagan
+  como `p_is_on_account` + `p_initial_payment` al RPC v2. Backwards-compat
+  total (defaults FALSE / NULL).
+- **[components/pos/payment-dialog.tsx]** Nuevo `MethodCard "Fiar (crédito)"`
+  en step 1. Deshabilitado con tooltip si no hay cliente / cliente es
+  walk-in / `allows_credit=false`. Step 2 en modo fiado ofrece input de
+  abono inicial (opcional, 0..total, quick-options `[Sin abono, total]`)
+  + dropdown de método del abono (solo si abono > 0, default Efectivo).
+  Guard client-side: `abono > 0` + método Efectivo + sin turno abierto →
+  botón Continuar deshabilitado con mensaje inline.
+- **[app/pos/page.tsx]** Interface `Customer` extendida con
+  `allows_credit + is_walk_in` (los datos ya venían del `select("*")` de
+  `getCustomers()`). Pasa `customer` + `hasOpenShift` al PaymentDialog.
+  Toast diferenciado para venta a crédito vs contado.
+
+Findings del RPC `create_sale` v2 confirmados en el source real:
+- `sales.payment_method` siempre queda `'crédito'` (hardcoded) cuando
+  `is_on_account=true`; `p_payment_method` se usa para el método del abono
+  inicial en `sale_payments`.
+- `p_shift_id` **no es validado** por el RPC (ni siquiera cuando el abono
+  inicial es cash). El guard vive cliente-side en la UI. Deuda para
+  endurecer en Fase 2 real (mismo patrón que D9 del spec para
+  `register_payment`).
+
+Deudas explícitas dejadas para próximas iteraciones:
+- **§8.1 crear cliente inline** — cuando el usuario elige "Fiar" y el
+  cliente actual no cumple, hoy solo mostramos tooltip informativo. El
+  spec pedía CTA "Crear cliente nuevo →" con el `NewContactDialog`
+  existente (que ya nace con `allows_credit=true`). Trivial de agregar
+  cuando se decida.
+- **walk-in detection por nombre** — `app/pos/page.tsx:240-241` sigue
+  buscando el walk-in por `name === "Consumidor final" || "Walk-in Customer"`.
+  El spec Fase 1 §8.11 pedía migrar a `is_walk_in=true`. Deuda separada,
+  no crítica (el walk-in solo lo detectamos para preselección; el RPC
+  create_sale valida `is_walk_in` autoritativamente).
+- **Cobrar abonos posteriores** — sigue siendo Fase 2 real:
+  `register_payment` RPC + UI abono + página CxC (`/receivables`). Con lo
+  desplegado, un fiado nace y se queda "por cobrar" hasta que se
+  implemente el flujo de abonos. OK para MVP.
+- **Redención de saldo a favor** — Fase 3 (D14 bloqueante:
+  `apply_customer_credit` debe asentar income por el monto aplicado, ver
+  spec §6.1).
+
 ### ✅ CERRADO Y DEPLOYED — Ajustes Fase 1 (scripts/16)
 - **BD**: aplicado a prod (`nxszaxwsrtlofqimbfig`) vía `apply_migration` en
   la sesión 2026-08-15. Baseline kardex pre-apply: 0 violaciones; post-apply:

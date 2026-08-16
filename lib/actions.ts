@@ -352,6 +352,8 @@ export async function createSale(
     amount_received?: number | null
     seller?: string | null
     notes?: string | null
+    is_on_account?: boolean
+    initial_payment?: number | null
   },
   location?: {
     site_id?: string | null
@@ -425,6 +427,8 @@ export async function createSale(
     p_warehouse_id: location?.warehouse_id ?? null,
     p_shift_id: location?.shift_id ?? null,
     p_user_id: profile?.id ?? null,
+    p_is_on_account: payment?.is_on_account ?? false,
+    p_initial_payment: payment?.initial_payment ?? null,
   })
 
   if (error) {
