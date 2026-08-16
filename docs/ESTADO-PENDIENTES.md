@@ -1,18 +1,35 @@
 # ESTADO-PENDIENTES.md
 
 > **Propósito**: dump de estado para que una instancia nueva de Claude sin
-> memoria pueda retomar sin perder nada. Última actualización: **2026-08-15**
-> (apply Fase 1 Ajustes a prod).
+> memoria pueda retomar sin perder nada. Última actualización: **2026-08-16**
+> (Crédito Fase 2 mínimo "fiar desde POS" desplegado a prod + scope
+> productos por sede).
 
 ---
 
 ## 0. LEE ESTO PRIMERO — estado tras sesión 2026-08-15
 
-### 🟡 EN PREVIEW — Crédito Fase 2/3 "mínimo para fiar desde POS"
-Rama `s3-credit-fiar-ui`. Pendiente smoke test en Vercel preview → merge a main.
-Alcance mínimo (sin `register_payment`/CxC): habilitar botón "Fiar (crédito)"
-en el diálogo de pago del POS, permitiendo abono inicial 0..total en
-`Efectivo/Tarjeta débito/Tarjeta crédito/Transferencia`.
+### ✅ CERRADO Y DEPLOYED — Crédito Fase 2 (mínimo) "fiar desde POS"
+Rama `s3-credit-fiar-ui` mergeada a main (commit `344bbd2`). Vercel prod
+`dpl_8NZNqZ5bkCMRFXWvmFgBw7qvTwWd` READY, alias `pos-solcraft-1.vercel.app`.
+Runtime logs limpios (0 errors últimos 15 min post-merge). Webhook Wompi
+intacto (`GET /api/wompi/webhook` → 200 `{ok:true, configured:false}`).
+
+Smoke test confirmado por el usuario en el preview antes del merge:
+- Regresión buildBalance OK — venta contado normal, `expected_cash` idéntico
+  a antes del cambio a `get_shift_balance`.
+- Fiado con abono parcial cash OK — "Recibido hoy" y arqueo solo suman el
+  abono, no el `total_amount` de la venta.
+- Fiado sin abono OK — no altera el arqueo (`Recibido hoy` no sube, cash
+  bucket no sube).
+- Bloqueo sin turno abierto: aceptado como está (outer gate de `startSale`
+  bloquea con toast antes de abrir el diálogo; el guard inline
+  `initialCashNeedsShift` queda como defense-in-depth para un futuro
+  refactor).
+
+Alcance de esta entrega (sin `register_payment`/CxC): habilitar botón "Fiar
+(crédito)" en el diálogo de pago del POS, permitiendo abono inicial 0..total
+en `Efectivo/Tarjeta débito/Tarjeta crédito/Transferencia`.
 
 Cambios:
 - **[lib/shift-actions.ts]** `buildBalance()` reemplazada por llamada al
@@ -49,7 +66,23 @@ Findings del RPC `create_sale` v2 confirmados en el source real:
   endurecer en Fase 2 real (mismo patrón que D9 del spec para
   `register_payment`).
 
-Deudas explícitas dejadas para próximas iteraciones:
+**Próximo bloque grande: Crédito Fase 3 — CxC + abonos posteriores + redención**
+(único ítem donde el fiado actual "se queda incompleto"). Contenido:
+- **RPC `register_payment(sale_id, amount, method, shift_id?)`** SECDEF con
+  validaciones D9 (shift_id obligatorio si cash), lock FOR UPDATE del sale,
+  insert atómico en `sale_payments`, actualización de `sales.amount_paid`,
+  asiento `income` category='Abono crédito'. Spec: `docs/CREDIT-SALES-SPEC.md §4.2`.
+- **UI abono desde `/pos`** — dialog "Registrar abono" accesible desde una
+  venta a cuenta del turno actual.
+- **Vista `/receivables` (CxC)** — ventas con `is_on_account=true AND
+  balance_due>0`, agrupadas por cliente, con columnas Total facturado /
+  Total abonado / Por cobrar / Edad de saldo. Botón "Registrar abono" por fila.
+- **`apply_customer_credit`** (redención saldo a favor) — bloqueante D14:
+  DEBE asentar `income` por el monto aplicado (traza numérica en spec §6.1).
+- No requiere migración BD adicional: `sale_payments`, `customer_credits`,
+  `is_on_account`, `balance_due` ya existen desde Fase 1.
+
+Deudas menores dejadas por esta entrega (no bloquean nada):
 - **§8.1 crear cliente inline** — cuando el usuario elige "Fiar" y el
   cliente actual no cumple, hoy solo mostramos tooltip informativo. El
   spec pedía CTA "Crear cliente nuevo →" con el `NewContactDialog`
@@ -60,13 +93,10 @@ Deudas explícitas dejadas para próximas iteraciones:
   El spec Fase 1 §8.11 pedía migrar a `is_walk_in=true`. Deuda separada,
   no crítica (el walk-in solo lo detectamos para preselección; el RPC
   create_sale valida `is_walk_in` autoritativamente).
-- **Cobrar abonos posteriores** — sigue siendo Fase 2 real:
-  `register_payment` RPC + UI abono + página CxC (`/receivables`). Con lo
-  desplegado, un fiado nace y se queda "por cobrar" hasta que se
-  implemente el flujo de abonos. OK para MVP.
-- **Redención de saldo a favor** — Fase 3 (D14 bloqueante:
-  `apply_customer_credit` debe asentar income por el monto aplicado, ver
-  spec §6.1).
+- **`create_sale` v2 no valida `p_shift_id`** — el RPC en prod acepta NULL
+  incluso cuando `is_on_account=true` con abono cash. El guard vive
+  cliente-side. Deuda: endurecer el RPC en la misma migración que agregue
+  `register_payment` (mismo patrón D9 del spec).
 
 ### ✅ CERRADO Y DEPLOYED — Ajustes Fase 1 (scripts/16)
 - **BD**: aplicado a prod (`nxszaxwsrtlofqimbfig`) vía `apply_migration` en
