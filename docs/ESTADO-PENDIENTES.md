@@ -162,37 +162,50 @@ Findings del RPC `create_sale` v2 confirmados en el source real:
   endurecer en Fase 2 real (mismo patrón que D9 del spec para
   `register_payment`).
 
-**Próximo bloque grande: Crédito Fase 3 — CxC + abonos posteriores + redención**
-(único ítem donde el fiado actual "se queda incompleto"). Contenido:
-- **RPC `register_payment(sale_id, amount, method, shift_id?)`** SECDEF con
-  validaciones D9 (shift_id obligatorio si cash), lock FOR UPDATE del sale,
-  insert atómico en `sale_payments`, actualización de `sales.amount_paid`,
-  asiento `income` category='Abono crédito'. Spec: `docs/CREDIT-SALES-SPEC.md §4.2`.
-- **UI abono desde `/pos`** — dialog "Registrar abono" accesible desde una
-  venta a cuenta del turno actual.
-- **Vista `/receivables` (CxC)** — ventas con `is_on_account=true AND
-  balance_due>0`, agrupadas por cliente, con columnas Total facturado /
-  Total abonado / Por cobrar / Edad de saldo. Botón "Registrar abono" por fila.
-- **`apply_customer_credit`** (redención saldo a favor) — bloqueante D14:
-  DEBE asentar `income` por el monto aplicado (traza numérica en spec §6.1).
-- No requiere migración BD adicional: `sale_payments`, `customer_credits`,
-  `is_on_account`, `balance_due` ya existen desde Fase 1.
+**✅ Crédito Fase 3 CERRADO Y DEPLOYED** — ver bloque nuevo al inicio de
+esta sección §0 ("Crédito Fase 3 (CxC completo, ciclo end-to-end)"). El
+ciclo completo del módulo de crédito (fiar → abonar → anular → redimir)
+funciona end-to-end en prod. Deuda D9 en `create_sale` v2 también cerrada
+como parte de Fase 3 (`create_sale` v3 con guard server-side).
 
-Deudas menores dejadas por esta entrega (no bloquean nada):
+**Próximo bloque grande: formato de miles (separador de millares) en
+inputs de dinero**. Nueva rama, alcance por definir. Contexto: los inputs
+`type="number"` en COP no muestran separador ("1500000" en vez de
+"1.500.000"), difícil de leer al capturar montos grandes. Candidatos a
+revisar (sin decisión aún):
+
+- **POS pago** — `components/pos/payment-dialog.tsx` (monto recibido,
+  abono inicial fiado).
+- **Abono crédito** — `components/credit/register-payment-dialog.tsx`
+  (monto del abono).
+- **Turno de caja** — `components/pos/open-shift-dialog.tsx`
+  (initial_cash), `components/pos/close-shift-dialog.tsx` (counted_cash),
+  `components/pos/cash-movement-dialog.tsx` (amount).
+- **Ajustes de inventario** — items con costo.
+- **Edición de línea del carrito** — `components/pos/edit-line-dialog.tsx`
+  (unit_price manual).
+- **Compras / recepciones** — flujos de bodega central si aplica.
+
+Decisiones abiertas para la próxima sesión:
+- Alcance específico (¿todos los inputs de dinero? ¿solo POS+abonos?).
+- Estrategia técnica (input controlado con máscara `Intl.NumberFormat`
+  vs. componente Money reusable vs. librería). Sin decisión.
+- Formato: `1.500.000` (locale es-CO estándar) probable pero confirmar.
+- Compatibilidad: mantener el valor numérico limpio para el submit,
+  formatear solo el display.
+
+Deudas menores dejadas por Fase 3 (no bloquean nada):
 - **§8.1 crear cliente inline** — cuando el usuario elige "Fiar" y el
   cliente actual no cumple, hoy solo mostramos tooltip informativo. El
   spec pedía CTA "Crear cliente nuevo →" con el `NewContactDialog`
-  existente (que ya nace con `allows_credit=true`). Trivial de agregar
-  cuando se decida.
+  existente. Trivial de agregar cuando se decida.
 - **walk-in detection por nombre** — `app/pos/page.tsx:240-241` sigue
   buscando el walk-in por `name === "Consumidor final" || "Walk-in Customer"`.
-  El spec Fase 1 §8.11 pedía migrar a `is_walk_in=true`. Deuda separada,
-  no crítica (el walk-in solo lo detectamos para preselección; el RPC
-  create_sale valida `is_walk_in` autoritativamente).
-- **`create_sale` v2 no valida `p_shift_id`** — el RPC en prod acepta NULL
-  incluso cuando `is_on_account=true` con abono cash. El guard vive
-  cliente-side. Deuda: endurecer el RPC en la misma migración que agregue
-  `register_payment` (mismo patrón D9 del spec).
+  Migrar a `is_walk_in=true` (spec Fase 1 §8.11). No crítica.
+- **Reporte "ventas por método" contando `credito_favor`** — si en el
+  futuro se hace un reporte que agrupe `sale_payments.payment_method`,
+  `'credito_favor'` inflaría "no-cash" sin ser plata real. Documentar
+  cuando exista ese reporte.
 
 ### ✅ CERRADO Y DEPLOYED — Ajustes Fase 1 (scripts/16)
 - **BD**: aplicado a prod (`nxszaxwsrtlofqimbfig`) vía `apply_migration` en

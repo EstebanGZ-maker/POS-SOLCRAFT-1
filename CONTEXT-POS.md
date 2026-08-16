@@ -1268,7 +1268,112 @@ usando el RPC `create_sale` v2 ya desplegado en Fase 1. **Sin**
   `p_shift_id`** — el RPC en prod acepta NULL incluso cuando
   `is_on_account=true` con abono cash. Guard vive cliente-side. Endurecer
   el RPC en la misma migración que agregue `register_payment` (mismo
-  patrón D9 del spec).
+  patrón D9 del spec). **← RESUELTO en §7.11 (Fase 3, create_sale v3).**
+
+### 7.11 Cierre de sesión 2026-08-16 (bloque 2) — Crédito Fase 3 CxC completo
+
+Ciclo end-to-end del módulo de crédito **cerrado en prod**: fiar → abonar
+→ anular con abonos → redimir saldo a favor. Rama `s5-credit-phase3-ui`
+mergeada como `28109a0`; prod `dpl_FUG6WAAxac55TRDj55mgZBHrcjtj` READY.
+
+#### 7.11.1 BD (script `18_credit_phase3.sql`, aplicado a prod)
+
+- **`register_payment(sale_id, amount, method, shift_id?, notes?)`** SECDEF.
+  FOR UPDATE del sale, valida `status='active'` + `amount ∈ (0, balance_due]`.
+  Guard D9: cash + shift NULL → RAISE. Si viene shift, valida open + misma
+  sede que la venta. `received_by` derivado de `auth.uid()` via
+  `user_profiles` (D11). Asienta income `'Abono crédito'`. Devuelve
+  `{payment_id, new_amount_paid, new_balance_due}`.
+- **`apply_customer_credit(sale_id, amount, shift_id?)`** SECDEF. Redención
+  de saldo a favor con lock sobre `customer_credits` del cliente. Postgres
+  no permite `FOR UPDATE` con `SUM(amount)` — se lockean filas primero
+  (`PERFORM 1 FROM ... FOR UPDATE`) y luego se computa el SUM aparte.
+  `sale_payments.payment_method='credito_favor'` (no matchea el classifier
+  cash — no infla arqueo). **Asiento income D14 obligatorio** `'Redención
+  saldo a favor'` — sin él la P&L diverge del cash real total del ciclo
+  (traza spec §6.1). Devuelve `{payment_id, new_amount_paid,
+  new_balance_due, remaining_credit}`.
+- **`create_sale` v3**: hardening D9 server-side. Diff mínimo vs v2 —
+  firma idéntica, agregado bloque justo antes del INSERT en `sale_payments`
+  que RAISE si cash sin turno, más validación de shift open + misma sede
+  cuando `p_shift_id` viene. Cierra la deuda registrada en §7.10.4.
+- Validado en branch Supabase con 21/21 tests antes del apply a prod
+  (regresión v2==v3, guards D9, register_payment edge cases, ciclo
+  void→credit→redemption traza numérica §6.1, verify_credit_integrity=0).
+  Bug encontrado en primera pasada (`FOR UPDATE` + aggregate) corregido
+  antes de aplicar a prod.
+
+#### 7.11.2 Código TS/UI (3 commits en `s5-credit-phase3-ui`)
+
+- **`lib/actions.ts`** — 6 server actions nuevas: `registerPayment`,
+  `applyCustomerCredit`, `getReceivables({site_id?})`,
+  `getShiftReceivables(shift_id)`, `getCustomerCreditBalance(customer_id)`,
+  `getSalePayments(sale_id)`. Lecturas con `requireRole("admin","contador",
+  "encargado","vendedor")`; mutaciones con `requireRole("admin","encargado",
+  "vendedor")` (sin contador). `getReceivables` hace 2 queries (no N+1):
+  primero `sales`, después `customer_credits.SUM` agrupado por
+  `customer_id`. Precalcula `age_bucket` (0-30/31-60/60+) por venta y
+  `oldest_bucket` por grupo.
+- **`components/credit/register-payment-dialog.tsx`** — dialog reusable.
+  Guard client cash+sin-turno con mensaje inline. CTA "Redimir saldo a
+  favor $X" si `getCustomerCreditBalance` > 0 (dispara
+  `applyCustomerCredit` en vez de `registerPayment`).
+- **`components/credit/shift-receivables-sheet.tsx`** — Sheet lateral con
+  fiados abiertos del turno, botón abono por fila. `useAuth` +
+  `canMutate = role !== "contador"` para ocultar CTA.
+- **`app/receivables/page.tsx`** — ruta nueva. Tabla agrupada por cliente,
+  filtro de sede, badges por bucket, saldo a favor con ícono Wallet,
+  expand por cliente con abono por venta. `canMutate` client-side igual
+  que el sheet.
+- **`app/pos/page.tsx`** — botón "Fiados del turno" con badge count en la
+  barra del turno abierto (junto a "Movimiento"). Piggyback en
+  `refreshShift` para mantener el count en sync tras mutaciones.
+- **`lib/permissions.ts`** — nuevo `ModuleKey = "receivables"` en grupo
+  `operaciones`, label `"Cuentas por cobrar"`. Defaults por rol agregan
+  `receivables` a `contador/encargado/vendedor` (admin lo tiene por default
+  vía `MODULES.map`).
+- **`components/dashboard-sidebar.tsx`** — link `"Cuentas por cobrar"` con
+  ícono `HandCoins` en el grupo `Contabilidad` (siteOnly=true — no
+  aparece en Bodega Central), posición entre "Ventas" y "Clientes".
+
+#### 7.11.3 Guard rol contador (UX)
+
+Contador puede LEER `/receivables` + `getSalePayments` +
+`getCustomerCreditBalance` (rol contable natural), pero no puede mutar
+(`registerPayment` / `applyCustomerCredit` excluyen contador). Sin guard
+client, contador vería un botón "Registrar abono" que fallaría con
+mensaje crudo del RPC. Solución: `canMutate = role !== "contador"` en
+`/receivables` y en `ShiftReceivablesSheet` oculta el botón. PageHeader
+de `/receivables` cambia a "Vista de solo lectura. Los abonos se
+registran desde el POS." Anti-patrón evitado — mismo criterio que "Fiar"
+para clientes sin `allows_credit`.
+
+#### 7.11.4 Estado BD prod al cierre de sesión 2026-08-16 (bloque 2)
+
+- **Migraciones aplicadas**: 38 en total. Nuevas de este bloque: solo
+  `18_credit_phase3` (3 CREATE OR REPLACE FUNCTION, sin cambios de
+  esquema — `sale_payments`/`customer_credits`/`sales.balance_due` ya
+  existían desde Fase 1).
+- **Estado funcional del POS**:
+  - Ventas contado + fiado: OK (Fase 2A).
+  - **Abonos posteriores**: `register_payment` OK con guard D9.
+  - **CxC**: `/receivables` accesible desde sidebar en grupo Contabilidad.
+  - **Redención saldo a favor**: `apply_customer_credit` OK con income
+    D14. CTA en el dialog cuando aplica.
+  - Turnos, ajustes, `/inventory/products`: sin cambio vs §7.10.
+- **Invariantes prod**: `verify_kardex_integrity()=0`,
+  `verify_credit_integrity()=0` pre y post apply.
+- **Deuda D9 en `create_sale`**: **RESUELTA** en `create_sale` v3.
+- **Branch Supabase** `credit-sales-phase1-validation` (`oxramdmsllprpxbhkhmi`):
+  **BORRADO** post-merge.
+
+#### 7.11.5 Recordatorio operativo — permiso `receivables` a usuarios existentes
+
+`ROLE_DEFAULT_PERMISSIONS` solo aplica al crear nuevos usuarios. Usuarios
+pre-existentes tienen `user_profiles.permissions[]` congelados. Para que
+vean el link "Cuentas por cobrar", admin debe **agregar manualmente
+`'receivables'`** a cada usuario desde `/users`. Mismo comportamiento que
+`web_orders` en su momento. No es bug — política del sistema.
 
 ---
 
