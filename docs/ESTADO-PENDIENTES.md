@@ -2,22 +2,92 @@
 
 > **Propósito**: dump de estado para que una instancia nueva de Claude sin
 > memoria pueda retomar sin perder nada. Última actualización: **2026-08-16**
-> (Crédito Fase 2 mínimo "fiar desde POS" desplegado a prod + scope
-> productos por sede).
+> (Crédito Fase 3 CxC completo desplegado a prod — ciclo end-to-end del
+> módulo de crédito cerrado).
 
 ---
 
-## 0. LEE ESTO PRIMERO — estado tras sesión 2026-08-16
+## 0. LEE ESTO PRIMERO — estado tras sesión 2026-08-16 (Fase 3)
 
-**Estado de ramas**: ninguna rama de trabajo abierta. `main` en `b95a4f1`
-con todo lo de esta sesión mergeado. Ramas `s2-adjustments-phase1`,
-`s3-credit-fiar-ui`, `s4-inventory-products-scope` borradas de origin
-tras merge.
+**Estado de ramas**: ninguna rama de trabajo abierta. `main` en `28109a0`
+con Fase 3 mergeada. Ramas `s2-adjustments-phase1`, `s3-credit-fiar-ui`,
+`s4-inventory-products-scope`, `s5-credit-phase3-ui` borradas de origin
+tras cada merge respectivo.
 
 **Prod (`nxszaxwsrtlofqimbfig`)**: kardex OK (verify_kardex_integrity=0),
-credit OK (verify_credit_integrity=0). Sirviendo `dpl_8NZNqZ5bkCMRFXWvmFgBw7qvTwWd`
-(sha `344bbd2`) tras el merge de crédito Fase 2 mínimo; los edits de docs
-posteriores (`b95a4f1`) no forzaron redeploy porque solo tocan .md.
+credit OK (verify_credit_integrity=0). Sirviendo `dpl_FUG6WAAxac55TRDj55mgZBHrcjtj`
+(sha `28109a0`, target=production) tras el merge de Crédito Fase 3.
+`GET /api/wompi/webhook` responde `{ok:true, configured:false, endpoint:"wompi/webhook"}`
+HTTP 200. Runtime logs 15 min post-deploy: 0 errors/warnings/fatal.
+
+### ✅ CERRADO Y DEPLOYED — Crédito Fase 3 (CxC completo, ciclo end-to-end)
+
+Rama `s5-credit-phase3-ui` mergeada a main (merge commit `28109a0`).
+Cierra el ciclo end-to-end del módulo de crédito: **fiar → abonar → anular
+con abonos → redimir saldo a favor**.
+
+**BD (script `18_credit_phase3.sql`, aplicado a prod vía `apply_migration`
+en la misma sesión antes del código)**:
+- **RPC `register_payment(sale_id, amount, method, shift_id?, notes?)`**
+  SECDEF con FOR UPDATE del sale, guard D9 (cash sin shift → RAISE),
+  asiento income `'Abono crédito'`, `received_by` derivado de `auth.uid()`
+  (D11).
+- **RPC `apply_customer_credit(sale_id, amount, shift_id?)`** SECDEF con
+  lock sobre `customer_credits` del cliente (FOR UPDATE sobre filas primero,
+  luego SUM aparte — Postgres no permite FOR UPDATE con aggregate),
+  asiento income `'Redención saldo a favor'` (D14 bloqueante — sin él la
+  P&L diverge del cash real total del ciclo), `sale_payments.payment_method
+  = 'credito_favor'` (no infla arqueo).
+- **`create_sale` v3**: hardening D9 server-side (era solo cliente-side
+  desde Fase 2A). Guard también valida shift open + misma sede cuando
+  `p_shift_id` viene.
+- Validado en branch Supabase con 21/21 tests (regresión v2==v3,
+  guards D9, register_payment edge cases, ciclo void→credit→redemption
+  traza spec §6.1). Bug menor encontrado en primera pasada: `FOR UPDATE`
+  con `SUM(amount)` — corregido antes de aplicar a prod.
+
+**Código (commits internos)**:
+- `09f6055` server actions (`registerPayment`, `applyCustomerCredit`,
+  `getReceivables`, `getShiftReceivables`, `getCustomerCreditBalance`,
+  `getSalePayments`) + UI (`RegisterPaymentDialog`,
+  `ShiftReceivablesSheet`, botón "Fiados del turno" en header POS,
+  ruta `/receivables`). Lecturas con `requireRole` incluyendo
+  contador; mutaciones sin contador.
+- `63312c6` UX guard rol contador: oculta CTA "Registrar abono" en
+  `/receivables` y `ShiftReceivablesSheet` client-side (defensa en
+  profundidad — la mutación ya está bloqueada server-side). PageHeader
+  cambia a "Vista de solo lectura. Los abonos se registran desde el POS."
+- `f93b479` sidebar link "Cuentas por cobrar" en grupo Contabilidad
+  (siteOnly=true, junto a Ventas/Clientes) con ícono `HandCoins`. Nuevo
+  `ModuleKey = "receivables"`. Defaults por rol agregan `receivables` a
+  contador/encargado/vendedor (admin lo tiene por default).
+
+**Deuda D9 cerrada**: `create_sale` server-side ahora rechaza cash sin
+turno. Guard cliente-side (payment-dialog.tsx) queda como defensa en
+profundidad.
+
+**⚠️ RECORDATORIO OPERATIVO — usuarios existentes NO ven el link
+'Cuentas por cobrar' automáticamente**: `ROLE_DEFAULT_PERMISSIONS` solo
+aplica al **crear** nuevos usuarios (o al reset explícito de permisos).
+Usuarios pre-existentes tienen `user_profiles.permissions[]` congelados
+desde su creación. Para que vean el link nuevo, un admin debe **agregar
+manualmente `'receivables'`** a sus permisos desde `/users`. Mismo
+comportamiento cuando se agregó `web_orders` en una fase previa. No es
+bug — es política del sistema.
+
+**Smoke test confirmado por el usuario en preview** (deploy
+`dpl_2mXYCDTvtHASgURKk6txW2QhNMQC`) antes del merge:
+- POS: fiar + botón "Fiados del turno" con badge count + drawer + abono
+  cash con turno + abono no-cash sin turno + guard cash-sin-turno.
+- `/receivables`: agrupado por cliente, buckets 0-30/31-60/60+, saldo a
+  favor, expand por cliente, botón abono por venta.
+- Guard rol contador: link visible en sidebar, vista solo lectura, CTA
+  ocultos, sin errores crudos del RPC.
+- Sidebar link visible en preview.
+
+**Branch Supabase de validación** (`credit-sales-phase1-validation`,
+`oxramdmsllprpxbhkhmi`): **BORRADO** post-merge (`delete_branch` OK).
+Ya no aporta valor.
 
 ### ✅ CERRADO Y DEPLOYED — Ajustes Fase 1 (scripts/16 + swap deleteAdjustment)
 Rama `s2-adjustments-phase1` mergeada a main (merge commit `af31a01`, commit
