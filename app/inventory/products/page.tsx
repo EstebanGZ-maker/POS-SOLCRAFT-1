@@ -1,8 +1,8 @@
 "use client"
 
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import useSWR from "swr"
-import { Search, Plus, MoreVertical, Pencil, Trash2, Star, Package, Wrench } from "lucide-react"
+import { Search, Plus, MoreVertical, Pencil, Trash2, Star, Package, Wrench, Info } from "lucide-react"
 import { PageHeader } from "@/components/page-header"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -47,10 +47,14 @@ import { formatCurrency } from "@/lib/utils"
 import { getProductsWithStock, deleteProductSafe } from "@/lib/inventory-actions"
 import { getCategories } from "@/lib/actions"
 import { getSitesWithWarehouses } from "@/lib/site-actions"
+import { useSite } from "@/lib/site-context"
 import { ProductFormDialog } from "@/components/inventory/product-form-dialog"
 
 export default function ProductsPage() {
+  const { currentSite } = useSite()
   const [warehouseId, setWarehouseId] = useState<string>("all")
+  const [userOverride, setUserOverride] = useState(false)
+  const lastSiteRef = useRef<string | undefined>(undefined)
   const [search, setSearch] = useState("")
   const [activeCats, setActiveCats] = useState<string[]>([])
   const [formOpen, setFormOpen] = useState(false)
@@ -69,11 +73,56 @@ export default function ProductsPage() {
       sites.flatMap((s: any) =>
         (s.warehouses || []).map((w: any) => ({
           warehouse_id: w.warehouse_id,
+          site_id: s.site_id,
           name: w.name,
           site_name: s.name,
+          is_primary: !!w.is_primary,
+          is_system: !!w.is_system,
         })),
       ),
     [sites],
+  )
+
+  // Default por sede activa: primary warehouse de currentSite (excluye Tránsito).
+  // Fallback "all" cuando: (a) no hay currentSite (usuario sin sedes),
+  // (b) currentSite todavía no resolvió, (c) el primary de esa sede aún no cargó.
+  const defaultWarehouseId = useMemo(() => {
+    if (!currentSite) return "all"
+    const primary = warehouses.find(
+      (w: any) => w.site_id === currentSite.site_id && w.is_primary && !w.is_system,
+    )
+    return primary?.warehouse_id ?? "all"
+  }, [currentSite, warehouses])
+
+  // Re-alineación:
+  //  - Cambio de currentSite.site_id → SIEMPRE resetear al nuevo default + limpiar
+  //    userOverride (cambiar de sede es señal más fuerte que un override previo).
+  //  - Misma sede pero cambia defaultWarehouseId (warehouses acaba de cargar en
+  //    el mount inicial) → alinear solo si no hay userOverride.
+  useEffect(() => {
+    const siteId = currentSite?.site_id
+    const isNewSite = siteId !== lastSiteRef.current
+    if (isNewSite) {
+      lastSiteRef.current = siteId
+      setUserOverride(false)
+      setWarehouseId(defaultWarehouseId)
+    } else if (!userOverride) {
+      setWarehouseId(defaultWarehouseId)
+    }
+    // userOverride se omite de deps a propósito: cuando el usuario cambia el
+    // Select, ya llamamos setWarehouseId directamente en el handler y no
+    // queremos que este effect corra otra vez para sobrescribirlo.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [defaultWarehouseId, currentSite?.site_id])
+
+  const onWarehouseChange = (v: string) => {
+    setWarehouseId(v)
+    setUserOverride(true)
+  }
+
+  const selectedWarehouse = useMemo(
+    () => warehouses.find((w: any) => w.warehouse_id === warehouseId),
+    [warehouses, warehouseId],
   )
 
   const filtered = useMemo(() => {
@@ -121,7 +170,7 @@ export default function ProductsPage() {
 
       <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center">
         <div className="w-full sm:w-64">
-          <Select value={warehouseId} onValueChange={setWarehouseId}>
+          <Select value={warehouseId} onValueChange={onWarehouseChange}>
             <SelectTrigger>
               <SelectValue placeholder="Bodega" />
             </SelectTrigger>
@@ -172,6 +221,31 @@ export default function ProductsPage() {
         </DropdownMenu>
       </div>
 
+      <div
+        className={
+          "mb-3 flex items-center gap-2 rounded-md border px-3 py-2 text-xs " +
+          (warehouseId === "all"
+            ? "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400"
+            : "border-border bg-muted/50 text-muted-foreground")
+        }
+      >
+        <Info className="h-3.5 w-3.5 shrink-0" />
+        {warehouseId === "all" ? (
+          <span>
+            Mostrando <strong className="font-semibold">todas las bodegas</strong> — la
+            columna Cantidad es la suma agregada de todas las sedes.
+          </span>
+        ) : (
+          <span>
+            Mostrando{" "}
+            <strong className="font-semibold">
+              {selectedWarehouse ? `${selectedWarehouse.site_name} · ${selectedWarehouse.name}` : "una bodega"}
+            </strong>
+            .
+          </span>
+        )}
+      </div>
+
       <Card>
         <Table>
           <TableHeader>
@@ -181,7 +255,16 @@ export default function ProductsPage() {
               <TableHead>Categoría</TableHead>
               <TableHead className="text-right">Precio</TableHead>
               <TableHead className="text-right">
-                {warehouseId === "all" ? "Cantidad total" : "Cantidad"}
+                {warehouseId === "all" ? (
+                  <span className="flex flex-col items-end leading-tight">
+                    <span>Cantidad total</span>
+                    <span className="text-[10px] font-normal text-muted-foreground">
+                      suma de todas las bodegas
+                    </span>
+                  </span>
+                ) : (
+                  "Cantidad"
+                )}
               </TableHead>
               <TableHead>Estado</TableHead>
               <TableHead className="w-10" />
