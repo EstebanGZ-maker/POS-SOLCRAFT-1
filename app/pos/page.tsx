@@ -57,7 +57,10 @@ import { ReceiptDialog } from "@/components/pos/receipt"
 import { suspendSale } from "@/lib/suspended-actions"
 import { getCurrentShift, type ShiftBalance } from "@/lib/shift-actions"
 import { useAuth } from "@/lib/auth-context"
-import { Store, LockKeyhole, Wallet, Pause } from "lucide-react"
+import { Store, LockKeyhole, Wallet, Pause, HandCoins } from "lucide-react"
+import { ShiftReceivablesSheet } from "@/components/credit/shift-receivables-sheet"
+import { getShiftReceivables } from "@/lib/actions"
+import { Badge } from "@/components/ui/badge"
 
 interface Product {
   product_id: string
@@ -132,6 +135,9 @@ export default function POSPage() {
   const [openShiftOpen, setOpenShiftOpen] = useState(false)
   const [closeShiftOpen, setCloseShiftOpen] = useState(false)
   const [movementOpen, setMovementOpen] = useState(false)
+  const [receivablesOpen, setReceivablesOpen] = useState(false)
+  const [shiftReceivablesCount, setShiftReceivablesCount] = useState(0)
+  const [receivablesRefreshKey, setReceivablesRefreshKey] = useState(0)
 
   const [suspendedOpen, setSuspendedOpen] = useState(false)
   const [receiptSaleId, setReceiptSaleId] = useState<string | null>(null)
@@ -180,10 +186,19 @@ export default function POSPage() {
   async function refreshShift(sid: string | null) {
     if (!sid) {
       setShift(null)
+      setShiftReceivablesCount(0)
       return null
     }
     const current = await getCurrentShift(sid)
     setShift(current)
+    // Piggyback: recuenta fiados abiertos del turno.
+    if (current?.shift_id) {
+      getShiftReceivables(current.shift_id)
+        .then((r) => setShiftReceivablesCount(r.success ? r.sales.length : 0))
+        .catch(() => setShiftReceivablesCount(0))
+    } else {
+      setShiftReceivablesCount(0)
+    }
     return current
   }
 
@@ -570,6 +585,20 @@ export default function POSPage() {
               </span>
             </div>
             <div className="ml-auto flex gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setReceivablesOpen(true)}
+                disabled={!shift}
+              >
+                <HandCoins className="mr-1.5 h-4 w-4" />
+                Fiados del turno
+                {shiftReceivablesCount > 0 && (
+                  <Badge variant="secondary" className="ml-1.5 h-5 px-1.5 text-xs">
+                    {shiftReceivablesCount}
+                  </Badge>
+                )}
+              </Button>
               <Button variant="outline" size="sm" onClick={() => setMovementOpen(true)}>
                 <Wallet className="mr-1.5 h-4 w-4" />
                 Movimiento
@@ -1036,6 +1065,16 @@ export default function POSPage() {
             onOpenChange={setMovementOpen}
             shiftId={shift.shift_id}
             onSaved={() => refreshShift(siteId)}
+          />
+          <ShiftReceivablesSheet
+            open={receivablesOpen}
+            onOpenChange={setReceivablesOpen}
+            shiftId={shift.shift_id}
+            refreshKey={receivablesRefreshKey}
+            onChange={() => {
+              setReceivablesRefreshKey((k) => k + 1)
+              refreshShift(siteId)
+            }}
           />
         </>
       )}
