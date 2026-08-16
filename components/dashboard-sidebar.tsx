@@ -30,6 +30,7 @@ import {
   PackageCheck,
   ShoppingBag,
   ClipboardCheck,
+  HandCoins,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
@@ -97,6 +98,7 @@ function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
       items: [
         { name: "Movimientos y reportes", href: "/accounting", icon: Calculator, permission: "accounting" },
         { name: "Ventas", href: "/sales", icon: Receipt, permission: "sales" },
+        { name: "Cuentas por cobrar", href: "/receivables", icon: HandCoins, permission: "receivables" },
         { name: "Clientes", href: "/customers", icon: Users, permission: "customers" },
       ],
     },

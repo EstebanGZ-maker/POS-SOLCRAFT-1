@@ -18,6 +18,7 @@ export type ModuleKey =
   | "transfers_receive"
   | "transfers_reconcile"
   | "accounting"
+  | "receivables"
   | "sites_admin"
   | "users_admin"
   | "settings"
@@ -50,6 +51,7 @@ export const MODULES: ModuleDef[] = [
   { key: "transfers_receive", label: "Recibir mercancía", description: "Recibir traslados en la sede destino.", group: "operaciones" },
   { key: "transfers_reconcile", label: "Reconciliar traslados", description: "Cerrar pendientes y dar de baja faltantes.", group: "operaciones" },
   { key: "accounting", label: "Contabilidad", description: "Movimientos y reportes contables.", group: "operaciones" },
+  { key: "receivables", label: "Cuentas por cobrar", description: "Ventas a crédito con saldo pendiente.", group: "operaciones" },
 
   { key: "sites_admin", label: "Administrar sedes", description: "Crear y editar sedes.", group: "administracion", adminOnly: true },
   { key: "users_admin", label: "Gestión de usuarios", description: "Crear, editar y asignar permisos a usuarios.", group: "administracion", adminOnly: true },
@@ -75,14 +77,14 @@ export const ROLE_DEFAULT_PERMISSIONS: Record<UserRole, ModuleKey[]> = {
   // El contador reconcilia pérdidas: dar de baja faltantes es un acto contable
   contador: [
     "dashboard", "sales", "customers", "inventory", "kardex", "accounting",
-    "transfers_reconcile",
+    "receivables", "transfers_reconcile",
   ],
   encargado: [
     "dashboard", "pos", "sales", "customers", "inventory", "adjustments",
     "price_lists", "promotions", "kardex", "transfers_send", "transfers_receive",
-    "accounting", "web_orders",
+    "accounting", "receivables", "web_orders",
   ],
-  vendedor: ["dashboard", "pos", "sales", "customers"],
+  vendedor: ["dashboard", "pos", "sales", "customers", "receivables"],
 }
 
 export function isGlobalRole(role: UserRole | null | undefined): boolean {
