@@ -510,7 +510,7 @@ invalidado — hay que reescribirlo.
 | `motivo` | Impacto WAC | Asiento inmediato en `accounting_entries` | Efecto P&L inmediato | Justificación |
 |---|:---:|:---:|:---:|---|
 | **`compra`** | Capitaliza (recalcula `products.cost` vía WAC — ya cableado por 2B) | **Ninguno** | **0** | Mercancía recién comprada al proveedor. Partida doble estricta: *Débito Inventario / Crédito Caja o Proveedores*. El sistema simplifica omitiendo la cuenta "Caja/Proveedores" — solo capitaliza a Inventario (via `products.cost`). El costo del inventario se reconocerá como `expense` cuando la mercancía se venda (§6.4). El usuario debe ingresar el **costo de adquisición real** (lo que le costó comprarla, no lo que la va a vender). |
-| **`sobrante`** | Capitaliza igual que `compra` — recalcula WAC con el costo que el usuario ingresa manualmente | **Ninguno** | **0** | Aparecen unidades que existían físicamente pero no en el sistema. Por convención del negocio: es mercancía comprada pero no registrada a tiempo (no una donación, no un hallazgo espontáneo). El tratamiento contable es equivalente a `compra`: capitalizar al costo que corresponde. El usuario ingresa un **costo estimado de adquisición**. La distinción vs `compra` es semántica/reportería (auditoría, análisis de fugas de inventario) — el impacto contable inmediato es idéntico. |
+| **`sobrante`** | Capitaliza igual que `compra` — recalcula WAC con el costo que el usuario ingresa manualmente | **Ninguno** | **0** | **DEFINICIÓN ACOTADA (convención del negocio 2026-08-17)**: `sobrante` = mercancía comprada y pagada al proveedor pero no registrada a tiempo en el sistema. NO es un hallazgo genuino sin origen (donación, obsequio, error de recuento a favor de fuente desconocida). Bajo esta definición, el tratamiento contable es equivalente a `compra`: capitaliza al costo real de adquisición que el usuario ingresa. La distinción vs `compra` es semántica/reportería (auditoría, análisis de discrepancias entre kardex y físico) — el impacto contable inmediato es idéntico. **Si en el futuro aparece un caso de sobrante sin costo de adquisición real**, requiere motivo nuevo separado (`hallazgo`/`donacion`) con tratamiento contable distinto — fuera de alcance por ahora, a re-confirmar con el contador. |
 | **`correccion`** | Capitaliza igual que compra/sobrante (recalcula WAC) — el usuario ingresa el costo estimado | **Ninguno** | **0** | Rectificación de captura sin evento económico real (ej. dato del sistema que estaba mal). Sin asiento inmediato — asentar duplicaría o distorsionaría. La UI exige `notes` para auditoría. |
 
 **Kardex**: los 3 motivos usan `movement_type='ajuste'`, sin cambio
@@ -548,6 +548,30 @@ que le costó comprar esa mercancía específica), pero ve el promedio
 vigente como orientación. Formateo COP con MoneyInput (ya migrado a
 formato en vivo).
 
+**Validación `cost > 0` en creación de producto físico**
+([components/inventory/product-form-dialog.tsx](../components/inventory/product-form-dialog.tsx)):
+si `is_service=false`, el campo costo debe ser `> 0` para guardar. Sin
+esta validación, un producto físico con `cost=0` o `NULL` genera venta
+con margen 100% aparente (COGS=0, income=total; ver §6.4 caso borde).
+
+- **Alcance**: solo productos NUEVOS al momento del release. **No se
+  hace backfill/alerta sobre productos existentes** — auditoría en prod
+  el 2026-08-17 muestra 10 productos activos físicos, **cero con cost=0
+  o NULL**. El hueco de "productos existentes con costo cero" no existe
+  hoy; la validación es puramente preventiva.
+- **Modalidad**: bloqueo (submit deshabilitado + mensaje) para nuevos
+  productos físicos. Menos disruptivo que warning porque no hay flujo
+  legítimo actual con cost=0 en catálogo real; forzar cost>0 desde el
+  primer registro elimina la ambigüedad.
+- **Servicios**: sin validación (cost puede quedar 0 o NULL por diseño
+  — no aportan COGS).
+- **Edición de producto existente**: NO se agrega validación de "no
+  bajar a 0" (fuera de alcance — la edición manual del cost es
+  administrativa, generalmente correctiva de un WAC movido, y el usuario
+  admin sabe lo que hace). Si en el futuro surge un producto físico con
+  cost=0 (por edición manual + venta subsecuente), aparecerá como
+  margen 100% en el reporte — trazable pero raro. Suficiente por ahora.
+
 ### 6.3 Referencia al ajuste desde `accounting_entries`
 
 **Decisión abierta D4**: añadir columna `adjustment_id UUID REFERENCES
@@ -583,6 +607,27 @@ mismo RPC?"): **mismo RPC**.
 - **Análogo al patrón de income** del propio `create_sale` hoy: ya emite
   income "Ventas POS" al final del RPC como parte de su transacción.
 
+**Cambio de schema obligatorio — `sale_items.unit_cost`**:
+
+Para que `void_sale` pueda revertir el COGS exacto que se asentó al
+crear la venta, el WAC vigente al momento de la venta debe persistirse
+por línea. `products.cost` es global vivo — puede haber cambiado por
+ajustes intermedios entre la venta y el void, y usarlo en `void_sale`
+generaría un asiento reverso de monto DISTINTO al original, produciendo
+descuadre en `verify_credit_integrity()` / integridad P&L. Por eso el
+release SQL debe incluir:
+
+```sql
+ALTER TABLE sale_items
+  ADD COLUMN IF NOT EXISTS unit_cost NUMERIC(12,2);
+-- Backfill de sale_items históricos: NULL (no se calcula; el reverso
+-- de un void_sale sobre venta pre-cambio no reversa COGS porque no
+-- había COGS que revertir).
+```
+
+Análogo a `sale_items.unit_price` que ya se persiste. Sin cambio de RLS
+(escritura sigue cerrada, solo vía RPCs SECDEF).
+
 **Estructura del cambio en `create_sale`**:
 
 ```
@@ -597,8 +642,16 @@ FOR v_item IN SELECT ... LOOP
         SELECT cost INTO v_item_cost
           FROM products WHERE product_id = v_item.product_id;
         v_cogs_total := v_cogs_total + (v_item.quantity * COALESCE(v_item_cost, 0));
+    ELSE
+        v_item_cost := NULL;   -- servicios no tienen costo
     END IF;
-    -- (Continua con INSERT sale_items + adjust_warehouse_stock)
+
+    -- INSERT sale_items ahora incluye unit_cost (además del unit_price actual).
+    INSERT INTO sale_items (sale_id, product_id, quantity, unit_price, unit_cost)
+    VALUES (v_sale_id, v_item.product_id, v_item.quantity,
+            COALESCE(v_item.unit_price, 0), v_item_cost);
+
+    -- (Continua con lookup is_service y adjust_warehouse_stock como hoy)
 END LOOP;
 
 -- Al final, después del income actual:
@@ -640,14 +693,74 @@ END IF;
   el comportamiento contablemente correcto (utilidad reconoce al vender,
   aunque no se cobre) y coherente con el resto del cambio.
 
-**Cambio en `void_sale`** (impacto colateral):
+**Cambio en `void_sale`** (impacto colateral — auditado contra el void_sale REAL de prod, no el de scripts/15):
 
-`void_sale` hoy compensa el income de la venta con un expense
-"Reversión — Ventas POS" (o similar). Debe ampliarse para compensar
-también el COGS con un income "Reversión — Costo de mercancía vendida"
-del mismo monto, si existía. Patrón análogo al que `void_adjustment` de
-17c usa para compensar la merma. Sin este cambio, un void de venta
-dejaría el COGS colgando como pérdida no compensada.
+Estado actual del RPC (`void_sale(p_sale_id, p_user_id)`, prod
+`nxszaxwsrtlofqimbfig`):
+1. Chequeo auth/rol/sede.
+2. `UPDATE sales SET status='voided'` con `FOR UPDATE`.
+3. Loop `sale_items` → devuelve stock con `movement_type='devolucion'`
+   para no-servicios.
+4. **`IF v_sale.amount_paid = 0 THEN RETURN;`** — corta temprano sin
+   asentar nada (Caso C).
+5. Si `amount_paid > 0`: 1 expense (`category` = "Anulación crédito" o
+   "Anulación venta") por `amount_paid` — **NO por `total_amount`**.
+6. Si `is_on_account`: emite `customer_credits` por `amount_paid`.
+7. Si contado con cash payments: refund a `cash_movements` (requiere
+   turno abierto).
+
+**Cambios requeridos por el nuevo método**:
+
+- **Mover el `RETURN` del paso 4 hacia el final, o eliminarlo** y
+  envolver los pasos 5-7 en un `IF v_sale.amount_paid > 0 THEN ... END
+  IF;`. La reversa del COGS debe ejecutarse SIEMPRE que la venta
+  original haya tenido COGS asentado, independiente del `amount_paid`.
+  Una venta a crédito sin abono (Caso C) hoy no reversa nada; con el
+  nuevo método sí debe reversar el COGS que se asentó al vender.
+- **Nuevo bloque compensatorio de COGS** (entre los pasos 3 y 4, o al
+  final, después de refund):
+
+```
+-- Recuperar el COGS exacto asentado en la venta original desde
+-- sale_items.unit_cost (persistido en create_sale).
+SELECT COALESCE(SUM(si.quantity * si.unit_cost), 0) INTO v_cogs_reverse
+  FROM sale_items si
+ WHERE si.sale_id = p_sale_id
+   AND si.unit_cost IS NOT NULL;   -- filtro implícito de servicios/históricos
+
+IF v_cogs_reverse > 0 THEN
+    INSERT INTO accounting_entries
+        (site_id, entry_type, category, description, amount, sale_id)
+    VALUES (
+        v_sale.site_id, 'income', 'Reversión Costo de mercancía vendida',
+        'Anulación COGS venta #' || COALESCE(v_sale.numero::TEXT, LEFT(p_sale_id::TEXT, 8)),
+        v_cogs_reverse, p_sale_id
+    );
+END IF;
+```
+
+- **`sale_items.unit_cost IS NULL`** para ventas históricas pre-cambio
+  → el bloque no encuentra nada que reversar (0 amount), no inserta
+  fila. Consistente con "no hubo COGS asentado, nada que reversar".
+
+**Impacto en kardex al voidar**: sin cambio. El stock ya vuelve con
+`movement_type='devolucion'` como hoy. El WAC (`products.cost`) NO se
+reajusta al voidar (regla D5 análoga al void_adjustment, ya presente en
+prod porque `products.cost` no cambia al devolver stock — el kardex es
+independiente del WAC).
+
+**Consecuencia contable de la reversa completa**: post-void, el neto
+`accounting_entries` de la venta anulada es:
+- Contado con abono completo: `+income (venta original)`, `-expense (COGS
+  original)`, `-expense (anulación venta por amount_paid)`,
+  `+income (reversión COGS)`. Neto: `+income - expense - amount_paid +
+  cogs = amount_paid - amount_paid + (income - expense_venta) +
+  (cogs - cogs) = 0`. **Cuadra a 0** ✓
+- Crédito sin abono (Caso C original): `+income=0`, `-expense (COGS
+  original)`, `+income (reversión COGS)`. Neto: `−cogs + cogs = 0`. **Cuadra
+  a 0** ✓
+- Contado con abono parcial: análogo al primer caso, cuadra a 0 sobre
+  el `amount_paid` reversado + COGS completo reversado.
 
 **Cambio en `receive_payment` / futuros abonos de crédito**: hoy la Fase
 1 crédito solo genera el income del abono inicial dentro de `create_sale`.

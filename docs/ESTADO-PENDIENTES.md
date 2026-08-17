@@ -74,13 +74,14 @@ de dejarlo movido).
 **Estado post-apply verificado**: `verify_kardex_integrity()=0`,
 `verify_credit_integrity()=0`.
 
-**2C + 2D BLOQUEADAS por el mismo gate del contador** (`motivo='compra' →
-expense inmediato`, análisis DN2). **NO se pueden aplicar por separado**:
-2D no es un refactor "conceptualmente dependiente" — es un release
-acoplado a 2C. Adelantar 2D sin 2C introduce regresión contable real
-(hoy `ingressNewProduct` asienta expense; sin 2C, la refactorización de
-2D lo pierde porque el RPC común no tiene la lógica de asiento — esa
-llega con 2C). Ver §1.3 abajo para el detalle.
+**Gate contador RESUELTO 2026-08-17 con cambio de método**: se adopta
+capitalización + COGS al vender (opción a1 del análisis original,
+extendida a `sobrante`). 17c v1 queda invalidado. **Release triple
+acoplado** para prod (misma ventana): (a) SQL 17c v2 sin asientos de
+incrementos; (b) SQL cambio `create_sale`+`void_sale` con COGS
+persistido en `sale_items.unit_cost`; (c) TS 2D refactor callers + UI.
+NO se pueden fasear los tres — cualquier subset introduce regresión
+contable (detalle en §1.3 y bloque "GATE CONTADOR RESUELTO" abajo).
 
 ### ✅ CERRADO Y DEPLOYED — MoneyInput con formateo en vivo (18 sitios)
 
@@ -404,26 +405,67 @@ sin `motivo`/`numero` → labels omitidos). El wrapper `voidAdjustment` en
 `void_adjustment` no existe) a mensaje amigable, no stacktraces. **Estado
 verificado en producción tras el merge.**
 
-### ⚠ GATE CONTADOR VIVO — Fase 2C + 2D de ajustes bloqueadas juntas hasta OK
+### ✅ GATE CONTADOR RESUELTO 2026-08-17 — método cambia a capitalización + COGS al vender
 
-`scripts/17c_adjustments_contabilidad.sql` introduce el tratamiento contable
-por motivo. El asiento `motivo='compra' → expense inmediato "Compra de
-mercancía"` es una simplificación que impacta P&L al comprar cuando partida
-doble estricta NO lo haría. **El contador debe validar** antes del apply a
-prod. Detalles en [docs/INVENTORY-ADJUSTMENTS-SPEC.md §6.2 "Gate contable"](INVENTORY-ADJUSTMENTS-SPEC.md).
-Si el contador rechaza → hay 3 alternativas listadas en el spec (a1/a2/a3);
-elegir una y reescribir 17c.
+**Estado**: contador aprobó **cambio de método** para Fase 2C. En vez de
+"compra → expense inmediato" (17c v1), se adopta **capitalización a
+inventario (WAC) + reconocimiento del costo como expense al momento de
+la venta (COGS)** — opción (a1) del análisis original del spec, extendida
+para que `sobrante` también capitalice bajo la definición acotada de
+"mercancía comprada y pagada al proveedor pero no registrada a tiempo".
 
-**2D (refactor TS de `ingressNewProduct`/`receiveMerchandise`) está
-bloqueada por el MISMO gate**. No es un refactor "conceptualmente
-relacionado" — es un release físicamente acoplado a 2C: 2C introduce la
-firma nueva del RPC + los asientos, 2D es la parte que cabla los callers
-para que consuman esa firma. Aplicar solo 2D sin 2C elimina el asiento
-contable actual de `ingressNewProduct` sin sustituto (regresión). Aplicar
-solo 2C sin 2D deja `receiveMerchandise` roto (RPC con validación de
-motivo obligatorio, caller que no lo pasa → RAISE). **Sesión futura
-lee esto**: no intentar 2D por separado bajo ninguna circunstancia. Ver
-§1.3 y §3.
+**Consecuencia**: `scripts/17c_adjustments_contabilidad.sql` (v1)
+**queda invalidado**. Se reescribe como 17c v2 conforme a
+[docs/INVENTORY-ADJUSTMENTS-SPEC.md §6.2](INVENTORY-ADJUSTMENTS-SPEC.md)
+(tabla nueva) + §6.4 (COGS en create_sale) + §6.5 (traza numérica).
+DN4 en §10.1 consolida el cambio.
+
+**Punto abierto para re-confirmación futura**: la definición de
+`sobrante` cubre solo el caso "comprado no registrado". Si en el futuro
+aparece un sobrante genuino sin origen de compra (donación, obsequio,
+hallazgo sin factura), requiere motivo nuevo separado
+(`hallazgo`/`donacion`) con tratamiento contable distinto — fuera de
+alcance por ahora, a re-confirmar con el contador cuando surja el caso
+real. Documentado en §6.2 tabla de motivos.
+
+**RELEASE TRIPLE ACOPLADO** para prod (misma ventana, mismo commit):
+
+1. **SQL 17c v2** — RPC `create_adjustment` con `p_motivo` (mantiene
+   firma prevista); WAC ahora para los 3 motivos (no solo compra);
+   ELIMINA asientos de incrementos; conserva asiento de merma (§6.1).
+2. **SQL cambio `create_sale` + `void_sale`** — persiste
+   `sale_items.unit_cost` (ALTER TABLE nueva); emite asiento COGS
+   agregado por venta; void_sale reversa COGS desde `unit_cost`
+   persistido (no de `products.cost` vivo, para reverso exacto).
+   `void_sale` también quita el `RETURN` temprano cuando
+   `amount_paid=0` para que el COGS de venta a crédito sin abono
+   también se reverse.
+3. **TS 2D** — refactor callers `receiveMerchandise` +
+   `ingressNewProduct` + wrapper `createAdjustment` para pasar
+   `motivo`; UI `adjustment-dialog.tsx` muestra WAC actual como
+   referencia; UI `product-form-dialog.tsx` valida `cost>0` en
+   creación de productos físicos (preventivo — hoy 0 productos en
+   prod tienen cost=0/NULL).
+
+**NO se puede fasear el release**:
+- Aplicar solo 17c v2 sin cambio de create_sale = incrementos ya no
+  asientan pero tampoco COGS al vender → catálogo capitalizado que
+  nunca se reconoce como expense → utilidad falsamente inflada
+  perpetua.
+- Aplicar solo cambio create_sale sin 17c v2 = mantiene el asiento
+  "Compra de mercancía" viejo de `ingressNewProduct` + añade COGS al
+  vender → doble reconocimiento del costo (exactamente el riesgo que
+  el spec original identificaba y que motivó el cambio de método).
+- Aplicar solo 2D sin lo demás = misma regresión ya documentada.
+
+**Retroactividad**: NO aplica. Ventas actuales en prod son datos de
+prueba, no se reconcilia histórico. El nuevo método rige desde el
+deploy. Notar en el commit que aplique el release.
+
+Cross-reference en [docs/CREDIT-SALES-SPEC.md §6](CREDIT-SALES-SPEC.md)
+— `register_payment` (Fase 2/3 crédito, aún por escribir) **NO debe
+generar COGS adicional**; el COGS se registra completo al vender,
+abonos posteriores solo tocan income.
 
 ### ⚠ SMOKE TEST DE PROD PENDIENTE (para vos, en el navegador)
 
@@ -464,7 +506,7 @@ los ajustes siguen pendientes de apply.
   cualquier ambiente basado en el baseline canónico. Parche trivial:
   agregar `code='VAL16A'/'VAL16B'` en los INSERT.
 
-### 1.2.1 Fase 2A/2B — APLICADAS A PROD 2026-08-17; 2C + 2D bloqueadas (mismo gate)
+### 1.2.1 Fase 2A/2B APLICADAS A PROD 2026-08-17; 2C rediseñado (release triple con 2D + cambio create_sale, listo para SQL)
 
 ### 1.3 Ajustes — Fase 2 (sub-faseada por riesgo)
 
@@ -472,16 +514,25 @@ los ajustes siguen pendientes de apply.
   Ver bloque "CERRADO Y DEPLOYED — Ajustes Fase 2A + 2B" arriba en §0.
 - **2B · WAC** (🟡 medio) — ✅ **APLICADO A PROD 2026-08-17**.
   Ver bloque "CERRADO Y DEPLOYED — Ajustes Fase 2A + 2B" arriba en §0.
-- **2C · Contabilidad con motivos** (🔴 alto — **GATE CONTADOR**) —
-  [scripts/17c_adjustments_contabilidad.sql](../scripts/17c_adjustments_contabilidad.sql).
-  ALTER `accounting_entries += adjustment_id` FK; `create_adjustment` con
-  firma nueva `+ p_motivo TEXT DEFAULT NULL`; asientos por motivo (compra
-  → expense, sobrante → income, correccion → sin asiento); disminuciones
-  → expense "Merma"; `void_adjustment` v2c compensa asientos originales
-  (income↔expense inverso) — **NO revierte WAC (D5)**. Nueva función
-  `verify_adjustment_accounting_integrity()`. Validaciones: motivo
-  obligatorio si hay incrementos, NULL si es 100% disminuciones,
-  correccion exige notes.
+- **2C · Contabilidad por motivos — REDISEÑADA 2026-08-17** (🔴 alto,
+  gate contador RESUELTO) — 17c v1 INVALIDADO, reemplazado por 17c v2
+  (por escribir) que **NO asienta al comprar** (los 3 motivos
+  capitalizan a WAC, ya cableado por 2B); mantiene `p_motivo` en la
+  firma, ALTER `accounting_entries += adjustment_id` FK, asiento de
+  merma para disminuciones (§6.1 sin cambio), `verify_adjustment_
+  accounting_integrity()`. Reconocimiento del costo migra a COGS al
+  vender en `create_sale` (nueva pieza — ver bullet siguiente).
+  Detalles en [docs/INVENTORY-ADJUSTMENTS-SPEC.md §6.2](../docs/INVENTORY-ADJUSTMENTS-SPEC.md).
+- **NUEVO · Cambio create_sale + void_sale (COGS)** (🔴 alto,
+  parte del release triple con 2C v2 y 2D) — ALTER
+  `sale_items += unit_cost NUMERIC(12,2)`; `create_sale` persiste
+  `unit_cost` desde `products.cost` al momento de la venta y emite 1
+  asiento agregado `expense "Costo de mercancía vendida"` por venta;
+  `void_sale` reversa COGS desde `sale_items.unit_cost` (no de
+  `products.cost` vivo) y quita el `RETURN` temprano cuando
+  `amount_paid=0` para que la reversa del COGS también aplique en
+  ventas a crédito sin abono. Detalle en
+  [docs/INVENTORY-ADJUSTMENTS-SPEC.md §6.4](../docs/INVENTORY-ADJUSTMENTS-SPEC.md).
 - **2D · Unificar entradas** (🟡 medio, solo TS) — 🚫 **BLOQUEADA por el
   mismo gate del contador que 2C. NO adelantar 2D sin 2C, bajo ninguna
   circunstancia** (regresión contable real: sin la lógica de asiento del
@@ -579,19 +630,20 @@ los ajustes siguen pendientes de apply.
 17b (ajustes 2B WAC, sesión 2026-08-17).
 
 **Pendiente por aplicar a prod**:
-1. **Ajustes 2C + 2D — RELEASE ACOPLADO OBLIGATORIO** (`scripts/17c` +
-   refactor TS de `ingressNewProduct`/`receiveMerchandise`/`createAdjustment`
-   wrapper a `create_adjustment` con `motivo='compra'`). SQL 2C cambia la
-   firma del RPC (`+ p_motivo TEXT DEFAULT NULL`), agrega `adjustment_id`
-   FK en `accounting_entries`, introduce los asientos por motivo y
-   `verify_adjustment_accounting_integrity`. TS 2D refactoriza los 3
-   callers para pasar `motivo`. **NO se puede fasear**: aplicar solo 2C
-   deja los callers TS sin pasar `motivo` (RPC funciona con default NULL,
-   pero `receiveMerchandise` intento con incrementos y `motivo=NULL`
-   RAISE por regla de motivo obligatorio → ventas rotas hasta que llegue
-   2D); aplicar solo 2D pierde el asiento de `ingressNewProduct` sin
-   sustituto (regresión contable). **Ambos requieren OK explícito del
-   contador** (mismo gate: `motivo='compra' → expense inmediato`, DN2).
+1. **Release TRIPLE ACOPLADO 2C v2 + create_sale/void_sale + 2D**
+   (nombres provisionales: `17c_v2_adjustments_no_expense.sql` +
+   `17e_cogs_in_sales.sql` + refactor TS). Diseño completo en
+   [docs/INVENTORY-ADJUSTMENTS-SPEC.md §6.2 + §6.4](../docs/INVENTORY-ADJUSTMENTS-SPEC.md).
+   Método aprobado por el contador 2026-08-17: capitalizar al comprar
+   (WAC), reconocer COGS al vender. **NO se puede fasear**: cualquier
+   subset introduce regresión contable (aplicar solo 17c v2 = catálogo
+   capitalizado sin reconocimiento perpetuo → utilidad inflada; aplicar
+   solo cambio create_sale = doble reconocimiento con el asiento viejo
+   de `ingressNewProduct` que aún existe; aplicar solo 2D = pérdida del
+   asiento actual sin sustituto). Retroactividad NO aplica — solo
+   ventas nuevas post-deploy. Todavía debe escribirse el SQL de las 2
+   migraciones (`17c v2` y el nuevo `17e`) + validación end-to-end en
+   branch desechable antes del apply a prod.
 
 **Patrón de validación probado esta sesión** (para replicar con ajustes):
 1. `create_branch` con `with_data=false` en Supabase Pro (~$0.01344/hora).
@@ -618,8 +670,9 @@ los ajustes siguen pendientes de apply.
 
 | Gate | Qué revisar | Bloquea |
 |---|---|---|
-| **Contador — `compra → expense` inmediato** | Ver [INVENTORY-ADJUSTMENTS-SPEC.md §6.2](INVENTORY-ADJUSTMENTS-SPEC.md) subsección "Gate contable". El asiento propuesto simplifica partida doble; si rechaza, hay 3 alternativas (a1/a2/a3). Documentar la respuesta en el commit que aplique 17c. | **Fase 2C + 2D apply a prod (release acoplado, no separables — ver §1.3 y §3)** |
-| **Contador — DN2 `movement_type='ajuste'` uniforme** | Confirmar que aceptamos perder la distinción compra/ajuste en `stock_movements` (queda en `inventory_adjustments.motivo`). Análisis en [scripts/17d_adjustments_unify_entries.md](../scripts/17d_adjustments_unify_entries.md). | **Fase 2C + 2D apply (mismo release que arriba)** |
+| ✅ ~~Contador — `compra → expense` inmediato~~ | **RESUELTO 2026-08-17** — se adopta capitalización + COGS al vender en su lugar (opción a1 extendida). Ver DN4 en [INVENTORY-ADJUSTMENTS-SPEC.md §10.1](INVENTORY-ADJUSTMENTS-SPEC.md) y §0 bloque "GATE CONTADOR RESUELTO" arriba. | — (ya no bloquea; nuevo release triple queda como trabajo de SQL) |
+| ✅ ~~Contador — DN2 `movement_type='ajuste'` uniforme~~ | **RESUELTO** con el mismo cambio de método — DN2 se mantiene válida bajo el nuevo diseño. | — |
+| **Contador — sobrante sin costo de adquisición real** | Definición actual de `sobrante` = "mercancía comprada y pagada al proveedor pero no registrada a tiempo". Si aparece caso genuino sin origen de compra (donación, hallazgo sin factura), requiere motivo nuevo (`hallazgo`/`donacion`) con tratamiento distinto — no está diseñado. Re-confirmar con contador cuando surja. | Motivos nuevos post-2C v2 |
 
 ---
 
