@@ -1,66 +1,79 @@
 "use client"
 
 import * as React from "react"
+import { NumericFormat } from "react-number-format"
 import { Input } from "@/components/ui/input"
-import { fmtNum } from "@/lib/format"
 
 // Money input for COP amounts.
 // - Padre almacena number (o number | null si emptyAsNull=true).
-// - Muestra separador de miles al perder foco (fmtNum es-CO: 1.500.000).
-// - Mientras el usuario tipea, muestra sólo dígitos (sin puntos) para no
-//   mover el cursor. Al blur re-formatea.
+// - Formateo EN VIVO con puntos de miles al tipear (es-CO: 1.500.000).
+//   El manejo de cursor lo hace react-number-format: al insertar/borrar
+//   un dígito con el caret en medio del número, el caret se recoloca en
+//   la posición lógica correcta ignorando los puntos.
 // - Copiar/pegar "1.500.000" se limpia automáticamente.
-// - COP no usa decimales: cualquier no-dígito se descarta.
-export interface MoneyInputProps
-  extends Omit<React.InputHTMLAttributes<HTMLInputElement>, "value" | "onChange" | "type" | "inputMode"> {
+// - COP no usa decimales: decimalScale=0 descarta cualquier cifra decimal.
+// - No permite negativos.
+export interface MoneyInputProps {
   value: number | null | undefined
   onChange: (value: number | null) => void
   emptyAsNull?: boolean
+  id?: string
+  className?: string
+  placeholder?: string
+  disabled?: boolean
+  autoFocus?: boolean
+  onBlur?: React.FocusEventHandler<HTMLInputElement>
+  onFocus?: React.FocusEventHandler<HTMLInputElement>
+  autoComplete?: string
 }
 
 export const MoneyInput = React.forwardRef<HTMLInputElement, MoneyInputProps>(
-  ({ value, onChange, emptyAsNull = false, onFocus, onBlur, autoComplete = "off", ...rest }, ref) => {
-    const [focused, setFocused] = React.useState(false)
-    const [raw, setRaw] = React.useState<string>(() =>
-      value == null ? "" : String(Math.round(value)),
-    )
-
-    React.useEffect(() => {
-      if (focused) return
-      const next = value == null ? "" : String(Math.round(value))
-      setRaw((prev) => (prev === next ? prev : next))
-    }, [value, focused])
-
-    const display = focused ? raw : raw === "" ? "" : fmtNum(Number(raw))
-
-    function handleChange(e: React.ChangeEvent<HTMLInputElement>) {
-      const digits = e.target.value.replace(/\D/g, "")
-      setRaw(digits)
-      if (digits === "") {
-        onChange(emptyAsNull ? null : 0)
-      } else {
-        onChange(Number(digits))
-      }
-    }
-
+  (
+    {
+      value,
+      onChange,
+      emptyAsNull = false,
+      id,
+      className,
+      placeholder,
+      disabled,
+      autoFocus,
+      onBlur,
+      onFocus,
+      autoComplete = "off",
+    },
+    ref,
+  ) => {
     return (
-      <Input
-        ref={ref}
-        type="text"
-        inputMode="numeric"
-        autoComplete={autoComplete}
-        value={display}
-        onChange={handleChange}
+      <NumericFormat
+        thousandSeparator="."
+        decimalSeparator=","
+        decimalScale={0}
+        allowNegative={false}
+        // value=null / undefined → "" → display vacío.
+        value={value ?? ""}
+        onValueChange={(values) => {
+          const n = values.floatValue
+          if (n === undefined) {
+            onChange(emptyAsNull ? null : 0)
+          } else {
+            onChange(n)
+          }
+        }}
+        customInput={Input}
+        getInputRef={ref}
+        id={id}
+        className={className}
+        placeholder={placeholder}
+        disabled={disabled}
+        autoFocus={autoFocus}
+        onBlur={onBlur}
         onFocus={(e) => {
-          setFocused(true)
           e.target.select()
           onFocus?.(e)
         }}
-        onBlur={(e) => {
-          setFocused(false)
-          onBlur?.(e)
-        }}
-        {...rest}
+        inputMode="numeric"
+        autoComplete={autoComplete}
       />
     )
   },
