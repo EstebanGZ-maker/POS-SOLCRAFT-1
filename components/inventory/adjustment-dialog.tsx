@@ -5,6 +5,7 @@ import { Trash2 } from "lucide-react"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { MoneyInput } from "@/components/ui/money-input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
@@ -134,11 +135,10 @@ export function AdjustmentDialog({
                   </div>
                   <div className="col-span-3 sm:col-span-2">
                     <Label className="text-xs">Costo</Label>
-                    <Input
-                      type="number"
+                    <MoneyInput
                       className="h-9"
                       value={r.cost}
-                      onChange={(e) => update(r.product_id, { cost: Number(e.target.value) || 0 })}
+                      onChange={(n) => update(r.product_id, { cost: n ?? 0 })}
                     />
                   </div>
                   <div className="col-span-1 flex justify-end">

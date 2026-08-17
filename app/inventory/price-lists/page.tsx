@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
+import { MoneyInput } from "@/components/ui/money-input"
 import { Label } from "@/components/ui/label"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
 import {
@@ -55,9 +56,8 @@ export default function PriceListsPage() {
     } else toast({ title: "Error", description: res.message, variant: "destructive" })
   }
 
-  const savePrice = async (product_id: string, value: string) => {
-    const price = Number(value)
-    if (isNaN(price)) return
+  const savePrice = async (product_id: string, value: number | null) => {
+    const price = value ?? 0
     const res = await setProductPrice(product_id, selectedId, price)
     if (res.success) {
       toast({ title: "Precio actualizado" })
@@ -182,11 +182,11 @@ export default function PriceListsPage() {
   )
 }
 
-function PriceRow({ product, onSave }: { product: any; onSave: (id: string, v: string) => void }) {
-  const [value, setValue] = useState(String(product.listPrice ?? product.price))
+function PriceRow({ product, onSave }: { product: any; onSave: (id: string, v: number | null) => void }) {
+  const [value, setValue] = useState<number | null>(Number(product.listPrice ?? product.price) || 0)
 
   useEffect(() => {
-    setValue(String(product.listPrice ?? product.price))
+    setValue(Number(product.listPrice ?? product.price) || 0)
   }, [product.listPrice, product.price])
 
   return (
@@ -195,11 +195,11 @@ function PriceRow({ product, onSave }: { product: any; onSave: (id: string, v: s
       <TableCell className="text-right text-muted-foreground">{formatCurrency(product.price)}</TableCell>
       <TableCell>
         <div className="flex items-center justify-end gap-2">
-          <Input
-            type="number"
+          <MoneyInput
             className="h-9 w-32 text-right"
             value={value}
-            onChange={(e) => setValue(e.target.value)}
+            onChange={setValue}
+            emptyAsNull
           />
           <Button size="icon" variant="secondary" className="h-9 w-9" onClick={() => onSave(product.product_id, value)}>
             <Check className="h-4 w-4" />

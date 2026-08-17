@@ -207,6 +207,23 @@ Deudas menores dejadas por Fase 3 (no bloquean nada):
   `'credito_favor'` inflaría "no-cash" sin ser plata real. Documentar
   cuando exista ese reporte.
 
+Deuda menor dejada por el bloque de formato de miles (rama
+`s6-money-input-format`, sesión 2026-08-16):
+- **`BusinessSettings.shipping_cost` sigue siendo `number` (no nullable)**
+  por decisión explícita en esta PR. La intención UX (vacío = "no
+  configurado" ≠ 0 = "envío gratis") NO se respeta hoy: el `MoneyInput` de
+  `app/settings/receipt/page.tsx` para "Costo de envío" usa
+  `emptyAsNull=false` (vacío se coerce a 0) porque widening a `number | null`
+  requeriría ampliar el tipo en `lib/business-settings-actions.ts` +
+  columna en Supabase (`business_settings.shipping_cost`) + posibles
+  callers en el storefront público que asuman `number`. Fuera de scope
+  para esta PR. Si se decide priorizar la semántica correcta: (a) alterar
+  la columna a `NULL`able, (b) widening del tipo TS, (c) cambiar el
+  `MoneyInput` a `emptyAsNull` + parent que persista null, (d) auditar
+  `app/catalog/*` para manejar `shipping_cost = null` como "no cobrar
+  envío" o el default que decida el negocio. `free_shipping_over` sí
+  quedó con `emptyAsNull=true` porque su tipo ya era `number | null`.
+
 ### ✅ CERRADO Y DEPLOYED — Ajustes Fase 1 (scripts/16)
 - **BD**: aplicado a prod (`nxszaxwsrtlofqimbfig`) vía `apply_migration` en
   la sesión 2026-08-15. Baseline kardex pre-apply: 0 violaciones; post-apply:

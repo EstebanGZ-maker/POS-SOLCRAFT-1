@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
+import { MoneyInput } from "@/components/ui/money-input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Button } from "@/components/ui/button"
@@ -252,18 +253,16 @@ export function ProductFormDialog({
             <div className="grid gap-4 sm:grid-cols-3">
               <div className="space-y-1.5">
                 <Label>Costo inicial</Label>
-                <Input
-                  type="number"
-                  value={form.cost}
-                  onChange={(e) => setForm({ ...form, cost: e.target.value })}
+                <MoneyInput
+                  value={Number(form.cost) || 0}
+                  onChange={(n) => setForm({ ...form, cost: String(n ?? 0) })}
                 />
               </div>
               <div className="space-y-1.5">
                 <Label>Precio base *</Label>
-                <Input
-                  type="number"
-                  value={form.price}
-                  onChange={(e) => setForm({ ...form, price: e.target.value })}
+                <MoneyInput
+                  value={Number(form.price) || 0}
+                  onChange={(n) => setForm({ ...form, price: String(n ?? 0) })}
                 />
               </div>
               <div className="space-y-1.5">

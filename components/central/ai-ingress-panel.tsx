@@ -5,6 +5,7 @@ import { useRef, useState } from "react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { MoneyInput } from "@/components/ui/money-input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Badge } from "@/components/ui/badge"
@@ -335,20 +336,18 @@ export function AiIngressPanel({
                           </div>
                           <div>
                             <Label className="text-xs">Precio de venta (COP)</Label>
-                            <Input
-                              type="number"
-                              value={item.price || ""}
-                              onChange={(e) => update(item.id, { price: Number(e.target.value) })}
-                              placeholder="95000"
+                            <MoneyInput
+                              value={item.price}
+                              onChange={(n) => update(item.id, { price: n ?? 0 })}
+                              placeholder="95.000"
                             />
                           </div>
                           <div>
                             <Label className="text-xs">Costo de adquisición (COP)</Label>
-                            <Input
-                              type="number"
-                              value={item.cost || ""}
-                              onChange={(e) => update(item.id, { cost: Number(e.target.value) })}
-                              placeholder="45000"
+                            <MoneyInput
+                              value={item.cost}
+                              onChange={(n) => update(item.id, { cost: n ?? 0 })}
+                              placeholder="45.000"
                             />
                           </div>
                           <div>

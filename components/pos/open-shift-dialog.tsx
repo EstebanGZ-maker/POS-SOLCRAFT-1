@@ -3,7 +3,7 @@
 import { useState } from "react"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
+import { MoneyInput } from "@/components/ui/money-input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { toast } from "@/components/ui/use-toast"
@@ -30,7 +30,7 @@ export function OpenShiftDialog({
   openedBy,
   onOpened,
 }: OpenShiftDialogProps) {
-  const [initialCash, setInitialCash] = useState("0")
+  const [initialCash, setInitialCash] = useState<number>(0)
   const [bankBase, setBankBase] = useState("Caja general")
   const [saving, setSaving] = useState(false)
 
@@ -39,7 +39,7 @@ export function OpenShiftDialog({
     const result = await openShift({
       site_id: siteId,
       warehouse_id: warehouseId,
-      initial_cash: Number(initialCash) || 0,
+      initial_cash: initialCash,
       bank_base: bankBase,
       opened_by: openedBy ?? null,
     })
@@ -47,7 +47,7 @@ export function OpenShiftDialog({
     if (result.success) {
       toast({ title: "Turno abierto", description: `Caja iniciada en ${siteName}.` })
       onOpenChange(false)
-      setInitialCash("0")
+      setInitialCash(0)
       onOpened()
     } else {
       toast({ title: "Error", description: result.message, variant: "destructive" })
@@ -71,13 +71,10 @@ export function OpenShiftDialog({
               Base inicial <span className="text-destructive">*</span>
             </Label>
             <p className="text-xs text-muted-foreground">Indica el dinero en efectivo con el que inicias el turno</p>
-            <Input
+            <MoneyInput
               id="initial-cash"
-              type="number"
-              min="0"
               value={initialCash}
-              onChange={(e) => setInitialCash(e.target.value)}
-              onFocus={(e) => e.target.select()}
+              onChange={(n) => setInitialCash(n ?? 0)}
             />
           </div>
 

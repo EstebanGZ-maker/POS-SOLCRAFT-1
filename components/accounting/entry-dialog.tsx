@@ -10,6 +10,7 @@ import {
 } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { MoneyInput } from "@/components/ui/money-input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import {
@@ -40,14 +41,14 @@ export function EntryDialog({
   const [type, setType] = useState<"income" | "expense">("expense")
   const [category, setCategory] = useState("")
   const [description, setDescription] = useState("")
-  const [amount, setAmount] = useState("")
+  const [amount, setAmount] = useState<number>(0)
   const [date, setDate] = useState(new Date().toISOString().slice(0, 10))
   const [saving, setSaving] = useState(false)
 
   const categories = type === "income" ? INCOME_CATEGORIES : EXPENSE_CATEGORIES
 
   async function handleSave() {
-    if (!amount || Number(amount) <= 0) {
+    if (amount <= 0) {
       toast({ title: "Monto inválido", description: "Ingresa un monto mayor a cero.", variant: "destructive" })
       return
     }
@@ -57,7 +58,7 @@ export function EntryDialog({
       entry_type: type,
       category: category || null,
       description: description || null,
-      amount: Number(amount),
+      amount: amount,
       entry_date: new Date(date).toISOString(),
     })
     setSaving(false)
@@ -67,7 +68,7 @@ export function EntryDialog({
       onOpenChange(false)
       setCategory("")
       setDescription("")
-      setAmount("")
+      setAmount(0)
     } else {
       toast({ title: "Error", description: res.message, variant: "destructive" })
     }
@@ -121,10 +122,9 @@ export function EntryDialog({
 
           <div>
             <Label className="text-xs">Monto</Label>
-            <Input
-              type="number"
+            <MoneyInput
               value={amount}
-              onChange={(e) => setAmount(e.target.value)}
+              onChange={(n) => setAmount(n ?? 0)}
               placeholder="0"
               className="mt-1"
             />

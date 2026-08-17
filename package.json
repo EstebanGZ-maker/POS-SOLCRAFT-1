@@ -62,6 +62,7 @@
     "react-day-picker": "latest",
     "react-dom": "^19.2.8",
     "react-hook-form": "latest",
+    "react-number-format": "5.4.4",
     "react-resizable-panels": "latest",
     "recharts": "latest",
     "sonner": "latest",
@@ -73,13 +74,13 @@
     "zod": "^3.25.76"
   },
   "pnpm": {
-  "onlyBuiltDependencies": [
-    "unrs-resolver"
-  ],
-  "ignoredBuiltDependencies": [
-    "sharp"
-  ]
-},
+    "onlyBuiltDependencies": [
+      "unrs-resolver"
+    ],
+    "ignoredBuiltDependencies": [
+      "sharp"
+    ]
+  },
   "devDependencies": {
     "@playwright/test": "^1.61.1",
     "@types/node": "^22",

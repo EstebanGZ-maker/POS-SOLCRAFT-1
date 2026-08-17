@@ -4,6 +4,7 @@ import { useState } from "react"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { MoneyInput } from "@/components/ui/money-input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
@@ -19,12 +20,12 @@ interface CashMovementDialogProps {
 
 export function CashMovementDialog({ open, onOpenChange, shiftId, onSaved }: CashMovementDialogProps) {
   const [type, setType] = useState<"income" | "expense">("income")
-  const [amount, setAmount] = useState("")
+  const [amount, setAmount] = useState<number | null>(null)
   const [description, setDescription] = useState("")
   const [saving, setSaving] = useState(false)
 
   async function handleSave() {
-    const value = Number(amount) || 0
+    const value = amount ?? 0
     if (value <= 0) {
       toast({ title: "Monto inválido", description: "Ingresa un monto mayor a cero.", variant: "destructive" })
       return
@@ -34,7 +35,7 @@ export function CashMovementDialog({ open, onOpenChange, shiftId, onSaved }: Cas
     setSaving(false)
     if (result.success) {
       toast({ title: "Movimiento registrado" })
-      setAmount("")
+      setAmount(null)
       setDescription("")
       setType("income")
       onOpenChange(false)
@@ -67,13 +68,11 @@ export function CashMovementDialog({ open, onOpenChange, shiftId, onSaved }: Cas
 
           <div className="space-y-2">
             <Label htmlFor="movement-amount">Monto</Label>
-            <Input
+            <MoneyInput
               id="movement-amount"
-              type="number"
-              min="0"
               value={amount}
-              onChange={(e) => setAmount(e.target.value)}
-              onFocus={(e) => e.target.select()}
+              onChange={setAmount}
+              emptyAsNull
               placeholder="0"
             />
           </div>

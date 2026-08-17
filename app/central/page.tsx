@@ -6,6 +6,7 @@ import { PageHeader } from "@/components/page-header"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { MoneyInput } from "@/components/ui/money-input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -354,14 +355,12 @@ function BulkSendPanel({ centralWarehouseId }: { centralWarehouseId: string }) {
                             {formatCurrency(Number(p.cost || 0))}
                           </td>
                           <td className="p-2 text-right">
-                            <Input
-                              type="number"
-                              min={0}
+                            <MoneyInput
                               value={wp}
-                              onChange={(e) =>
+                              onChange={(n) =>
                                 setWholesalePrices((prev) => ({
                                   ...prev,
-                                  [p.product_id]: Number(e.target.value),
+                                  [p.product_id]: n ?? 0,
                                 }))
                               }
                               className="h-8 w-24 ml-auto text-right"
@@ -551,10 +550,9 @@ function ReceivePanel({ centralWarehouseId }: { centralWarehouseId: string }) {
               </div>
               <div className="col-span-3">
                 {i === 0 && <Label className="text-xs">Costo</Label>}
-                <Input
-                  type="number"
+                <MoneyInput
                   value={r.cost}
-                  onChange={(e) => updateRow(i, { cost: Number(e.target.value) })}
+                  onChange={(n) => updateRow(i, { cost: n ?? 0 })}
                 />
               </div>
               <div className="col-span-2">
