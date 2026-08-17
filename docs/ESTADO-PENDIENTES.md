@@ -74,10 +74,13 @@ de dejarlo movido).
 **Estado post-apply verificado**: `verify_kardex_integrity()=0`,
 `verify_credit_integrity()=0`.
 
-**2C sigue BLOQUEADO** por gate del contador. **2D pendiente** (unifica
-`ingressNewProduct`/`receiveMerchandise` al RPC común; no depende del
-gate del contador excepto porque comparte el `motivo` que introduce
-2C — sin 2C aplicado, 2D no tiene sentido). Ver §1.3 abajo.
+**2C + 2D BLOQUEADAS por el mismo gate del contador** (`motivo='compra' →
+expense inmediato`, análisis DN2). **NO se pueden aplicar por separado**:
+2D no es un refactor "conceptualmente dependiente" — es un release
+acoplado a 2C. Adelantar 2D sin 2C introduce regresión contable real
+(hoy `ingressNewProduct` asienta expense; sin 2C, la refactorización de
+2D lo pierde porque el RPC común no tiene la lógica de asiento — esa
+llega con 2C). Ver §1.3 abajo para el detalle.
 
 ### ✅ CERRADO Y DEPLOYED — MoneyInput con formateo en vivo (18 sitios)
 
@@ -401,7 +404,7 @@ sin `motivo`/`numero` → labels omitidos). El wrapper `voidAdjustment` en
 `void_adjustment` no existe) a mensaje amigable, no stacktraces. **Estado
 verificado en producción tras el merge.**
 
-### ⚠ GATE CONTADOR VIVO — Fase 2C de ajustes no se aplica a prod sin visto bueno
+### ⚠ GATE CONTADOR VIVO — Fase 2C + 2D de ajustes bloqueadas juntas hasta OK
 
 `scripts/17c_adjustments_contabilidad.sql` introduce el tratamiento contable
 por motivo. El asiento `motivo='compra' → expense inmediato "Compra de
@@ -410,6 +413,17 @@ doble estricta NO lo haría. **El contador debe validar** antes del apply a
 prod. Detalles en [docs/INVENTORY-ADJUSTMENTS-SPEC.md §6.2 "Gate contable"](INVENTORY-ADJUSTMENTS-SPEC.md).
 Si el contador rechaza → hay 3 alternativas listadas en el spec (a1/a2/a3);
 elegir una y reescribir 17c.
+
+**2D (refactor TS de `ingressNewProduct`/`receiveMerchandise`) está
+bloqueada por el MISMO gate**. No es un refactor "conceptualmente
+relacionado" — es un release físicamente acoplado a 2C: 2C introduce la
+firma nueva del RPC + los asientos, 2D es la parte que cabla los callers
+para que consuman esa firma. Aplicar solo 2D sin 2C elimina el asiento
+contable actual de `ingressNewProduct` sin sustituto (regresión). Aplicar
+solo 2C sin 2D deja `receiveMerchandise` roto (RPC con validación de
+motivo obligatorio, caller que no lo pasa → RAISE). **Sesión futura
+lee esto**: no intentar 2D por separado bajo ninguna circunstancia. Ver
+§1.3 y §3.
 
 ### ⚠ SMOKE TEST DE PROD PENDIENTE (para vos, en el navegador)
 
@@ -450,7 +464,7 @@ los ajustes siguen pendientes de apply.
   cualquier ambiente basado en el baseline canónico. Parche trivial:
   agregar `code='VAL16A'/'VAL16B'` en los INSERT.
 
-### 1.2.1 Fase 2A/2B — APLICADAS A PROD 2026-08-17; 2C bloqueada; 2D pendiente
+### 1.2.1 Fase 2A/2B — APLICADAS A PROD 2026-08-17; 2C + 2D bloqueadas (mismo gate)
 
 ### 1.3 Ajustes — Fase 2 (sub-faseada por riesgo)
 
@@ -468,13 +482,23 @@ los ajustes siguen pendientes de apply.
   `verify_adjustment_accounting_integrity()`. Validaciones: motivo
   obligatorio si hay incrementos, NULL si es 100% disminuciones,
   correccion exige notes.
-- **2D · Unificar entradas** (🟡 medio, solo TS) —
+- **2D · Unificar entradas** (🟡 medio, solo TS) — 🚫 **BLOQUEADA por el
+  mismo gate del contador que 2C. NO adelantar 2D sin 2C, bajo ninguna
+  circunstancia** (regresión contable real: sin la lógica de asiento del
+  RPC de 2C, refactorizar `ingressNewProduct` al camino común elimina el
+  `expense` "Compra de mercancía" que hoy asienta directo — el resultado
+  es una regresión, no una mejora). **2C + 2D = un solo release,
+  aplicado en la misma ventana coordinada** una vez el contador
+  autorice: SQL 2C primero (agrega firma `p_motivo`, asientos, FK
+  `adjustment_id`, validaciones), TS 2D en el mismo commit
+  (`receiveMerchandise` inyecta `motivo="compra"`, `ingressNewProduct`
+  delega en `createAdjustment`, wrapper `createAdjustment` acepta y
+  reenvía `motivo`). Detalle técnico + análisis DN2 (pérdida de
+  granularidad `movement_type='compra'` en kardex, recuperable con join
+  a `inventory_adjustments.motivo`) en
   [scripts/17d_adjustments_unify_entries.md](../scripts/17d_adjustments_unify_entries.md).
-  No hay SQL. Migra `ingressNewProduct` y `receiveMerchandise` a
-  `create_adjustment` con `motivo='compra'`. Post-2D toda entrada de
-  mercancía queda como `movement_type='ajuste'` en kardex; distinción vive
-  en `inventory_adjustments.motivo` (análisis completo de DN2 en ese
-  archivo).
+  Post-2D toda entrada de mercancía queda como `movement_type='ajuste'`
+  en kardex; distinción vive en `inventory_adjustments.motivo`.
 - **Validación 2A+2B+2C**:
   [scripts/17_validation_phase2.sql](../scripts/17_validation_phase2.sql).
   8 tests — numeración secuencial, WAC correcto tras N incrementos, WAC
@@ -547,20 +571,27 @@ los ajustes siguen pendientes de apply.
 
 ---
 
-## 3. Orden de apply — actualizado post 2026-08-14
+## 3. Orden de apply — actualizado post 2026-08-17
 
 **Ya aplicado a prod**: script 14 (REVOKE Wompi, sesión 2026-08-14), script
 15 (crédito Fase 1, sesión 2026-08-14), script 16 (ajustes Fase 1, sesión
-2026-08-15).
+2026-08-15), script 17a (ajustes 2A numeración, sesión 2026-08-17), script
+17b (ajustes 2B WAC, sesión 2026-08-17).
 
-**Pendiente por aplicar a prod (en orden)**:
-1. **Ajustes 2A** (`scripts/17a`) — solo numeración.
-2. **Ajustes 2B** (`scripts/17b`) — WAC. Revisar antes que ningún reporte
-   externo dependa de `products.cost` inmediato.
-3. **Ajustes 2C + 2D** (`scripts/17c` + refactor TS de `ingressNewProduct`/
-   `receiveMerchandise` a `create_adjustment` con `motivo='compra'`). Deploy
-   conjunto obligatorio (SQL cambia firma `create_adjustment` con `p_motivo`,
-   TS wrappers deben pasarlo). **Requiere OK explícito del contador.**
+**Pendiente por aplicar a prod**:
+1. **Ajustes 2C + 2D — RELEASE ACOPLADO OBLIGATORIO** (`scripts/17c` +
+   refactor TS de `ingressNewProduct`/`receiveMerchandise`/`createAdjustment`
+   wrapper a `create_adjustment` con `motivo='compra'`). SQL 2C cambia la
+   firma del RPC (`+ p_motivo TEXT DEFAULT NULL`), agrega `adjustment_id`
+   FK en `accounting_entries`, introduce los asientos por motivo y
+   `verify_adjustment_accounting_integrity`. TS 2D refactoriza los 3
+   callers para pasar `motivo`. **NO se puede fasear**: aplicar solo 2C
+   deja los callers TS sin pasar `motivo` (RPC funciona con default NULL,
+   pero `receiveMerchandise` intento con incrementos y `motivo=NULL`
+   RAISE por regla de motivo obligatorio → ventas rotas hasta que llegue
+   2D); aplicar solo 2D pierde el asiento de `ingressNewProduct` sin
+   sustituto (regresión contable). **Ambos requieren OK explícito del
+   contador** (mismo gate: `motivo='compra' → expense inmediato`, DN2).
 
 **Patrón de validación probado esta sesión** (para replicar con ajustes):
 1. `create_branch` con `with_data=false` en Supabase Pro (~$0.01344/hora).
@@ -587,8 +618,8 @@ los ajustes siguen pendientes de apply.
 
 | Gate | Qué revisar | Bloquea |
 |---|---|---|
-| **Contador — `compra → expense` inmediato** | Ver [INVENTORY-ADJUSTMENTS-SPEC.md §6.2](INVENTORY-ADJUSTMENTS-SPEC.md) subsección "Gate contable". El asiento propuesto simplifica partida doble; si rechaza, hay 3 alternativas (a1/a2/a3). Documentar la respuesta en el commit que aplique 17c. | Fase 2C apply a prod |
-| **Contador — DN2 `movement_type='ajuste'` uniforme** | Confirmar que aceptamos perder la distinción compra/ajuste en `stock_movements` (queda en `inventory_adjustments.motivo`). Análisis en [scripts/17d_adjustments_unify_entries.md](../scripts/17d_adjustments_unify_entries.md). | Fase 2D apply |
+| **Contador — `compra → expense` inmediato** | Ver [INVENTORY-ADJUSTMENTS-SPEC.md §6.2](INVENTORY-ADJUSTMENTS-SPEC.md) subsección "Gate contable". El asiento propuesto simplifica partida doble; si rechaza, hay 3 alternativas (a1/a2/a3). Documentar la respuesta en el commit que aplique 17c. | **Fase 2C + 2D apply a prod (release acoplado, no separables — ver §1.3 y §3)** |
+| **Contador — DN2 `movement_type='ajuste'` uniforme** | Confirmar que aceptamos perder la distinción compra/ajuste en `stock_movements` (queda en `inventory_adjustments.motivo`). Análisis en [scripts/17d_adjustments_unify_entries.md](../scripts/17d_adjustments_unify_entries.md). | **Fase 2C + 2D apply (mismo release que arriba)** |
 
 ---
 
