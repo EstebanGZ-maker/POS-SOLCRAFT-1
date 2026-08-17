@@ -1375,6 +1375,64 @@ vean el link "Cuentas por cobrar", admin debe **agregar manualmente
 `'receivables'`** a cada usuario desde `/users`. Mismo comportamiento que
 `web_orders` en su momento. No es bug — política del sistema.
 
+### 7.12 Cierre de sesión 2026-08-16 (bloque 3) — MoneyInput deployed
+
+Feature UX transversal: separador de miles COP (1.500.000) en 18 inputs
+de dinero de la app. **Formateo en vivo** al tipear, no solo on-blur.
+Rama `s7-money-input-live-format` mergeada como `e711ccb`; prod
+`dpl_2uvmVse1yQm6cQ66vMaHii6s5k1D` READY (deploy siguiente
+`dpl_Dbm38vG9Uf55gM878n6kJjCrav5B` es solo el commit de docs).
+
+**Componente**: `components/ui/money-input.tsx` (~80 líneas). Wrapper
+sobre `<Input>` de shadcn usando `NumericFormat` de
+**`react-number-format@5.4.4`** (pineada exacta — coherente con la
+deuda #21 de evitar `"latest"` en `package.json`). Config COP:
+`thousandSeparator="."`, `decimalSeparator=","`, `decimalScale=0`,
+`allowNegative=false`, `inputMode="numeric"`. Contrato de props:
+`value: number | null | undefined`, `onChange: (n: number | null) => void`,
+`emptyAsNull` (default `false`), más `id/className/placeholder/disabled/
+autoFocus/onBlur/onFocus/autoComplete`. Auto-select on focus. Cursor
+tracking automático de la lib.
+
+**18 sitios migrados en 12 archivos**: POS (payment-dialog x2,
+edit-line-dialog, open/close-shift, cash-movement), Crédito
+(register-payment-dialog), Inventario (adjustment-dialog,
+product-form-dialog x2, price-lists), Bodega central (BulkSend,
+ReceivePanel, ai-ingress-panel x2), Contabilidad (entry-dialog),
+Settings receipt x2. Detalle exhaustivo en el commit interno `53113ac`.
+Los 2 filtros mín/máx de búsqueda en `/central` NO se migraron por
+decisión explícita (son criterios de filtro, no montos que se persistan).
+
+**Iteración de la sesión**: primero se migraron los 18 sitios con
+reformateo on-blur (`s6-money-input-format`, commits `53113ac` + `44f16c9`),
+después upgrade a formateo en vivo (`s7`, commit `1156b43`, mismo
+contrato de props). s7 quedó como ancestro-superset de s6 (contiene sus
+2 commits + el upgrade) → un único merge s7 → main.
+
+**Decisión `emptyAsNull` por sitio** (afecta si borrar el input equivale
+a 0 o a "no configurado"):
+- `emptyAsNull=true` (null cuando vacío, distinto de 0): close-shift
+  (para preservar botón Guardar disabled con vacío), cash-movement,
+  register-payment, price-lists override, settings free_shipping_over.
+- `emptyAsNull=false` (0 cuando vacío): el resto (13 sitios). Justificado
+  caso por caso — la mayoría de los tipos padres son `number` no
+  nullable, o vacío = 0 es semánticamente correcto.
+
+**Deuda menor arrastrada**: `BusinessSettings.shipping_cost` sigue como
+`number` (no nullable) — no se pudo respetar la intención "no configurado
+≠ 0" sin widening del tipo + columna Supabase + auditoría storefront.
+Documentada en detalle en `docs/ESTADO-PENDIENTES.md §0` con los 4 pasos
+que habría que hacer si se prioriza. `free_shipping_over` sí quedó con
+`emptyAsNull=true` porque su tipo ya era `number | null`.
+
+**Smoke test usuario en preview** (`dpl_gwupsrfqoVuPU7wtE5WjHwqe9Jh5`,
+s7) antes del merge: formateo en vivo dígito por dígito, cursor en medio
+del número + inserción con caret en posición correcta, backspace antes
+de un punto borra el dígito correcto (no el punto), cierre de turno con
+input vacío mantiene botón Guardar disabled (contrato `null` preservado
+tras el upgrade). Post-merge en prod: `GET /api/wompi/webhook` 200 OK,
+runtime logs 15 min limpios, sin regresión colateral.
+
 ---
 
 Fin del contexto.

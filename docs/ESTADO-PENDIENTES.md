@@ -9,17 +9,27 @@
 
 ## 0. LEE ESTO PRIMERO — estado tras sesión 2026-08-16 (MoneyInput)
 
-**Estado de ramas**: ninguna rama de trabajo abierta. `main` en `e711ccb`
-con MoneyInput mergeado (merge s7). Ramas `s2-adjustments-phase1`,
-`s3-credit-fiar-ui`, `s4-inventory-products-scope`, `s5-credit-phase3-ui`,
+**Estado de ramas**: ninguna rama de trabajo abierta. `main` en `8410ab4`
+(merge s7 en `e711ccb` + commit de docs `8410ab4`). Ramas
+`s4-inventory-products-scope`, `s5-credit-phase3-ui`,
 `s6-money-input-format`, `s7-money-input-live-format` borradas de origin
-tras cada merge respectivo.
+tras cada merge respectivo (ramas históricas `s1-s3p0-rpc-hardening`,
+`s2-adjustments-phase1`, `s3-credit-fiar-ui`, `s3p0-hotfix-to-main`,
+`merge-s1-s3p0-to-main` siguen en origin como legado — no bloquean nada,
+se pueden borrar por housekeeping cuando se decida).
 
 **Prod (`nxszaxwsrtlofqimbfig`)**: kardex OK (verify_kardex_integrity=0),
-credit OK (verify_credit_integrity=0). Sirviendo `dpl_2uvmVse1yQm6cQ66vMaHii6s5k1D`
-(sha `e711ccb`, target=production) tras el merge de MoneyInput.
-`GET /api/wompi/webhook` responde `{ok:true, configured:false, endpoint:"wompi/webhook"}`
-HTTP 200. Runtime logs 15 min post-deploy: 0 errors/warnings/fatal.
+credit OK (verify_credit_integrity=0). Sirviendo `dpl_Dbm38vG9Uf55gM878n6kJjCrav5B`
+(sha `8410ab4`, target=production) — deploy del commit de docs; el
+deploy anterior con todo el código nuevo fue `dpl_2uvmVse1yQm6cQ66vMaHii6s5k1D`
+(sha `e711ccb`) y quedó como rollback candidate. `GET /api/wompi/webhook`
+responde `{ok:true, configured:false, endpoint:"wompi/webhook"}` HTTP 200.
+Runtime logs 15 min post-deploy del código: 0 errors/warnings/fatal.
+
+**Próximo bloque**: sin definir. Al arrancar la próxima sesión, el
+usuario decide el siguiente foco (ajustes Fase 2A/2B/2C/2D, promociones
+aplicadas en POS, mejoras UX Alegra-like, etc.). Ver §5 "Backlog vigente"
+y §1 "Cola de trabajo escrito-pero-no-aplicado" para candidatos.
 
 ### ✅ CERRADO Y DEPLOYED — MoneyInput con formateo en vivo (18 sitios)
 
