@@ -1,9 +1,11 @@
 # ESTADO-PENDIENTES.md
 
 > **Propósito**: dump de estado para que una instancia nueva de Claude sin
-> memoria pueda retomar sin perder nada. Última actualización: **2026-08-16**
-> (MoneyInput con formateo en vivo desplegado a prod — 18 sitios migrados
-> a separador de miles COP).
+> memoria pueda retomar sin perder nada. Última actualización: **2026-08-17**
+> (Ajustes Fase 2A + 2B aplicados a prod — numeración secuencial por sede
+> + WAC en `products.cost` al incrementar; validado end-to-end en branch
+> desechable antes del apply, verificado en prod con ajustes reales
+> anulados post-test).
 
 ---
 
@@ -30,6 +32,52 @@ Runtime logs 15 min post-deploy del código: 0 errors/warnings/fatal.
 usuario decide el siguiente foco (ajustes Fase 2A/2B/2C/2D, promociones
 aplicadas en POS, mejoras UX Alegra-like, etc.). Ver §5 "Backlog vigente"
 y §1 "Cola de trabajo escrito-pero-no-aplicado" para candidatos.
+
+### ✅ CERRADO Y DEPLOYED — Ajustes Fase 2A + 2B (numeración + WAC)
+
+Aplicado a prod (`nxszaxwsrtlofqimbfig`) 2026-08-17. Registrado como
+migraciones `apply_17a_adjustments_numeracion` y `apply_17b_adjustments_wac`
+en `supabase_migrations.schema_migrations`. **Sin cambio de firma pública
+del RPC** (`create_adjustment(UUID, TEXT, JSONB)`) — código app existente
+sigue funcionando sin edición.
+
+**Cambios en prod**:
+- Tabla nueva `adjustment_counters(site_id PK, last_numero)`. Seed 0 por
+  sede existente + fallback on-the-fly (DN3) para sedes creadas después.
+- `create_adjustment` v2b: numera atómicamente por sede vía
+  `UPDATE ... RETURNING`; recalcula `products.cost` con WAC en items
+  `incrementar` con `cost>0` (orden: LOCK products → READ stock global
+  BEFORE → adjust → recalc, spec §5.1.1).
+- `products.cost` es global (todas las bodegas, D6). En disminuciones
+  NO cambia (D2). Void NO revierte WAC (D5) — la UI de anulación ya
+  muestra el warning correspondiente desde Fase 3.
+- Ajustes históricos (5 pre-2A) siguen con `numero=NULL` (no se hace
+  backfill — decisión spec §7).
+
+**Validación previa**: branch desechable `validate-phase2-adjustments`
+(borrado post-verificación). Se aplicó 2A+2B+2C al branch y corrieron
+los 8 tests del script (`T1-T8` en `scripts/17_validation_phase2.sql`) —
+todos OK. Se corrigieron 2 typos del script (línea 133 esperaba
+`15000/15` cuando debía ser `20000/15`; línea 347 esperaba counter=6
+cuando el escenario real deja counter=7). RPCs correctos, script tenía
+las expectativas mal calculadas.
+
+**Post-verificación en prod**: 2 ajustes reales de prueba (Pantalón jean
+clásico, +2 y +3 unidades) → numero=1, numero=2 secuencial correcto;
+WAC calculado exacto en ambos casos (61935.48 y 65294.11, ambos
+= fórmula esperada). Ambos anulados con `void_adjustment` para dejar
+stock en 29 igual que pre-test. Cost restaurado manualmente a 60000
+con UPDATE directo (D5: void no revierte cost automáticamente; en un
+producto real de prod que se usó para el test, se corrige a mano en vez
+de dejarlo movido).
+
+**Estado post-apply verificado**: `verify_kardex_integrity()=0`,
+`verify_credit_integrity()=0`.
+
+**2C sigue BLOQUEADO** por gate del contador. **2D pendiente** (unifica
+`ingressNewProduct`/`receiveMerchandise` al RPC común; no depende del
+gate del contador excepto porque comparte el `motivo` que introduce
+2C — sin 2C aplicado, 2D no tiene sentido). Ver §1.3 abajo.
 
 ### ✅ CERRADO Y DEPLOYED — MoneyInput con formateo en vivo (18 sitios)
 
@@ -402,22 +450,14 @@ los ajustes siguen pendientes de apply.
   cualquier ambiente basado en el baseline canónico. Parche trivial:
   agregar `code='VAL16A'/'VAL16B'` en los INSERT.
 
-### 1.2.1 Fase 2A/2B/2C/2D — pendientes (sin cambio)
+### 1.2.1 Fase 2A/2B — APLICADAS A PROD 2026-08-17; 2C bloqueada; 2D pendiente
 
 ### 1.3 Ajustes — Fase 2 (sub-faseada por riesgo)
 
-Cada sub-fase se aplica independiente (excepto 2C+2D que van juntas).
-
-- **2A · Numeración** (🟢 bajo) —
-  [scripts/17a_adjustments_numeracion.sql](../scripts/17a_adjustments_numeracion.sql).
-  Crea `adjustment_counters` (patrón `site_counters`); `create_adjustment`
-  numera atómicamente por sede. Sin cambio de firma.
-- **2B · WAC** (🟡 medio) —
-  [scripts/17b_adjustments_wac.sql](../scripts/17b_adjustments_wac.sql).
-  `create_adjustment` recalcula `products.cost` en items `incrementar` con
-  cost>0. Orden crítico documentado en spec §5.1.1 (LOCK products →
-  READ stock BEFORE → adjust → recalc). Loop iterativo para que items 2+
-  del mismo producto vean el cost recién recalculado.
+- **2A · Numeración** (🟢 bajo) — ✅ **APLICADO A PROD 2026-08-17**.
+  Ver bloque "CERRADO Y DEPLOYED — Ajustes Fase 2A + 2B" arriba en §0.
+- **2B · WAC** (🟡 medio) — ✅ **APLICADO A PROD 2026-08-17**.
+  Ver bloque "CERRADO Y DEPLOYED — Ajustes Fase 2A + 2B" arriba en §0.
 - **2C · Contabilidad con motivos** (🔴 alto — **GATE CONTADOR**) —
   [scripts/17c_adjustments_contabilidad.sql](../scripts/17c_adjustments_contabilidad.sql).
   ALTER `accounting_entries += adjustment_id` FK; `create_adjustment` con

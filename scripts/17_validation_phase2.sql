@@ -130,8 +130,9 @@ BEGIN
     -- Estado: v_prod tiene stock=15 (10 seed + 5 T1), cost=(10*1000 + 5*2000)/15 = 1333.33
     -- =========================================================================
     SELECT cost INTO v_cost_before FROM products WHERE product_id = v_prod;
-    IF ROUND(v_cost_before, 2) <> ROUND(15000.0/15, 2) THEN
-        RAISE EXCEPTION 'T2 setup: WAC v_prod post-T1 = %, se esperaba %', v_cost_before, ROUND(15000.0/15, 2);
+    -- WAC post-T1: (10 seed * 1000 + 5 T1 * 2000) / 15 = 20000/15 = 1333.33
+    IF ROUND(v_cost_before, 2) <> ROUND(20000.0/15, 2) THEN
+        RAISE EXCEPTION 'T2 setup: WAC v_prod post-T1 = %, se esperaba %', v_cost_before, ROUND(20000.0/15, 2);
     END IF;
 
     -- Segundo incremento: 5 unidades a cost=3000. WAC nuevo:
@@ -339,23 +340,23 @@ BEGIN
 
     -- =========================================================================
     -- T7 — Numeración post-void avanza
-    -- Después de crear 6 ajustes (compra, sobrante, T2-2nd, correc, merma,
-    -- mixto), el próximo debería ser #7. Void de v_adj_compra no libera su
-    -- numero.
+    -- Después de crear 7 ajustes (T1a compra, T1b sobrante, T2 2do incremento,
+    -- T3 merma, T4c correc, T4d merma, T4e mixto), el counter está en 7. Void
+    -- de v_adj_compra no libera su numero. El nuevo ajuste debe ser #8.
     -- =========================================================================
     v_num := (SELECT last_numero FROM adjustment_counters WHERE site_id = v_site);
-    IF v_num <> 6 THEN
-        RAISE EXCEPTION 'T7: counter tras 6 ajustes = %, se esperaba 6', v_num;
+    IF v_num <> 7 THEN
+        RAISE EXCEPTION 'T7: counter tras 7 ajustes = %, se esperaba 7', v_num;
     END IF;
 
     PERFORM create_adjustment(v_wh, 'test T7 next',
         jsonb_build_array(jsonb_build_object(
           'product_id', v_prod2, 'cost', 500, 'objective', 'incrementar', 'quantity', 1)),
         'compra');
-    IF (SELECT last_numero FROM adjustment_counters WHERE site_id = v_site) <> 7 THEN
-        RAISE EXCEPTION 'T7: counter tras 7mo ajuste != 7';
+    IF (SELECT last_numero FROM adjustment_counters WHERE site_id = v_site) <> 8 THEN
+        RAISE EXCEPTION 'T7: counter tras 8vo ajuste != 8';
     END IF;
-    RAISE NOTICE '✓ T7 OK: numeración post-void = 7 (void no libera numero).';
+    RAISE NOTICE '✓ T7 OK: numeración post-void = 8 (void no libera numero).';
 
     -- =========================================================================
     -- T8 — Invariante kardex delta = 0
