@@ -26,13 +26,18 @@
    estrategia que `sales.numero`). Requiere columna nueva
    `inventory_adjustments.numero`.
 4. Cada ajuste con impacto contable genera fila en `accounting_entries`.
-   - **Disminuciones**: `expense`, categoría "Merma / Ajuste negativo",
-     `amount = SUM(cost * quantity)`.
+   - **Disminuciones (100% merma)**: `expense`, categoría
+     "Merma / Ajuste negativo", `amount = SUM(cost * quantity)`. Sin
+     cambio respecto al diseño original.
    - **Incrementos**: el ajuste lleva un campo **`motivo`** (`compra` /
-     `sobrante` / `correccion`) que determina el asiento contable. Detalle
-     completo en §6.2. **PENDIENTE DE VALIDACIÓN POR CONTADOR** antes del
-     apply a prod; el diseño y el código pueden escribirse ya, el apply de
-     Fase 2 queda condicionado.
+     `sobrante` / `correccion`) que determina el tratamiento. Detalle
+     completo en §6.2.
+   - **Método aprobado por el contador (2026-08-17)**: `compra` y
+     `sobrante` NO generan asiento inmediato — capitalizan a inventario
+     (WAC), y la utilidad/pérdida se reconoce al vender vía COGS en
+     `create_sale`. Ver §6.2 (tabla) y §6.4 (diseño COGS). **Reemplaza
+     la decisión anterior** de "compra → expense inmediato" que estaba
+     pendiente de validación.
 5. **Costo promedio ponderado (WAC)** al incrementar:
    `nuevo_costo = (stock_actual * costo_actual + entrada * costo_entrada) /
    (stock_actual + entrada)`. Se persiste en **`products.cost`** (columna
@@ -487,92 +492,61 @@ Se usa el `cost` guardado en `adjustment_items` (que el usuario ingresó al
 crear el ajuste). Si el usuario deja `cost=0` en un item de disminución,
 ese item no aporta al asiento (pero sí afecta el stock).
 
-### 6.2 Incrementos por motivo (D1 cerrada — opción c)
+### 6.2 Incrementos por motivo — método CAPITALIZACIÓN + COGS AL VENDER
 
-El `motivo` del ajuste (§3.1) determina qué asiento se genera. Solo aplica
-si hay items `objective='incrementar'`. Los items `disminuir` del mismo
-ajuste (si los hubiera) generan además su asiento de merma (§6.1) — los
-asientos se acumulan por bloque, no se compensan.
+**Decisión CERRADA por el contador (2026-08-17)**: los incrementos
+capitalizan a inventario (afectan WAC, ya cableado por 2B) y **NO
+generan `accounting_entries` en el momento del ajuste**. El reconocimiento
+del costo llega cuando el producto sale del inventario por venta, vía
+COGS en `create_sale` (§6.4).
 
-### ⚠ Gate contable de Fase 2 — punto crítico único
+Esto reemplaza el diseño anterior de "compra → expense inmediato" que
+17c v1 implementaba (opción (a1) del análisis del gate contable, con la
+extensión de que `sobrante` también capitaliza). El 17c ya escrito queda
+invalidado — hay que reescribirlo.
 
-**El punto que probablemente cambie tras la revisión del contador es el
-tratamiento de `motivo='compra'` como `expense` inmediato.** Los otros dos
-son defendibles con la simplificación caja del sistema:
-- `sobrante` como `income`: reconoce valor que entra al negocio sin
-  contraparte de caja. Coincide con partida doble estricta.
-- `correccion` sin asiento: no hay evento económico real; asentar
-  duplicaría o distorsionaría.
+#### Tabla de motivo → tratamiento contable (nueva)
 
-El caso `compra` es distinto: **partida doble estricta NO impacta P&L al
-comprar** (asset↑ Inventario / cash↓ o pasivo↑ Proveedores). La utilidad se
-reconoce solo cuando el producto se vende (COGS). El sistema simplifica a
-"gasto al comprar" porque no maneja cuentas de balance (`accounting_entries`
-solo tiene `income`/`expense`). Consecuencias potenciales que el contador
-debe revisar:
+| `motivo` | Impacto WAC | Asiento inmediato en `accounting_entries` | Efecto P&L inmediato | Justificación |
+|---|:---:|:---:|:---:|---|
+| **`compra`** | Capitaliza (recalcula `products.cost` vía WAC — ya cableado por 2B) | **Ninguno** | **0** | Mercancía recién comprada al proveedor. Partida doble estricta: *Débito Inventario / Crédito Caja o Proveedores*. El sistema simplifica omitiendo la cuenta "Caja/Proveedores" — solo capitaliza a Inventario (via `products.cost`). El costo del inventario se reconocerá como `expense` cuando la mercancía se venda (§6.4). El usuario debe ingresar el **costo de adquisición real** (lo que le costó comprarla, no lo que la va a vender). |
+| **`sobrante`** | Capitaliza igual que `compra` — recalcula WAC con el costo que el usuario ingresa manualmente | **Ninguno** | **0** | Aparecen unidades que existían físicamente pero no en el sistema. Por convención del negocio: es mercancía comprada pero no registrada a tiempo (no una donación, no un hallazgo espontáneo). El tratamiento contable es equivalente a `compra`: capitalizar al costo que corresponde. El usuario ingresa un **costo estimado de adquisición**. La distinción vs `compra` es semántica/reportería (auditoría, análisis de fugas de inventario) — el impacto contable inmediato es idéntico. |
+| **`correccion`** | Capitaliza igual que compra/sobrante (recalcula WAC) — el usuario ingresa el costo estimado | **Ninguno** | **0** | Rectificación de captura sin evento económico real (ej. dato del sistema que estaba mal). Sin asiento inmediato — asentar duplicaría o distorsionaría. La UI exige `notes` para auditoría. |
 
-1. **Doble reconocimiento del costo**: si mañana se añade COGS al vender
-   (via `create_sale` asentando el costo como `expense`), el mismo peso
-   contaría dos veces (una al comprar, otra al vender). Hoy `create_sale`
-   NO asienta COGS, así que no hay doble conteo — pero es una trampa
-   escondida para el futuro.
-2. **Distorsión temporal de P&L**: un mes con compra grande y ventas
-   normales muestra pérdida ficticia; el mes siguiente sin compras muestra
-   utilidad inflada. La P&L no refleja rentabilidad real por periodo.
-3. **Base fiscal**: para declaración de renta / IVA, el "costo de ventas"
-   colombiano suele calcularse por método de inventarios (WAC, PEPS, etc.),
-   no por "compras del periodo". El contador puede necesitar un asiento
-   distinto o una re-clasificación al cerrar mes.
+**Kardex**: los 3 motivos usan `movement_type='ajuste'`, sin cambio
+respecto al diseño anterior (DN2).
 
-**Opciones alternativas si el contador rechaza `compra` como `expense`
-inmediato**:
-
-- **(a1)** No asentar nada al comprar; añadir cuenta de balance
-  "Inventario" y asentar `expense` como COGS al vender (requiere ampliar
-  `accounting_entries` con `entry_type='asset'` y cablear el COGS en
-  `create_sale`). Cambio grande — otro spec.
-- **(a2)** Asentar `compra` como movimiento neutral P&L (nueva categoría
-  `entry_type='asset_purchase'` u otra) que los reportes puedan aislar.
-  Cambio medio — otro spec.
-- **(a3)** Mantener el `expense` de este spec, pero cerrar mes con un
-  asiento manual de reclasificación (compras no vendidas → inventario).
-  Sin cambio de código; procedimiento del contador.
-
-**Este spec propone la simplificación actual** (`compra` → `expense`
-inmediato) porque es coherente con el sistema, `ingressNewProduct` ya la
-usa, y es lo que el contador probablemente esperaba antes de este análisis.
-Si tras la revisión pide (a1)/(a2)/(a3), se abre spec separado. **Fase 2
-no se aplica a prod hasta este OK.**
-
-Documentar la respuesta del contador en el header de la migración final
-de Fase 2, con fecha y quién validó.
-
----
-
-Detalle de los 3 asientos:
-
-| `motivo` | `entry_type` | `category` (en `accounting_entries`) | `amount` | Efecto P&L | Justificación |
-|---|:---:|---|:---:|:---:|---|
-| **`compra`** | `expense` | `"Compra de mercancía"` | `SUM(cost * quantity)` de items incrementar | **−** utilidad | Recepción de mercancía al proveedor. Bajo el modelo base-caja simplificado del sistema (income/expense = P&L directo), la salida de efectivo por la compra se reconoce como gasto operativo. **Nota contable pura**: en partida doble estricta sería *Débito Inventario / Crédito Caja o Proveedores* (asset↑ + cash↓ o pasivo↑), sin impacto directo en P&L; la utilidad se reconoce cuando el producto se vende. La app usa la simplificación de "gasto en el momento de la compra" para no requerir cuentas de balance. **A validar con contador.** |
-| **`sobrante`** | `income` | `"Sobrante de inventario"` | `SUM(cost * quantity)` de items incrementar | **+** utilidad | Aparecen unidades que no estaban registradas (conteo físico > sistema). No hubo egreso de caja, pero el valor de las unidades encontradas debe reflejarse como ingreso no operacional para que la P&L cuadre con el aumento de inventario. **En partida doble**: *Débito Inventario / Crédito Ingresos por sobrantes*. Coincide con el modelo simplificado. |
-| **`correccion`** | *(ninguno)* | *(N/A)* | *(N/A)* | **0** | Rectificación de dato del sistema sin evento económico real (p. ej. error de captura histórico). El kardex se ajusta (`movement_type='ajuste'`) pero contabilidad no se toca — asentar duplicaría o distorsionaría un hecho ya (mal) reconocido en otro lado. La UI debe requerir un texto en `notes` que justifique la corrección para auditoría. |
-
-**Kardex**: los tres motivos usan `movement_type='ajuste'` en Fase 2 para
-mantener un único filtro simple del kardex por tipo. **Alternativa (fuera de
-alcance)**: mapear `compra`→`'compra'` en el kardex, alineando con
-`ingressNewProduct`. Si el contador lo pide para reportes, se evalúa.
-
-**Descripción del asiento**: `'Ajuste #<numero> (<motivo>) — <notes>'` para
-trazabilidad textual, más `adjustment_id` FK si se aprueba D4.
-
-**Regla de validación en `create_adjustment`**:
+**Regla de validación en `create_adjustment`** (sin cambio respecto al
+diseño anterior):
 - Si el ajuste tiene al menos un item `objective='incrementar'` → `motivo`
   es obligatorio y debe ser uno de los 3 valores.
 - Si el ajuste es 100% disminuciones → `motivo` debe ser NULL
   (`RAISE EXCEPTION` si se envía).
-- Si el motivo es `correccion` → no asentar en `accounting_entries` los
-  incrementos (los items disminución del mismo ajuste sí asientan `expense`
-  de merma según §6.1).
+- `motivo='correccion'` sigue exigiendo `notes` no vacío para auditoría.
+
+**Implicaciones para el RPC de 17c v2** (borrador — no implementar hasta
+review):
+- El RPC ya no hace `INSERT INTO accounting_entries` para incrementos de
+  ningún motivo (ni compra, ni sobrante, ni correccion). Bloque de
+  §6.2 anterior queda eliminado en el nuevo RPC.
+- Sí sigue insertando `expense` "Merma / Ajuste negativo" para el bloque
+  de disminuciones (§6.1 sin cambio).
+- La FK `accounting_entries.adjustment_id` se mantiene — se usa solo para
+  el asiento de merma en ajustes mixtos (incremento + disminución) o
+  puros disminución.
+- `void_adjustment` de 17c v2 sigue compensando el asiento de merma
+  cuando existe (income "Reversión Merma / Ajuste negativo"). Ya no hay
+  asiento de compra/sobrante que compensar. WAC sigue sin revertirse
+  (D5).
+
+**Contexto en la UI del diálogo de ajuste**
+([components/inventory/adjustment-dialog.tsx](../components/inventory/adjustment-dialog.tsx)):
+mostrar el **WAC/costo promedio actual del producto** (`products.cost`)
+como dato de referencia visible al lado del input de "Costo del ajuste".
+No autocompletar — el usuario ingresa el costo de adquisición real (el
+que le costó comprar esa mercancía específica), pero ve el promedio
+vigente como orientación. Formateo COP con MoneyInput (ya migrado a
+formato en vivo).
 
 ### 6.3 Referencia al ajuste desde `accounting_entries`
 
@@ -581,6 +555,182 @@ inventory_adjustments(adjustment_id) ON DELETE SET NULL` a
 `accounting_entries` (analogía con `sale_id`). Ventajas: trazabilidad
 directa, permite filtrar reportes contables por ajuste. Alternativa: dejar
 solo el texto en `description` con el `numero`.
+
+**Actualización con el método nuevo**: la FK sigue teniendo sentido
+aunque los incrementos ya no asienten — se usa para el asiento de merma
+en disminuciones. Ejemplo: ajuste #142 con motivo=NULL, 100%
+disminución → 1 fila expense "Merma / Ajuste negativo" con
+`adjustment_id=142`. Permite `verify_adjustment_accounting_integrity()`
+seguir validando integridad de compensación en voids.
+
+### 6.4 COGS en `create_sale` — pieza nueva (borrador para review)
+
+**Ubicación**: dentro del RPC `create_sale`, misma transacción. Justificación
+del diseño (respondiendo a la pregunta del usuario "¿pieza separada o
+mismo RPC?"): **mismo RPC**.
+
+- **Atomicidad**: si income (venta) y expense (COGS) van a
+  `accounting_entries` en la misma transacción, imposible que una venta
+  quede con income sin su COGS correspondiente por fallo parcial. Un
+  trigger o job separado abre esa ventana.
+- **Consistencia semántica**: el WAC vigente que se aplica al COGS es
+  `products.cost` en el momento de la venta. Leerlo dentro del RPC
+  garantiza que refleje el estado inmediatamente pre-salida de stock, no
+  un valor movido por un ajuste posterior.
+- **Ya se llama a `adjust_warehouse_stock`** dentro del loop de items de
+  `create_sale`. Añadir la lectura del WAC + acumulación del COGS es un
+  cambio local, no reestructura.
+- **Análogo al patrón de income** del propio `create_sale` hoy: ya emite
+  income "Ventas POS" al final del RPC como parte de su transacción.
+
+**Estructura del cambio en `create_sale`**:
+
+```
+DECLARE
+    v_cogs_total  NUMERIC := 0;
+    v_item_cost   NUMERIC;
+    ...
+
+FOR v_item IN SELECT ... LOOP
+    -- Leer WAC ANTES de decrementar stock, solo para items físicos.
+    IF NOT v_is_service THEN
+        SELECT cost INTO v_item_cost
+          FROM products WHERE product_id = v_item.product_id;
+        v_cogs_total := v_cogs_total + (v_item.quantity * COALESCE(v_item_cost, 0));
+    END IF;
+    -- (Continua con INSERT sale_items + adjust_warehouse_stock)
+END LOOP;
+
+-- Al final, después del income actual:
+IF v_cogs_total > 0 THEN
+    INSERT INTO accounting_entries
+        (site_id, entry_type, category, description, amount, sale_id)
+    VALUES (
+        p_site_id, 'expense', 'Costo de mercancía vendida',
+        'COGS venta #' || COALESCE(v_numero::TEXT, LEFT(v_sale_id::TEXT, 8)),
+        v_cogs_total, v_sale_id
+    );
+END IF;
+```
+
+**Decisiones tomadas en el diseño**:
+
+- **Un asiento por venta, agregado**, no uno por línea. Reporte simple:
+  cada venta tiene 1 fila income + 1 fila expense COGS con el mismo
+  `sale_id`. El desglose por producto vive en `sale_items`.
+- **Servicios excluidos** (`is_service=true`): no consumen stock, no
+  tienen WAC. No aportan al COGS. La venta de un servicio queda con
+  income y sin expense COGS asociado — el margen del servicio es 100%,
+  que es correcto.
+- **Producto con `cost=0` o `cost IS NULL`**: aporta 0 al COGS
+  (`COALESCE(v_item_cost, 0)`). Si el COGS total resulta 0, no se inserta
+  la fila (patrón "no asentar amounts=0"). Realista: si un producto
+  vendido no tiene costo registrado, no se puede reconocer COGS —
+  aparecerá como margen 100% (mismo tratamiento que servicios). En prod
+  post-2B esto es infrecuente porque cualquier ingreso vía
+  `create_adjustment` con `cost>0` mueve el WAC.
+- **Ventas a crédito (`is_on_account=true`)**: el COGS se registra
+  **sobre TODO lo vendido**, independientemente del `amount_paid`
+  (abono inicial). La mercancía sale del inventario completa al momento
+  de la venta, así que el costo se reconoce completo. Consecuencia
+  documentada: en una venta a crédito sin abono inicial, la venta genera
+  COGS pero solo income por el abono (0 en el caso extremo) → aparece
+  pérdida en P&L de ese periodo. Se compensa cuando llegue el pago vía
+  el futuro `register_payment` (crédito Fase 2/3 — pendiente). Este es
+  el comportamiento contablemente correcto (utilidad reconoce al vender,
+  aunque no se cobre) y coherente con el resto del cambio.
+
+**Cambio en `void_sale`** (impacto colateral):
+
+`void_sale` hoy compensa el income de la venta con un expense
+"Reversión — Ventas POS" (o similar). Debe ampliarse para compensar
+también el COGS con un income "Reversión — Costo de mercancía vendida"
+del mismo monto, si existía. Patrón análogo al que `void_adjustment` de
+17c usa para compensar la merma. Sin este cambio, un void de venta
+dejaría el COGS colgando como pérdida no compensada.
+
+**Cambio en `receive_payment` / futuros abonos de crédito**: hoy la Fase
+1 crédito solo genera el income del abono inicial dentro de `create_sale`.
+Cuando llegue Fase 2/3 crédito con `register_payment`, ese RPC generará
+income adicional por cada abono. **No debe generar COGS adicional** — el
+COGS ya se registró completo al momento de la venta original. Nota
+importante que hay que cross-referenciar a
+[docs/CREDIT-SALES-SPEC.md](CREDIT-SALES-SPEC.md) para que el spec de
+crédito lo tenga en cuenta antes de escribir `register_payment`.
+
+### 6.5 Traza numérica end-to-end (validación del método)
+
+Escenario: compra 10 unidades a $1000 c/u, luego venta de 4 unidades a
+$1800 c/u. WAC inicial del producto = 0 (producto nuevo).
+
+**Estado inicial:**
+- Stock: 0
+- WAC (`products.cost`): 0
+- P&L acumulado: 0
+
+**Paso 1 — Ajuste de compra** (motivo=`compra`, +10 @ $1000):
+- Kardex: `+10 movement_type=ajuste reference=adj#1`
+- Stock: 0 → 10
+- WAC recalculado: (0×0 + 10×1000) / 10 = 1000
+- `accounting_entries`: **sin cambio** (0 filas nuevas, ya no se asienta
+  al comprar)
+- P&L acumulado: 0
+
+**Paso 2 — Venta** (4 unidades @ $1800):
+- Kardex: `-4 movement_type=venta reference=sale#1`
+- Stock: 10 → 6
+- WAC (`products.cost`): 1000 (no cambia al vender)
+- `accounting_entries`:
+  - `+1 income "Ventas POS" amount=7200 sale_id=sale#1`
+    (4 × 1800 = 7200)
+  - `+1 expense "Costo de mercancía vendida" amount=4000 sale_id=sale#1`
+    (4 × WAC=1000 = 4000)
+- P&L acumulado: 7200 − 4000 = **3200 utilidad bruta**
+- Verificación de margen: (1800 − 1000) × 4 = 800 × 4 = 3200 ✓
+
+**Paso 3 — Segunda compra al mismo producto** (motivo=`compra`, +5 @ $1200):
+- Kardex: `+5 reference=adj#2`
+- Stock: 6 → 11
+- WAC recalculado: (6×1000 + 5×1200) / 11 = (6000 + 6000) / 11 = 1090.91
+- `accounting_entries`: sin cambio (0 filas nuevas)
+- P&L acumulado: 3200 (sin cambio)
+
+**Paso 4 — Segunda venta** (3 unidades @ $1800):
+- Kardex: `-3 reference=sale#2`
+- Stock: 11 → 8
+- WAC vigente al momento: 1090.91
+- `accounting_entries`:
+  - `+1 income "Ventas POS" amount=5400`
+  - `+1 expense "Costo de mercancía vendida" amount=3272.73`
+    (3 × 1090.91 = 3272.73)
+- Utilidad bruta de esta venta: 5400 − 3272.73 = 2127.27
+- P&L acumulado: 3200 + 2127.27 = **5327.27**
+
+**Verificación de balance de inventario**:
+- Costo capitalizado inicial (nunca asentado en P&L): 10 × 1000 = 10 000
+  (compra 1) + 5 × 1200 = 6 000 (compra 2) = **16 000**
+- Costo salido por COGS: 4 × 1000 + 3 × 1090.91 = 4 000 + 3 272.73 =
+  **7 272.73**
+- Costo restante en inventario (según WAC actual × stock): 1090.91 × 8 =
+  **8 727.27**
+- Check: 7 272.73 (salido) + 8 727.27 (en stock) = 16 000 (capitalizado
+  total) ✓ **balance conserva**
+
+**Comparativa con el método anterior** (compra → expense inmediato):
+
+| Momento | Método NUEVO (capitaliza + COGS) | Método ANTERIOR (compra=expense) |
+|---|:---:|:---:|
+| Compra #1 (10 × 1000) | P&L: 0 | P&L: −10 000 |
+| Venta #1 (4 × 1800) | P&L: +3 200 | P&L: +7 200 (COGS no existía) |
+| Compra #2 (5 × 1200) | P&L: 0 | P&L: −6 000 |
+| Venta #2 (3 × 1800) | P&L: +2 127.27 | P&L: +5 400 (COGS no existía) |
+| **Acumulado** | **+5 327.27** | **−3 400** |
+
+El método NUEVO refleja el margen bruto real por período. El anterior
+mostraba pérdida ficticia porque las compras impactaban P&L completo
+mientras las ventas no se descontaban por costo. Fin del **"doble
+reconocimiento del costo"** que el spec original identificaba como
+riesgo.
 
 ---
 
@@ -692,17 +842,36 @@ para Fase 2 sin migraciones extra; el usuario no ve nada distinto.
 
 ## 10. Decisiones abiertas
 
-### D1 — Tratamiento contable de incrementos — **CERRADA: opción (c) motivos**
+### D1 — Tratamiento contable de incrementos — **RE-CERRADA 2026-08-17: capitalización + COGS al vender**
 
-Resolución: 3 motivos (`compra`, `sobrante`, `correccion`) con asiento
-propio. Ver tabla completa en §6.2. Columna `motivo` va en el ALTER de
-Fase 1 aunque el cableado contable se implemente en Fase 2.
+Estado histórico:
+1. Cerrada originalmente como opción (c): 3 motivos con asiento propio
+   (`compra`→expense, `sobrante`→income, `correccion`→sin asiento).
+   Implementado en 17c v1, validado en branch, **no aplicado a prod**
+   (bloqueado por gate del contador).
+2. **RE-CERRADA por el contador (2026-08-17)**: opción (a1) del análisis
+   original, extendida para que `sobrante` también capitalice —
+   capitalización a inventario + reconocimiento de COGS al vender vía
+   `create_sale`. Los 3 motivos NO generan asiento inmediato. Detalle en
+   §6.2 (tabla nueva) y §6.4 (pieza COGS).
 
-**⚠ Pendiente de validación por contador** antes del apply a prod de Fase
-2. El diseño y el código pueden escribirse ya.
+Consecuencia operativa: **17c v1 queda invalidado**. Reemplaza 17c v2
+(por escribir) que:
+- Cambia firma con `p_motivo` igual que antes (esto sí se mantiene).
+- Recalcula WAC para los 3 motivos (era solo para compra en v1; ahora
+  también para sobrante y correccion, todos capitalizan al costo que el
+  usuario ingresa).
+- Elimina el bloque de INSERT en `accounting_entries` para incrementos
+  (los 3 casos).
+- Mantiene el bloque de merma (§6.1, sin cambio).
+- Mantiene la FK `accounting_entries.adjustment_id` (útil para el
+  asiento de merma cuando aplique).
+
+Adicionalmente, `create_sale` cambia para añadir COGS (§6.4), y
+`void_sale` amplía la reversa para compensar también el COGS.
 
 Devolución de cliente **no** es motivo de ajuste — se maneja por
-`void_sale`.
+`void_sale` (ahora con reversa de COGS incluida).
 
 ### D2 — Costo promedio en disminuciones (confirmar regla)
 
@@ -808,6 +977,38 @@ fallback si el UPDATE del counter no retorna filas (sede nueva sin
 counter → crear on-the-fly con `last_numero=1`). Probado en T1 de
 [scripts/17_validation_phase2.sql](../scripts/17_validation_phase2.sql).
 Sin cambio requerido.
+
+**DN4 — Método contable cambia a capitalización + COGS al vender
+(2026-08-17).** El contador aprobó opción (a1) del análisis original del
+gate contable, extendida para que `sobrante` también capitalice
+(convención del negocio: los sobrantes son mercancía comprada no
+registrada a tiempo). Consecuencias:
+
+- **17c v1 queda invalidado**. La versión aplicada al branch de
+  validación (2026-08-17) reflejaba el método anterior; el 17c v2 que se
+  aplicará a prod se reescribe conforme a §6.2 nueva.
+- **Nueva pieza**: COGS en `create_sale` (§6.4). Amplía también
+  `void_sale` para revertir el COGS. Se cablea en el mismo release que
+  17c v2 + 2D (release triple acoplado: SQL 17c v2 + SQL cambio
+  create_sale/void_sale + TS 2D refactor callers).
+- **Retroactividad**: NO aplica. Ventas actuales en prod son datos de
+  prueba, no se reconcilia histórico. El nuevo método rige desde el
+  deploy. Notar en el commit que aplique el release.
+- **Impacto en `receive_payment` / abonos futuros (Fase 2/3 crédito)**:
+  cuando se implemente, NO debe generar COGS adicional — el COGS ya se
+  registró completo al momento de la venta. Cross-referenciado en
+  [docs/CREDIT-SALES-SPEC.md](CREDIT-SALES-SPEC.md).
+- **UI**: `adjustment-dialog.tsx` muestra el WAC/costo promedio actual
+  del producto como referencia junto al input de costo. No autocompleta.
+  Cambio TS que puede ir junto o antes del release SQL.
+- **`ingressNewProduct`**: hoy asienta `expense` "Compra de mercancía"
+  directo. Al migrar a `create_adjustment` con `motivo='compra'` (2D),
+  ese asiento desaparece — coherente con el nuevo método (no se asienta
+  al comprar). El asiento aparecerá cuando la mercancía se venda vía
+  COGS. No es regresión bajo el nuevo método; era regresión bajo el
+  método anterior. Refuerzo en `ESTADO-PENDIENTES.md` de bloqueo estricto
+  2D↔2C se mantiene: 2D sigue requiriendo 17c v2 aplicado para no dejar
+  callers TS pasando `motivo` que el RPC no acepte.
 
 ---
 

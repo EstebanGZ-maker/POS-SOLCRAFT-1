@@ -474,6 +474,21 @@ solo lugar. Cierra la puerta a un M12 futuro.
 
 ## 6. Interacción con contabilidad (base caja)
 
+> **⚠ Actualización pendiente (2026-08-17)**: el contador aprobó un cambio
+> de método contable para ajustes de inventario que afecta también a
+> `create_sale`. Al vender, además del `income` descrito abajo, se emite
+> un `expense` COGS (Costo de mercancía vendida) por
+> `SUM(quantity × products.cost)` de los ítems no-servicio. `void_sale`
+> se amplía para revertir también el COGS. Detalle completo en
+> [docs/INVENTORY-ADJUSTMENTS-SPEC.md §6.4](INVENTORY-ADJUSTMENTS-SPEC.md).
+> **Implicación crítica para `register_payment` (Fase 2/3, aún por
+> escribir)**: NO debe generar COGS adicional al procesar abonos — el
+> COGS se registra completo en `create_sale` al momento de la venta,
+> independientemente de si es contado o crédito. Los abonos posteriores
+> solo tocan `income` (patrón actual). Esta sección de §6 quedará
+> reescrita en el release que aplique 17c v2 + cambio de create_sale +
+> 2D (release triple acoplado).
+
 - **`create_sale` contado**: 1 asiento `income` por `total_amount`.
 - **`create_sale` a cuenta con abono inicial**: 1 asiento `income` por
   `p_initial_payment`.
