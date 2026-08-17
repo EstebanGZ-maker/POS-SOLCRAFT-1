@@ -2,23 +2,93 @@
 
 > **Propósito**: dump de estado para que una instancia nueva de Claude sin
 > memoria pueda retomar sin perder nada. Última actualización: **2026-08-16**
-> (Crédito Fase 3 CxC completo desplegado a prod — ciclo end-to-end del
-> módulo de crédito cerrado).
+> (MoneyInput con formateo en vivo desplegado a prod — 18 sitios migrados
+> a separador de miles COP).
 
 ---
 
-## 0. LEE ESTO PRIMERO — estado tras sesión 2026-08-16 (Fase 3)
+## 0. LEE ESTO PRIMERO — estado tras sesión 2026-08-16 (MoneyInput)
 
-**Estado de ramas**: ninguna rama de trabajo abierta. `main` en `28109a0`
-con Fase 3 mergeada. Ramas `s2-adjustments-phase1`, `s3-credit-fiar-ui`,
-`s4-inventory-products-scope`, `s5-credit-phase3-ui` borradas de origin
+**Estado de ramas**: ninguna rama de trabajo abierta. `main` en `e711ccb`
+con MoneyInput mergeado (merge s7). Ramas `s2-adjustments-phase1`,
+`s3-credit-fiar-ui`, `s4-inventory-products-scope`, `s5-credit-phase3-ui`,
+`s6-money-input-format`, `s7-money-input-live-format` borradas de origin
 tras cada merge respectivo.
 
 **Prod (`nxszaxwsrtlofqimbfig`)**: kardex OK (verify_kardex_integrity=0),
-credit OK (verify_credit_integrity=0). Sirviendo `dpl_FUG6WAAxac55TRDj55mgZBHrcjtj`
-(sha `28109a0`, target=production) tras el merge de Crédito Fase 3.
+credit OK (verify_credit_integrity=0). Sirviendo `dpl_2uvmVse1yQm6cQ66vMaHii6s5k1D`
+(sha `e711ccb`, target=production) tras el merge de MoneyInput.
 `GET /api/wompi/webhook` responde `{ok:true, configured:false, endpoint:"wompi/webhook"}`
 HTTP 200. Runtime logs 15 min post-deploy: 0 errors/warnings/fatal.
+
+### ✅ CERRADO Y DEPLOYED — MoneyInput con formateo en vivo (18 sitios)
+
+Rama `s7-money-input-live-format` mergeada a main (merge commit `e711ccb`).
+Iteración incremental: primero se creó el componente reusable + migraron
+los 18 sitios con reformateo on-blur en `s6-money-input-format`, después
+se hizo upgrade a formateo EN VIVO en `s7` (mismo contrato de props, solo
+cambia el mecanismo interno). Ambos flujos verificados por el usuario en
+preview antes del merge; s7 quedó como ancestro-superset de s6 (contiene
+sus 2 commits + el upgrade), por eso se hizo un único merge s7 → main.
+
+**Componente** (`components/ui/money-input.tsx`, ~80 líneas):
+- Wrapper sobre `<Input>` de shadcn usando `NumericFormat` de
+  **react-number-format@5.4.4** (pineada exacta, coherente con la deuda #21
+  del backlog de evitar `"latest"` en `package.json`).
+- Configuración COP: `thousandSeparator="."`, `decimalSeparator=","`,
+  `decimalScale=0` (sin decimales), `allowNegative=false`,
+  `inputMode="numeric"` (teclado numérico en mobile).
+- Contrato de props: `value: number | null | undefined`,
+  `onChange: (n: number | null) => void`, `emptyAsNull` (default `false`),
+  más `id, className, placeholder, disabled, autoFocus, onBlur, onFocus,
+  autoComplete`.
+- **Formateo en vivo** con manejo automático de cursor (la lib recoloca el
+  caret ignorando los puntos al insertar/borrar dígitos en cualquier
+  posición). Auto-select on focus (preservado del comportamiento previo).
+- Copiar/pegar `"1.500.000"` limpia puntos automáticamente.
+
+**18 inputs migrados en 12 archivos** (detalle exhaustivo en el commit
+interno `53113ac`; tabla de decisiones `emptyAsNull` por sitio en el
+reporte de sesión):
+- POS: `payment-dialog` (abono inicial fiado, monto recibido efectivo),
+  `edit-line-dialog` (precio base), `open-shift-dialog` (base inicial),
+  `close-shift-dialog` (dinero contado, `emptyAsNull` para preservar
+  botón Guardar disabled cuando vacío), `cash-movement-dialog` (monto,
+  `emptyAsNull` + toast si vacío).
+- Crédito: `register-payment-dialog` (monto del abono, `emptyAsNull` +
+  botón disabled).
+- Inventario: `adjustment-dialog` (costo línea), `product-form-dialog`
+  (costo inicial, precio base), `price-lists` (override, `emptyAsNull`).
+- Bodega central: `BulkSend` (precio mayorista), `ReceivePanel` (costo
+  entrada), `ai-ingress-panel` (precio venta, costo adquisición).
+- Contabilidad: `entry-dialog` (monto asiento).
+- Settings: `receipt` (costo envío, umbral envío gratis `emptyAsNull`).
+
+**Fuera de scope**: 2 filtros de búsqueda mín/máx en `/central` (precio
+mínimo/máximo para filtrar el catálogo) siguen como `type="number"` sin
+formateo por decisión explícita — no son montos monetarios que se
+persistan, solo criterios de filtro.
+
+**Deuda menor arrastrada de esta PR**: `BusinessSettings.shipping_cost`
+sigue como `number` (no nullable). La intención UX (vacío = "no
+configurado" ≠ 0 = "envío gratis") NO se respeta hoy: el `MoneyInput` de
+`app/settings/receipt/page.tsx` para "Costo de envío" usa
+`emptyAsNull=false` (vacío se coerce a 0) porque widening a
+`number | null` requeriría (a) alterar la columna a NULLable en Supabase,
+(b) widening del tipo TS en `lib/business-settings-actions.ts`,
+(c) cambiar el `MoneyInput` a `emptyAsNull` + parent que persista null,
+(d) auditar `app/catalog/*` para manejar `shipping_cost = null` como "no
+cobrar envío" o el default que decida el negocio. `free_shipping_over` sí
+quedó con `emptyAsNull=true` porque su tipo ya era `number | null`.
+
+**Smoke test verificado por el usuario en preview** antes del merge
+(`dpl_gwupsrfqoVuPU7wtE5WjHwqe9Jh5`, s7):
+- Formateo en vivo al tipear dígito por dígito.
+- Click con el cursor en medio del número + inserción → caret queda en
+  la posición correcta ignorando el punto insertado.
+- Backspace antes de un punto → borra el dígito correcto, no el punto.
+- Cierre de turno con input vacío → botón Guardar sigue disabled
+  (contrato `null` preservado tras el upgrade).
 
 ### ✅ CERRADO Y DEPLOYED — Crédito Fase 3 (CxC completo, ciclo end-to-end)
 
@@ -168,31 +238,9 @@ ciclo completo del módulo de crédito (fiar → abonar → anular → redimir)
 funciona end-to-end en prod. Deuda D9 en `create_sale` v2 también cerrada
 como parte de Fase 3 (`create_sale` v3 con guard server-side).
 
-**Próximo bloque grande: formato de miles (separador de millares) en
-inputs de dinero**. Nueva rama, alcance por definir. Contexto: los inputs
-`type="number"` en COP no muestran separador ("1500000" en vez de
-"1.500.000"), difícil de leer al capturar montos grandes. Candidatos a
-revisar (sin decisión aún):
-
-- **POS pago** — `components/pos/payment-dialog.tsx` (monto recibido,
-  abono inicial fiado).
-- **Abono crédito** — `components/credit/register-payment-dialog.tsx`
-  (monto del abono).
-- **Turno de caja** — `components/pos/open-shift-dialog.tsx`
-  (initial_cash), `components/pos/close-shift-dialog.tsx` (counted_cash),
-  `components/pos/cash-movement-dialog.tsx` (amount).
-- **Ajustes de inventario** — items con costo.
-- **Edición de línea del carrito** — `components/pos/edit-line-dialog.tsx`
-  (unit_price manual).
-- **Compras / recepciones** — flujos de bodega central si aplica.
-
-Decisiones abiertas para la próxima sesión:
-- Alcance específico (¿todos los inputs de dinero? ¿solo POS+abonos?).
-- Estrategia técnica (input controlado con máscara `Intl.NumberFormat`
-  vs. componente Money reusable vs. librería). Sin decisión.
-- Formato: `1.500.000` (locale es-CO estándar) probable pero confirmar.
-- Compatibilidad: mantener el valor numérico limpio para el submit,
-  formatear solo el display.
+**✅ MoneyInput CERRADO Y DEPLOYED** — ver bloque nuevo al inicio de
+esta sección §0 ("MoneyInput con formateo en vivo"). 18 sitios de
+dinero migrados a formato COP con separador de miles en vivo.
 
 Deudas menores dejadas por Fase 3 (no bloquean nada):
 - **§8.1 crear cliente inline** — cuando el usuario elige "Fiar" y el
@@ -206,23 +254,6 @@ Deudas menores dejadas por Fase 3 (no bloquean nada):
   futuro se hace un reporte que agrupe `sale_payments.payment_method`,
   `'credito_favor'` inflaría "no-cash" sin ser plata real. Documentar
   cuando exista ese reporte.
-
-Deuda menor dejada por el bloque de formato de miles (rama
-`s6-money-input-format`, sesión 2026-08-16):
-- **`BusinessSettings.shipping_cost` sigue siendo `number` (no nullable)**
-  por decisión explícita en esta PR. La intención UX (vacío = "no
-  configurado" ≠ 0 = "envío gratis") NO se respeta hoy: el `MoneyInput` de
-  `app/settings/receipt/page.tsx` para "Costo de envío" usa
-  `emptyAsNull=false` (vacío se coerce a 0) porque widening a `number | null`
-  requeriría ampliar el tipo en `lib/business-settings-actions.ts` +
-  columna en Supabase (`business_settings.shipping_cost`) + posibles
-  callers en el storefront público que asuman `number`. Fuera de scope
-  para esta PR. Si se decide priorizar la semántica correcta: (a) alterar
-  la columna a `NULL`able, (b) widening del tipo TS, (c) cambiar el
-  `MoneyInput` a `emptyAsNull` + parent que persista null, (d) auditar
-  `app/catalog/*` para manejar `shipping_cost = null` como "no cobrar
-  envío" o el default que decida el negocio. `free_shipping_over` sí
-  quedó con `emptyAsNull=true` porque su tipo ya era `number | null`.
 
 ### ✅ CERRADO Y DEPLOYED — Ajustes Fase 1 (scripts/16)
 - **BD**: aplicado a prod (`nxszaxwsrtlofqimbfig`) vía `apply_migration` en
