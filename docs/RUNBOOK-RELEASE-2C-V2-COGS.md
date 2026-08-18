@@ -41,6 +41,57 @@ post-2A+2B sin dropear columnas nuevas).
   - Vercel build + deploy: 60-90s (baseline actual del proyecto).
   - Smoke test manual en prod: 5-8 min (crear compra, crear venta,
     verificar COGS, anular ambos).
+
+### 1.1 Límite duro del smoke test post-deploy — 10 min → rollback
+
+**Cronómetro arranca cuando Vercel reporta READY y comenzás el §3.1**
+(navegar a `/central` → "Recibir mercancía").
+
+Si a los **10 minutos** el smoke test §3 completo no pasó limpio,
+**ejecutar rollback §4 de inmediato**. No seguir diagnosticando en prod
+en vivo — la ventana de datos operativos comprometidos crece con cada
+minuto adicional (cada venta o ajuste creado durante el intervalo
+triple-activo persiste `sale_items.unit_cost` y asientos COGS que
+después complican el rollback — ver riesgo residual en §4).
+
+**Quién decide el corte**: el usuario (el operador que ejecuta el
+runbook). No delegar la decisión "esperemos 5 minutos más" — el límite
+es duro.
+
+**Criterio exacto de "no pasó" (cualquiera dispara rollback)**:
+
+1. **Integridad rota**: cualquiera de estas queries en prod devuelve
+   ≥ 1 fila post-smoke:
+   - `SELECT COUNT(*) FROM verify_kardex_integrity()` > 0
+   - `SELECT COUNT(*) FROM verify_credit_integrity()` > 0
+   - `SELECT COUNT(*) FROM verify_adjustment_accounting_integrity()` > 0
+
+2. **Error visible en UI** durante los pasos §3.1-§3.3:
+   - Toast rojo de error al confirmar compra Central, venta, o
+     anulación.
+   - Página en blanco o 500.
+   - Runtime error en la consola del navegador que corresponde a los
+     RPCs (`create_adjustment`, `create_sale`, `void_sale`).
+
+3. **Comportamiento contable inesperado**:
+   - Compra desde Central genera asiento inmediato "Compra de
+     mercancía" (método NUEVO no debe hacerlo).
+   - Venta contado NO genera asiento COGS ni el asiento income.
+   - Cantidad del COGS ≠ `quantity × products.cost` al momento de la
+     venta.
+   - Anular venta y quedar con `SELECT SUM(income) - SUM(expense)
+     FROM accounting_entries WHERE sale_id=<id>` ≠ 0.
+
+4. **Runtime logs en Vercel** con ≥ 1 error nuevo en el intervalo
+   post-deploy relacionado con los 3 RPCs afectados.
+
+**Si dispara rollback**: correr §4 sin dudar. La reversibilidad es la
+red de seguridad. Diagnóstico posterior con calma en el branch de
+validación, no en prod. Ver §4 para el procedimiento exacto y la
+compensación manual si hubo ventas creadas durante el intervalo.
+
+**Si el smoke pasa limpio antes de 10 min**: continuar con §6
+(registro post-corte). No hay premio por ir más rápido.
 - **Ventana recomendada**: bajo tráfico. Almacén Taiwy típicamente
   cierra 20:00-08:00 (Colombia UTC-5). Ideal: 21:00-22:00, después de
   cierre POS del día.
