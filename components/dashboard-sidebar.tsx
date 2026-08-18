@@ -202,7 +202,7 @@ export function DashboardSidebar() {
           sidebarOpen ? "translate-x-0" : "-translate-x-full",
         )}
       >
-        <div className="flex h-16 items-center justify-between border-b px-4">
+        <div className="flex h-16 shrink-0 items-center justify-between border-b px-4">
           <h2 className="flex items-center gap-2 text-lg font-semibold">
             <Boxes className="h-5 w-5 text-primary" /> POS Multisede
           </h2>
@@ -210,7 +210,7 @@ export function DashboardSidebar() {
             <X className="h-5 w-5" />
           </Button>
         </div>
-        <div className="flex-1 overflow-y-auto">
+        <div className="min-h-0 flex-1 overflow-y-auto">
           <NavLinks onNavigate={() => setSidebarOpen(false)} />
         </div>
         <div className="border-t p-4">
@@ -223,16 +223,16 @@ export function DashboardSidebar() {
 
       {/* Desktop sidebar */}
       <div className="hidden lg:fixed lg:inset-y-0 lg:flex lg:w-72 lg:flex-col">
-        <div className="flex flex-grow flex-col border-r bg-card">
-          <div className="flex h-16 items-center border-b px-5">
+        <div className="flex min-h-0 flex-grow flex-col border-r bg-card">
+          <div className="flex h-16 shrink-0 items-center border-b px-5">
             <h2 className="flex items-center gap-2 text-xl font-bold">
               <Boxes className="h-6 w-6 text-primary" /> POS Multisede
             </h2>
           </div>
-          <div className="flex-1 overflow-y-auto">
+          <div className="min-h-0 flex-1 overflow-y-auto">
             <NavLinks />
           </div>
-          <div className="border-t p-4">
+          <div className="shrink-0 border-t p-4">
             <Button variant="ghost" className="w-full justify-start text-muted-foreground" onClick={handleSignOut}>
               <LogOut className="mr-3 h-5 w-5" />
               Cerrar sesión
