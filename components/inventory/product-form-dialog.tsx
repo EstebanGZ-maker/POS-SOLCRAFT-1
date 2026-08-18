@@ -117,9 +117,26 @@ export function ProductFormDialog({
     }
   }
 
+  const costNum = Number(form.cost) || 0
+  // Regla de negocio (Fase 2C v2, 2026-08-17): productos físicos NUEVOS
+  // deben tener costo > 0 para que el COGS al vender sea reconocido
+  // correctamente (con cost=0/NULL la venta muestra margen 100% aparente).
+  // Servicios exentos (no aportan COGS). Edición de existentes sin
+  // validación — es un ajuste administrativo (spec §6.2).
+  const costRequired = !editing && !form.is_service
+  const costInvalid = costRequired && costNum <= 0
+
   const submit = async () => {
     if (!form.name.trim()) {
       toast({ title: "Falta el nombre", variant: "destructive" })
+      return
+    }
+    if (costInvalid) {
+      toast({
+        title: "Costo requerido",
+        description: "Los productos físicos deben tener un costo inicial > 0.",
+        variant: "destructive",
+      })
       return
     }
     setSaving(true)
@@ -252,11 +269,14 @@ export function ProductFormDialog({
 
             <div className="grid gap-4 sm:grid-cols-3">
               <div className="space-y-1.5">
-                <Label>Costo inicial</Label>
+                <Label>Costo inicial{costRequired ? " *" : ""}</Label>
                 <MoneyInput
                   value={Number(form.cost) || 0}
                   onChange={(n) => setForm({ ...form, cost: String(n ?? 0) })}
                 />
+                {costInvalid && (
+                  <p className="text-xs text-destructive">Requerido &gt; 0 para productos físicos.</p>
+                )}
               </div>
               <div className="space-y-1.5">
                 <Label>Precio base *</Label>
@@ -363,7 +383,7 @@ export function ProductFormDialog({
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Cancelar
           </Button>
-          <Button onClick={submit} disabled={saving}>
+          <Button onClick={submit} disabled={saving || costInvalid}>
             {saving ? "Guardando..." : "Guardar"}
           </Button>
         </DialogFooter>

@@ -15,7 +15,18 @@ import { createAdjustment } from "@/lib/inventory-actions"
 import { ProductPicker } from "@/components/inventory/product-picker"
 
 type Warehouse = { warehouse_id: string; name: string; site_name?: string }
-type Row = { product_id: string; name: string; cost: number; objective: "incrementar" | "disminuir"; quantity: number }
+type Motivo = "compra" | "sobrante" | "correccion"
+type Row = {
+  product_id: string
+  name: string
+  cost: number
+  objective: "incrementar" | "disminuir"
+  quantity: number
+  // WAC vigente del producto al abrir el diálogo — solo referencia visual,
+  // no se envía al RPC. El servidor recalcula WAC con el `cost` que ingresó
+  // el usuario (17b) para items incrementar con cost>0.
+  currentCost: number
+}
 
 export function AdjustmentDialog({
   open,
@@ -33,16 +44,27 @@ export function AdjustmentDialog({
   const [warehouseId, setWarehouseId] = useState(warehouses[0]?.warehouse_id ?? "")
   const [notes, setNotes] = useState("")
   const [rows, setRows] = useState<Row[]>([])
+  const [motivo, setMotivo] = useState<Motivo | "">("")
   const [saving, setSaving] = useState(false)
 
   const total = useMemo(() => rows.reduce((s, r) => s + r.cost * r.quantity, 0), [rows])
+  const hasIncrementar = useMemo(() => rows.some((r) => r.objective === "incrementar"), [rows])
+  const only100Disminuir = rows.length > 0 && !hasIncrementar
 
   const addProduct = (p: any) => {
     if (rows.some((r) => r.product_id === p.product_id)) return
     const full = products.find((x) => x.product_id === p.product_id)
+    const currentCost = Number(full?.cost ?? 0)
     setRows((prev) => [
       ...prev,
-      { product_id: p.product_id, name: p.name, cost: Number(full?.cost ?? 0), objective: "incrementar", quantity: 1 },
+      {
+        product_id: p.product_id,
+        name: p.name,
+        cost: currentCost,
+        objective: "incrementar",
+        quantity: 1,
+        currentCost,
+      },
     ])
   }
   const update = (id: string, patch: Partial<Row>) =>
@@ -52,13 +74,28 @@ export function AdjustmentDialog({
   const submit = async () => {
     if (!warehouseId) return toast({ title: "Selecciona una bodega", variant: "destructive" })
     if (rows.length === 0) return toast({ title: "Agrega al menos un producto", variant: "destructive" })
+    if (hasIncrementar && !motivo) {
+      return toast({ title: "Selecciona un motivo", description: "Los ajustes con incrementos requieren motivo.", variant: "destructive" })
+    }
+    if (only100Disminuir && motivo) {
+      return toast({ title: "Motivo no aplica", description: "Los ajustes 100% disminución no llevan motivo.", variant: "destructive" })
+    }
+    if (motivo === "correccion" && !notes.trim()) {
+      return toast({ title: "Justificación requerida", description: "Los ajustes de corrección requieren observaciones.", variant: "destructive" })
+    }
     setSaving(true)
-    const res = await createAdjustment({ warehouse_id: warehouseId, notes, items: rows })
+    const res = await createAdjustment({
+      warehouse_id: warehouseId,
+      notes,
+      items: rows.map(({ currentCost: _c, name: _n, ...it }) => it),
+      motivo: only100Disminuir ? null : (motivo as Motivo),
+    })
     setSaving(false)
     if (res.success) {
       toast({ title: "Ajuste creado", description: res.message })
       setRows([])
       setNotes("")
+      setMotivo("")
       onOpenChange(false)
       onSaved()
     } else {
@@ -91,9 +128,34 @@ export function AdjustmentDialog({
               </Select>
             </div>
             <div className="space-y-1.5">
-              <Label>Observaciones</Label>
-              <Textarea rows={1} value={notes} onChange={(e) => setNotes(e.target.value)} />
+              <Label>
+                Motivo{hasIncrementar ? " *" : ""}
+              </Label>
+              <Select
+                value={motivo}
+                onValueChange={(v) => setMotivo(v as Motivo)}
+                disabled={only100Disminuir}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder={only100Disminuir ? "No aplica (100% merma)" : "Seleccionar"} />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="compra">Compra</SelectItem>
+                  <SelectItem value="sobrante">Sobrante</SelectItem>
+                  <SelectItem value="correccion">Corrección</SelectItem>
+                </SelectContent>
+              </Select>
+              {hasIncrementar && (
+                <p className="text-xs text-muted-foreground">
+                  Los incrementos requieren motivo. Compra/sobrante capitalizan al inventario; corrección no genera asiento.
+                </p>
+              )}
             </div>
+          </div>
+
+          <div className="space-y-1.5">
+            <Label>Observaciones{motivo === "correccion" ? " *" : ""}</Label>
+            <Textarea rows={1} value={notes} onChange={(e) => setNotes(e.target.value)} />
           </div>
 
           <div className="flex items-center justify-between">
@@ -140,6 +202,9 @@ export function AdjustmentDialog({
                       value={r.cost}
                       onChange={(n) => update(r.product_id, { cost: n ?? 0 })}
                     />
+                    <p className="mt-0.5 text-[10px] text-muted-foreground">
+                      WAC actual: {formatCurrency(r.currentCost)}
+                    </p>
                   </div>
                   <div className="col-span-1 flex justify-end">
                     <Button variant="ghost" size="icon" className="h-9 w-9" onClick={() => remove(r.product_id)}>
