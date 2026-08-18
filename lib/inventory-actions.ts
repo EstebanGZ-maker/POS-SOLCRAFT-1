@@ -12,6 +12,7 @@ export async function getProductsWithStock(warehouse_id?: string | null) {
   const { data, error } = await supabase
     .from("products")
     .select("*, categories ( category_id, name ), product_stock ( warehouse_id, quantity, min_quantity, max_quantity )")
+    .eq("is_active", true)
     .order("name", { ascending: true })
   if (error) {
     console.error("Error fetching products with stock:", error)

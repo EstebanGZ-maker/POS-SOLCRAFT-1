@@ -4,6 +4,7 @@ import { createContext, useContext, useCallback } from "react"
 import useSWR from "swr"
 import { useRouter } from "next/navigation"
 import { getSites, getCurrentSiteId, setCurrentSite, type Site } from "@/lib/site-actions"
+import { useAuth } from "@/lib/auth-context"
 
 type SiteContextValue = {
   sites: Site[]
@@ -22,7 +23,14 @@ async function bootstrap(): Promise<{ sites: Site[]; currentSiteId: string | nul
 
 export function SiteProvider({ children }: { children: React.ReactNode }) {
   const router = useRouter()
-  const { data, isLoading, mutate } = useSWR("site-bootstrap", bootstrap, {
+  const { user, loading: authLoading } = useAuth()
+  // Key condicional dependiente de auth: evita la carrera donde SWR fetchea
+  // getSites() antes de que la cookie de sesión esté escrita (server action
+  // devolvería [] por getAccessibleSiteIds() sin user, y SWR cachearía []
+  // sin revalidar). Con la key ligada a user.id, SWR no dispara hasta que
+  // auth resuelva y refetchea limpio al cambiar de usuario (logout/login).
+  const swrKey = authLoading ? null : user ? (["site-bootstrap", user.id] as const) : null
+  const { data, isLoading, mutate } = useSWR(swrKey, bootstrap, {
     revalidateOnFocus: false,
   })
 
