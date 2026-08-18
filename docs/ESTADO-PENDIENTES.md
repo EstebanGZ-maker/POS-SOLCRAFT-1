@@ -69,6 +69,27 @@ La Ronda 2(a) investigación (EXPLAIN ANALYZE sobre `getSites`) confirmó
 que **NO hay índice ni policy que agregar** — el fix real vive del lado
 de infra/edge, no del schema.
 
+**Deuda técnica identificada, NO cerrada** (2026-08-18, encontrada en
+smoke de s11-ai-ingress-feedback): errores de nivel-framework de
+Server Actions (413 body exceeded, network, timeout, deploy en curso)
+escapan al try/catch cliente y disparan el ErrorBoundary/mensaje
+genérico de Next.js "An error occurred in the Server Components
+render" — el feedback amigable diseñado en s11 (toast, card roja con
+mensaje legible) NO se muestra en esos casos porque la excepción
+ocurre antes de que el promise cliente resuelva y React la eleva al
+boundary. Mitigado en s11 subiendo `bodySizeLimit` a 20 MB y agregando
+guard pre-flight de 5 MB en `handleFiles` (coincide con
+`MAX_IMAGE_BYTES` server-side), cerrando la ventana práctica de 413
+para el flujo IA. Ventanas residuales: (i) timeouts/network fails en
+uploads legítimos <5 MB, (ii) otros flujos de Server Action con
+payload grande (bulk transfers si crecen). **Solución robusta pendiente,
+no incluida**: refactorizar `uploadProductMedia` a upload
+client-side directo a Supabase Storage (`supabase.storage.from(...)
+.upload(file)` con anon key + RLS), ~60-100 líneas. Elimina el hop
+Server Action por completo para el binario, con lo cual todos los
+framework errors (413, timeout, deploy) desaparecen para uploads.
+Decisión de scope + prioridad pendiente del usuario.
+
 **Módulo Ajustes de Inventario**: **cerrado end-to-end en prod**.
 Fase 1 (RPC atómico) + 2A (numeración) + 2B (WAC) + 2C v2 (motivo +
 capitalización sin asientos) + 2D (unificación entradas TS + UI motivo/
