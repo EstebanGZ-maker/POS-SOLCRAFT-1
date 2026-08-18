@@ -222,12 +222,13 @@ export default function POSPage() {
     // No dispares carga sin sede resuelta. useSite() aún bootstrapeando →
     // loading queda en true (estado inicial) y se muestra "Cargando…".
     if (!siteId) return
+    const sid = siteId // narrow para el closure de init()
 
     let cancelled = false
     async function init() {
       setLoading(true)
       setWarehouseError(null)
-      const whId = await getWarehouseForSite(siteId)
+      const whId = await getWarehouseForSite(sid)
       if (cancelled) return
       if (!whId) {
         // Vector latente: la sede no tiene warehouse is_primary=true.
@@ -240,16 +241,28 @@ export default function POSPage() {
         return
       }
       setWarehouseId(whId)
-      const [, customersData] = await Promise.all([
-        refreshShift(siteId),
-        refreshData(whId),
-      ])
+      // Una sola tanda paralela: solo getWarehouseForSite tenía dependencia real
+      // (whId → getProductsWithStock). El resto no dependía de nada más que
+      // siteId, que ya está resuelto. Colapsa la cascada 3-tandas previa a 2.
+      const [shiftData, productsData, customersData, categoriesData, plData, promoData] =
+        await Promise.all([
+          getCurrentShift(sid),
+          getProductsWithStock(whId),
+          getCustomers(),
+          getCategories(),
+          getPriceListsForPOS(),
+          getActivePromotionsForPOS(sid),
+        ])
       if (cancelled) return
-      const [plData, promoData] = await Promise.all([
-        getPriceListsForPOS(),
-        getActivePromotionsForPOS(siteId),
-      ])
-      if (cancelled) return
+
+      setShift(shiftData)
+      const mapped = (productsData as any[]).map((p) => ({
+        ...p,
+        stock_quantity: p.is_service ? 9999 : (p.warehouseStock ?? 0),
+      }))
+      setProducts(mapped as Product[])
+      setCustomers(customersData)
+      setCategories(categoriesData)
       setPriceLists(plData.lists)
       setPriceMap(plData.priceMap)
       setPromoMap(promoData.promoMap)
@@ -262,6 +275,19 @@ export default function POSPage() {
       setTabs([firstTab])
       setActiveTabId(firstTab.id)
       setLoading(false)
+
+      // Piggyback fiados abiertos del turno (no bloquea render del POS).
+      if (shiftData?.shift_id) {
+        getShiftReceivables(shiftData.shift_id)
+          .then((r) => {
+            if (!cancelled) setShiftReceivablesCount(r.success ? r.sales.length : 0)
+          })
+          .catch(() => {
+            if (!cancelled) setShiftReceivablesCount(0)
+          })
+      } else {
+        setShiftReceivablesCount(0)
+      }
     }
     init()
     return () => {
