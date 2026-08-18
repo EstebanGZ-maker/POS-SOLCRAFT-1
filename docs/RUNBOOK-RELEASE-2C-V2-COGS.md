@@ -310,3 +310,13 @@ Después del §3 exitoso, actualizar:
 - **Cerrar branch `validate-2c-v2-cogs`** (`qqnpdhjxzfiwzbrtywym`)
   con `mcp__a16720c7-c1af-4446-8d67-4c23e6fc2b0b__delete_branch`
   — ya cumplió su propósito, ~$0.32/día si se olvida.
+- **Borrar env vars scoped en Vercel** — si para el smoke visual §5
+  se agregaron `NEXT_PUBLIC_SUPABASE_URL` y `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+  scoped a la rama `s8-adjustments-2c-v2-cogs` (apuntando al branch
+  `qqnpdhjxzfiwzbrtywym`), ir a Vercel Settings → Environment Variables
+  y borrar ambas. Motivo: si en el futuro alguien crea otra rama con
+  el mismo nombre, heredaría credentials apuntando a un branch de
+  Supabase que ya no existe → deploys rotos silenciosamente sin
+  mensaje claro. También borrar la rama s8 de origin
+  (`git push origin --delete s8-adjustments-2c-v2-cogs`) una vez
+  mergeada a main.
