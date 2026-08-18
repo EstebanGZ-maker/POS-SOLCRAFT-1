@@ -1,9 +1,17 @@
 # Runbook — Release triple 2C v2 + COGS + 2D
 
-**Objetivo**: aplicar en una sola ventana coordinada las 3 piezas del método
-contable aprobado 2026-08-17 (capitalización + COGS al vender). Ver
-[docs/INVENTORY-ADJUSTMENTS-SPEC.md §6.2/§6.4/§6.5](INVENTORY-ADJUSTMENTS-SPEC.md)
-y [docs/ESTADO-PENDIENTES.md §0 "GATE CONTADOR RESUELTO"](ESTADO-PENDIENTES.md).
+> **✅ RELEASE EJECUTADO 2026-08-18** — merge commit `892f647`, deploy
+> `dpl_5FZTwJNSPUVyCrngvbTeDvpCPvkk` READY, smoke test §3 pasó limpio
+> (compra sin asiento, venta con income+COGS correctos, void con neto=0
+> en ambas ventas y ajustes, las 3 `verify_*_integrity()` = 0). Registrado
+> en [docs/ESTADO-PENDIENTES.md §0 "CERRADO Y DEPLOYED — Release triple
+> 2C v2 + COGS + 2D"](ESTADO-PENDIENTES.md). Este runbook queda como
+> **archivo histórico** — no re-ejecutar. Si se necesita cambiar el
+> método de nuevo, escribir runbook nuevo.
+
+**Objetivo original**: aplicar en una sola ventana coordinada las 3 piezas
+del método contable aprobado 2026-08-17 (capitalización + COGS al vender).
+Ver [docs/INVENTORY-ADJUSTMENTS-SPEC.md §6.2/§6.4/§6.5](INVENTORY-ADJUSTMENTS-SPEC.md).
 
 **Release inseparable**:
 - `scripts/17c_v2_adjustments_no_expense.sql`

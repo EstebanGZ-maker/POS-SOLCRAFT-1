@@ -955,21 +955,33 @@ para Fase 2 sin migraciones extra; el usuario no ve nada distinto.
 
 ## 10. Decisiones abiertas
 
-### D1 — Tratamiento contable de incrementos — **RE-CERRADA 2026-08-17: capitalización + COGS al vender**
+### D1 — Tratamiento contable de incrementos — **✅ APLICADO A PROD 2026-08-18: capitalización + COGS al vender**
 
 Estado histórico:
 1. Cerrada originalmente como opción (c): 3 motivos con asiento propio
    (`compra`→expense, `sobrante`→income, `correccion`→sin asiento).
-   Implementado en 17c v1, validado en branch, **no aplicado a prod**
+   Implementado en 17c v1, validado en branch, **nunca aplicado a prod**
    (bloqueado por gate del contador).
-2. **RE-CERRADA por el contador (2026-08-17)**: opción (a1) del análisis
+2. RE-CERRADA por el contador (2026-08-17): opción (a1) del análisis
    original, extendida para que `sobrante` también capitalice —
    capitalización a inventario + reconocimiento de COGS al vender vía
    `create_sale`. Los 3 motivos NO generan asiento inmediato. Detalle en
    §6.2 (tabla nueva) y §6.4 (pieza COGS).
+3. **APLICADO A PROD 2026-08-18** (release triple `17c_v2` +
+   `17e_cogs_in_sales` + TS 2D, merge commit `892f647`). 17c v1 quedó
+   invalidado. Smoke test §3 del runbook pasó limpio.
 
-Consecuencia operativa: **17c v1 queda invalidado**. Reemplaza 17c v2
-(por escribir) que:
+Nota abierta a futuro (NO bloqueante): re-confirmar con el contador si
+"sobrante" alguna vez necesita tratamiento distinto de "compra". La
+definición actual acotada asume "mercancía comprada y pagada al
+proveedor pero no registrada a tiempo". Si aparece un caso genuino de
+sobrante sin costo de adquisición real (donación, hallazgo sin origen,
+error de recuento a favor sin factura), requiere motivo nuevo separado
+(`hallazgo`/`donacion`) con tratamiento contable distinto — fuera de
+alcance por ahora.
+
+Consecuencia operativa (histórica): 17c v1 quedó invalidado. Fue
+reemplazado por 17c v2:
 - Cambia firma con `p_motivo` igual que antes (esto sí se mantiene).
 - Recalcula WAC para los 3 motivos (era solo para compra en v1; ahora
   también para sobrante y correccion, todos capitalizan al costo que el
@@ -1091,11 +1103,14 @@ counter → crear on-the-fly con `last_numero=1`). Probado en T1 de
 [scripts/17_validation_phase2.sql](../scripts/17_validation_phase2.sql).
 Sin cambio requerido.
 
-**DN4 — Método contable cambia a capitalización + COGS al vender
-(2026-08-17).** El contador aprobó opción (a1) del análisis original del
-gate contable, extendida para que `sobrante` también capitalice
-(convención del negocio: los sobrantes son mercancía comprada no
-registrada a tiempo). Consecuencias:
+**DN4 — Método contable cambió a capitalización + COGS al vender
+(aprobado 2026-08-17, ✅ APLICADO A PROD 2026-08-18).** El contador
+aprobó opción (a1) del análisis original del gate contable, extendida
+para que `sobrante` también capitalice (convención del negocio: los
+sobrantes son mercancía comprada no registrada a tiempo). El release
+triple (17c_v2 + 17e + TS 2D) se aplicó en ventana única el 2026-08-18
+con smoke test §3 limpio (ver `docs/RUNBOOK-RELEASE-2C-V2-COGS.md`
+como archivo histórico del corte). Consecuencias:
 
 - **17c v1 queda invalidado**. La versión aplicada al branch de
   validación (2026-08-17) reflejaba el método anterior; el 17c v2 que se

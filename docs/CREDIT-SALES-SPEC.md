@@ -472,35 +472,50 @@ solo lugar. Cierra la puerta a un M12 futuro.
 
 ---
 
-## 6. Interacción con contabilidad (base caja)
+## 6. Interacción con contabilidad (base caja + COGS al vender)
 
-> **⚠ Actualización pendiente (2026-08-17)**: el contador aprobó un cambio
-> de método contable para ajustes de inventario que afecta también a
-> `create_sale`. Al vender, además del `income` descrito abajo, se emite
-> un `expense` COGS (Costo de mercancía vendida) por
-> `SUM(quantity × products.cost)` de los ítems no-servicio. `void_sale`
-> se amplía para revertir también el COGS. Detalle completo en
+> **✅ APLICADO A PROD 2026-08-18**: método contable actualizado por
+> decisión del contador (release triple 2C v2 + COGS + 2D, merge
+> `892f647`, deploy `dpl_5FZTwJNSPUVyCrngvbTeDvpCPvkk`). `create_sale`
+> ahora persiste `sale_items.unit_cost` desde `products.cost` al momento
+> de la venta y emite 1 asiento agregado `expense "Costo de mercancía
+> vendida"` por venta (además del income). `void_sale` reversa el COGS
+> desde `sale_items.unit_cost` (no `products.cost` vivo, para reverso
+> exacto). Detalle completo en
 > [docs/INVENTORY-ADJUSTMENTS-SPEC.md §6.4](INVENTORY-ADJUSTMENTS-SPEC.md).
-> **Implicación crítica para `register_payment` (Fase 2/3, aún por
-> escribir)**: NO debe generar COGS adicional al procesar abonos — el
-> COGS se registra completo en `create_sale` al momento de la venta,
-> independientemente de si es contado o crédito. Los abonos posteriores
-> solo tocan `income` (patrón actual). Esta sección de §6 quedará
-> reescrita en el release que aplique 17c v2 + cambio de create_sale +
-> 2D (release triple acoplado).
+>
+> **Implicación crítica para `register_payment`**: NO genera COGS
+> adicional al procesar abonos — el COGS se registró completo en
+> `create_sale` al momento de la venta, independientemente de si es
+> contado o crédito. Los abonos solo tocan `income` (patrón actual).
+> Al implementar cambios futuros a `register_payment`, respetar esta
+> regla.
 
-- **`create_sale` contado**: 1 asiento `income` por `total_amount`.
-- **`create_sale` a cuenta con abono inicial**: 1 asiento `income` por
-  `p_initial_payment`.
-- **`create_sale` a cuenta sin abono**: 0 asientos.
+- **`create_sale` contado**: 2 asientos — 1 `income` "Ventas POS" por
+  `total_amount` + 1 `expense` "Costo de mercancía vendida" por
+  `SUM(quantity × unit_cost)` de items no-servicio.
+- **`create_sale` a cuenta con abono inicial**: 2 asientos — 1 `income`
+  "Abono inicial crédito" por `p_initial_payment` + 1 `expense` COGS
+  por costo total vendido (no proporcional al abono).
+- **`create_sale` a cuenta sin abono**: 1 asiento — solo `expense` COGS
+  por costo total. Sin income (venta reconoce al momento de cobrar).
+  Consecuencia contable: en base caja pura, la venta a crédito sin
+  abono aparece como pérdida periódica que se compensa cuando llegue
+  el pago vía `register_payment`.
 - **`register_payment`**: 1 asiento `income` por `p_amount`,
-  `category='Abono crédito'`.
+  `category='Abono crédito'`. **Nunca COGS** (ya se registró en
+  `create_sale`).
 - **`void_sale`**:
-  - Caso A (contado, `amount_paid > 0`): 1 asiento `expense` por
+  - Reversa de COGS: SIEMPRE se emite `income "Reversión Costo de
+    mercancía vendida"` por el monto original si `SUM(unit_cost)` > 0.
+    Independiente del `amount_paid` (aplica también al Caso C).
+  - Caso A (contado, `amount_paid > 0`): + 1 asiento `expense` por
     `amount_paid`.
-  - Caso B (a cuenta, `amount_paid > 0`): 1 asiento `expense` por
+  - Caso B (a cuenta, `amount_paid > 0`): + 1 asiento `expense` por
     `amount_paid` + 1 `customer_credits` por el mismo monto.
-  - Caso C (`amount_paid = 0`): 0 asientos.
+  - Caso C (`amount_paid = 0`): solo la reversa de COGS.
+  - Ventas históricas con `unit_cost=NULL` (pre-2026-08-18): NO tienen
+    reversa de COGS (no había COGS que revertir en el asiento original).
 - **`apply_customer_credit`** (Fase 3, redención): **1 asiento `income`** por
   el monto aplicado + 1 `customer_credits` con `amount = -aplicado`
   (`source_type='redemption'`). El income es necesario para restablecer la

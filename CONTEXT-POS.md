@@ -1435,4 +1435,117 @@ runtime logs 15 min limpios, sin regresión colateral.
 
 ---
 
+### 7.13 Cierre de sesión 2026-08-17/18 — Ajustes Fase 2A/2B/2C v2/2D + COGS deployed (módulo ajustes CERRADO)
+
+Cierra el módulo de Ajustes de Inventario end-to-end en prod. Combina 3
+apply consecutivos separados por gates humanos:
+
+**2026-08-17 (sesión 1)** — Aplicó Fase 2A + 2B (numeración + WAC):
+- `apply_17a_adjustments_numeracion`: tabla nueva `adjustment_counters`
+  (patrón `site_counters`), seed 0 por sede existente + fallback DN3
+  `INSERT ON CONFLICT` para sedes creadas post-apply. `create_adjustment`
+  ahora numera atómicamente por sede vía `UPDATE ... RETURNING`. Sin
+  cambio de firma pública del RPC.
+- `apply_17b_adjustments_wac`: `create_adjustment` recalcula
+  `products.cost` (WAC) al procesar items `incrementar` con `cost>0`.
+  Orden crítico (spec §5.1.1): LOCK products → READ stock global BEFORE
+  → adjust_warehouse_stock → recalc. `products.cost` es global (D6).
+  En disminuciones NO cambia (D2). Void NO revierte (D5).
+- Verificado en branch desechable `validate-phase2-adjustments`
+  (borrado post-verificación) — script `17_validation_phase2.sql` (8
+  tests T1-T8) con 2 typos cosméticos del script corregidos (RPCs
+  correctos, asserts mal calculadas). Post-apply a prod: `Pantalón jean
+  clásico` numero=1 y numero=2 correlativos, WAC exacto 61935.48 y
+  65294.11 vs fórmula. Ajustes de prueba anulados post-test; cost
+  restaurado manualmente a 60000 (D5 dejaría el cost movido).
+  `verify_kardex_integrity()` y `verify_credit_integrity()` = 0.
+
+**2026-08-17/18 (rediseño gate contador)** — Cambio de método para 2C:
+- 17c v1 escrito (asientos por motivo: compra→expense, sobrante→income,
+  correccion→sin) → validado en branch → **NUNCA aplicado a prod**.
+  Bloqueado por gate del contador.
+- Contador aprobó cambio: opción (a1) del análisis original extendida —
+  **capitalización a inventario (los 3 motivos) + reconocimiento COGS
+  al vender**. Definición acotada de `sobrante` = "mercancía comprada
+  y pagada al proveedor pero no registrada a tiempo". Nota abierta a
+  futuro: sobrantes sin costo real (donación, hallazgo) requerirían
+  motivo nuevo separado (`hallazgo`/`donacion`) — fuera de alcance.
+- Docs reescritos: `INVENTORY-ADJUSTMENTS-SPEC.md` §6.2 (tabla nueva),
+  §6.4 (diseño COGS), §6.5 (traza numérica end-to-end), §10.1 DN4.
+  `CREDIT-SALES-SPEC.md` §6 (banner + lista actualizada).
+
+**2026-08-18 (sesión 2)** — Release triple aplicado a prod en ventana
+única (merge commit `892f647`, deploy `dpl_5FZTwJNSPUVyCrngvbTeDvpCPvkk`
+READY 48s, smoke §3 limpio):
+- `apply_17c_v2_adjustments_no_expense`: `create_adjustment` firma
+  4-arg con `p_motivo TEXT DEFAULT NULL`. DROP explícito de la firma
+  3-arg anterior. Los 3 motivos capitalizan WAC (17b ya activo), NO
+  emiten asiento inmediato. Mantiene asiento de merma para
+  disminuciones (§6.1 sin cambio). FK
+  `accounting_entries.adjustment_id` (D4).
+  `verify_adjustment_accounting_integrity()`.
+- `apply_17e_cogs_in_sales`: `ALTER sale_items ADD unit_cost
+  NUMERIC(12,2)` (nullable). `create_sale` persiste `unit_cost` desde
+  `products.cost` al momento de la venta + emite 1 asiento agregado
+  `expense "Costo de mercancía vendida"` por venta. `void_sale`
+  reversa COGS desde `sale_items.unit_cost` persistido (no
+  `products.cost` vivo, para reverso exacto contra descuadre por WAC
+  intermedio); early return con `amount_paid=0` eliminado para que la
+  reversa COGS aplique también en Caso C (crédito sin abono).
+- TS 2D (rama `s8-adjustments-2c-v2-cogs`, mergeada `--no-ff`, luego
+  borrada de origin y local):
+  - `lib/inventory-actions.ts`: `createAdjustment` delega al RPC
+    (elimina el patrón multi-step no-atómico pre-Fase 1 heredado);
+    `receiveMerchandise` pasa `motivo='compra'`; `ingressNewProduct`
+    delega en `createAdjustment` (elimina el INSERT directo a
+    `accounting_entries` viejo — coherente con método nuevo).
+  - `components/inventory/adjustment-dialog.tsx`: selector
+    Compra/Sobrante/Corrección (obligatorio con incrementos,
+    deshabilitado en 100% merma), fila por producto muestra "WAC
+    actual" como referencia visible.
+  - `components/inventory/product-form-dialog.tsx`: validación
+    `cost>0` para productos físicos nuevos (bloqueo de submit,
+    servicios exentos, edición sin validación).
+
+**Smoke §3 post-deploy** (2026-08-18): compra Central +1 pantalón a
+$60000 → adj#3 motivo=compra, 0 asientos, WAC intacto, stock 28→29 ✓.
+Venta contado 1 pantalón @ $80000 en efectivo → income=80000,
+COGS=60000, unit_cost=60000 persistido, WAC no cambia al vender,
+utilidad bruta = 20000, stock 29→28 ✓. Void ambos → neto=0 en venta
+(4 asientos: income + COGS + expense anulación + income reversión
+COGS) y neto=0 en ajuste (0 asientos, no había ninguno para revertir)
+✓. Los 3 `verify_*_integrity()` = 0.
+
+**Rollback disponible pero no usado**:
+`scripts/17rollback_2c_v2_and_cogs.sql`. Probado en branch antes del
+apply — restaura las 3 RPCs al estado post-2A+2B sin dropear columnas
+nuevas (`sale_items.unit_cost`, `accounting_entries.adjustment_id`
+quedan huérfanas nullable si se ejecuta). Riesgo residual documentado
+en su header: ventas creadas durante intervalo triple-activo con COGS
+asentado quedan con expense huérfano tras void post-rollback —
+compensación manual.
+
+**Cleanup ejecutado post-deploy**:
+- Branch Supabase `validate-2c-v2-cogs` (`qqnpdhjxzfiwzbrtywym`)
+  eliminado (~$0.04 total en ~3 horas).
+- Rama git `s8-adjustments-2c-v2-cogs` eliminada de origin y local.
+- **Pendiente para el usuario**: si se agregaron env vars scoped a la
+  rama `s8-adjustments-2c-v2-cogs` en Vercel Settings → Environment
+  Variables (para smoke visual local §5 del runbook), borrarlas —
+  la rama ya no existe. No es bloqueante, pero deja config huérfana.
+
+**Runbook** (`docs/RUNBOOK-RELEASE-2C-V2-COGS.md`): archivo histórico
+del corte. Incluye §1.1 límite duro 10 min post-deploy → rollback
+inmediato, §3 pasos del smoke, §4 rollback trigger + comando, §5
+smoke visual local delegado al usuario (el sandbox no pudo levantar
+dev server real). Marcado como "release ejecutado 2026-08-18".
+
+**Estado del módulo Ajustes post-2026-08-18**: cerrado end-to-end.
+Fase 1 (RPC atómico), 2A (numeración), 2B (WAC), 2C v2 (motivo +
+capitalización sin asientos), 2D (unificación entradas + UI motivo/
+WAC + validación cost>0), 3 (UI detalle + anular) — TODO en prod.
+Sin ninguna sub-fase pendiente.
+
+---
+
 Fin del contexto.

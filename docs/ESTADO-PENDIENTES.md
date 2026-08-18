@@ -10,29 +10,56 @@
 
 ---
 
-## 0. LEE ESTO PRIMERO — estado tras sesión 2026-08-16 (MoneyInput)
+## 0. LEE ESTO PRIMERO — estado tras sesión 2026-08-18 (Ajustes 2C v2 + COGS + 2D)
 
-**Estado de ramas**: ninguna rama de trabajo abierta. `main` en `8410ab4`
-(merge s7 en `e711ccb` + commit de docs `8410ab4`). Ramas
-`s4-inventory-products-scope`, `s5-credit-phase3-ui`,
-`s6-money-input-format`, `s7-money-input-live-format` borradas de origin
-tras cada merge respectivo (ramas históricas `s1-s3p0-rpc-hardening`,
+**Estado de ramas**: ninguna rama de trabajo abierta. `main` en `e7c6e25`
+(merge triple `892f647` + commits de docs `604552b`/`afb58ae`/`e7c6e25`).
+Rama `s8-adjustments-2c-v2-cogs` **borrada de origin y local** tras el
+merge. Ramas históricas `s1-s3p0-rpc-hardening`,
 `s2-adjustments-phase1`, `s3-credit-fiar-ui`, `s3p0-hotfix-to-main`,
 `merge-s1-s3p0-to-main` siguen en origin como legado — no bloquean nada,
-se pueden borrar por housekeeping cuando se decida).
+se pueden borrar por housekeeping cuando se decida.
 
-**Prod (`nxszaxwsrtlofqimbfig`)**: kardex OK (verify_kardex_integrity=0),
-credit OK (verify_credit_integrity=0). Sirviendo `dpl_Dbm38vG9Uf55gM878n6kJjCrav5B`
-(sha `8410ab4`, target=production) — deploy del commit de docs; el
-deploy anterior con todo el código nuevo fue `dpl_2uvmVse1yQm6cQ66vMaHii6s5k1D`
-(sha `e711ccb`) y quedó como rollback candidate. `GET /api/wompi/webhook`
-responde `{ok:true, configured:false, endpoint:"wompi/webhook"}` HTTP 200.
-Runtime logs 15 min post-deploy del código: 0 errors/warnings/fatal.
+**Prod (`nxszaxwsrtlofqimbfig`)**: kardex OK
+(`verify_kardex_integrity()`=0), credit OK
+(`verify_credit_integrity()`=0), ajustes-contabilidad OK
+(`verify_adjustment_accounting_integrity()`=0). Sirviendo
+`dpl_5FZTwJNSPUVyCrngvbTeDvpCPvkk` (sha `892f647`, target=production,
+READY 48s de build el 2026-08-18). Deploy anterior
+`dpl_Dbm38vG9Uf55gM878n6kJjCrav5B` (sha `8410ab4`) quedó como rollback
+candidate. `GET /api/wompi/webhook` responde HTTP 200 post-deploy.
+Smoke test §3 del runbook pasó limpio (compra sin asiento, venta con
+income + COGS, void con neto=0).
+
+**Módulo Ajustes de Inventario**: **cerrado end-to-end en prod**.
+Fase 1 (RPC atómico) + 2A (numeración) + 2B (WAC) + 2C v2 (motivo +
+capitalización sin asientos) + 2D (unificación entradas TS + UI motivo/
+WAC + validación cost>0) + Fase 3 (UI detalle + anular) — TODO
+deployed. Sin sub-fases pendientes.
+
+**Gates humanos abiertos**: solo uno, no bloqueante — re-confirmar con
+contador si "sobrante" alguna vez necesita tratamiento distinto de
+"compra" (caso de sobrante sin costo real: donación, hallazgo sin
+factura). Definición actual acotada a "mercancía comprada y pagada
+pero no registrada a tiempo". Ver §4 tabla. Motivo nuevo separado
+(`hallazgo`/`donacion`) queda fuera de alcance hasta que aparezca el
+caso real.
+
+**Cleanup ejecutado post-release triple**:
+- Branch Supabase `validate-2c-v2-cogs` (`qqnpdhjxzfiwzbrtywym`)
+  eliminado.
+- Rama git `s8-adjustments-2c-v2-cogs` eliminada de origin y local.
+- **Pendiente para el usuario** (no bloqueante): si se agregaron env
+  vars scoped a la rama `s8-adjustments-2c-v2-cogs` en Vercel Settings
+  → Environment Variables (para smoke visual local §5 del runbook),
+  borrarlas — la rama ya no existe y la config quedaría huérfana.
+- `main` y `origin/main` sincronizados (`git status` limpio).
 
 **Próximo bloque**: sin definir. Al arrancar la próxima sesión, el
-usuario decide el siguiente foco (ajustes Fase 2A/2B/2C/2D, promociones
-aplicadas en POS, mejoras UX Alegra-like, etc.). Ver §5 "Backlog vigente"
-y §1 "Cola de trabajo escrito-pero-no-aplicado" para candidatos.
+usuario decide el siguiente foco (promociones aplicadas en POS,
+mejoras UX Alegra-like, otras deudas del §5 backlog). Ver §5 "Backlog
+vigente" y §1 "Cola de trabajo escrito-pero-no-aplicado" para
+candidatos.
 
 ### ✅ CERRADO Y DEPLOYED — Release triple 2C v2 + COGS + 2D (2026-08-18)
 
