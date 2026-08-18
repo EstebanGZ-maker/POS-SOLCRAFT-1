@@ -2,34 +2,72 @@
 
 > **Propósito**: dump de estado para que una instancia nueva de Claude sin
 > memoria pueda retomar sin perder nada. Última actualización: **2026-08-18**
-> (Release triple 2C v2 + COGS + 2D APLICADO A PROD — método aprobado por
-> contador: capitalización al comprar + COGS al vender. Merge commit
-> `892f647`, deploy `dpl_5FZTwJNSPUVyCrngvbTeDvpCPvkk` READY, smoke test
-> §3 completo del runbook pasó limpio con neto=0 en las 3 verify_*
-> integrity functions).
+> (release s9 + s10 APLICADO A PROD: fix carga infinita post-login + colapso
+> de cascada bootstrap POS + scroll interno del sidebar. Merge commits
+> `4d54ab7` s9 y `9d52f35` s10, deploy `dpl_7SeUqpRzsDgiExRAn577ZnfXtWsx`
+> READY 50s de build, wompi webhook 200, runtime logs limpios).
 
 ---
 
-## 0. LEE ESTO PRIMERO — estado tras sesión 2026-08-18 (Ajustes 2C v2 + COGS + 2D)
+## 0. LEE ESTO PRIMERO — estado tras sesión 2026-08-18 (POS perf + sidebar scroll)
 
-**Estado de ramas**: ninguna rama de trabajo abierta. `main` en `e7c6e25`
-(merge triple `892f647` + commits de docs `604552b`/`afb58ae`/`e7c6e25`).
-Rama `s8-adjustments-2c-v2-cogs` **borrada de origin y local** tras el
-merge. Ramas históricas `s1-s3p0-rpc-hardening`,
+**Estado de ramas**: ninguna rama de trabajo abierta. `main` en `9d52f35`
+(merges `4d54ab7` s9-pos-loading-fixes + `9d52f35` s10-sidebar-scroll-fix).
+Ramas `s9-pos-loading-fixes` y `s10-sidebar-scroll-fix` **borradas de
+origin y local** tras el merge. Ramas históricas `s1-s3p0-rpc-hardening`,
 `s2-adjustments-phase1`, `s3-credit-fiar-ui`, `s3p0-hotfix-to-main`,
-`merge-s1-s3p0-to-main` siguen en origin como legado — no bloquean nada,
-se pueden borrar por housekeeping cuando se decida.
+`merge-s1-s3p0-to-main` siguen en origin como legado — no bloquean nada.
 
 **Prod (`nxszaxwsrtlofqimbfig`)**: kardex OK
 (`verify_kardex_integrity()`=0), credit OK
 (`verify_credit_integrity()`=0), ajustes-contabilidad OK
 (`verify_adjustment_accounting_integrity()`=0). Sirviendo
-`dpl_5FZTwJNSPUVyCrngvbTeDvpCPvkk` (sha `892f647`, target=production,
-READY 48s de build el 2026-08-18). Deploy anterior
-`dpl_Dbm38vG9Uf55gM878n6kJjCrav5B` (sha `8410ab4`) quedó como rollback
-candidate. `GET /api/wompi/webhook` responde HTTP 200 post-deploy.
-Smoke test §3 del runbook pasó limpio (compra sin asiento, venta con
-income + COGS, void con neto=0).
+`dpl_7SeUqpRzsDgiExRAn577ZnfXtWsx` (sha `9d52f35`, target=production,
+READY 50s de build el 2026-08-18, alias `app-solcraft.com`). Deploy
+anterior `dpl_5FZTwJNSPUVyCrngvbTeDvpCPvkk` (sha `892f647`) queda como
+rollback candidate. `GET /api/wompi/webhook` responde HTTP 200 con
+`{ok:true, configured:false}`. Runtime logs limpios (0 errores últimos
+15 min post-deploy, todos 200/304, todos apuntando al deploy nuevo).
+
+**Nota de cadencia de release s9 + s10**: los dos merges fueron
+empujados juntos en un solo `git push origin main`, no en dos deploys
+escalonados. Historia git limpia con 2 merge commits separados
+(`4d54ab7` s9 y `9d52f35` s10) más 2 commits de fix internos
+(`43d53a4` s9 y `90fe7d6` s10), pero Vercel corrió un único build de
+prod. En caso de regresión hay que revisar los 3 archivos combinados
+(`lib/site-context.tsx`, `app/pos/page.tsx`, `lib/inventory-actions.ts`
+del s9 + `components/dashboard-sidebar.tsx` del s10) — el rollback por
+componente independiente requiere revert manual de commits en vez de
+promote de deploy previo.
+
+**Deuda técnica identificada, NO cerrada**: cold-start de infraestructura
+en `/pos` sigue generando ~4–6 s de latencia percibida en frío (primera
+carga tras idle largo o desde ventana privada). Causa raíz identificada
+esta sesión: (i) cold-start del serverless de Vercel para la ruta `/pos`
+(~500–1500 ms típico); (ii) `getSites()` en el SiteProvider dispara
+antes del POS mismo y sale a Supabase con conexión fría del pool
+pgbouncer + JWT decode + PostgREST warmup — medido 1356 ms p95, 1690 ms
+max en edge_logs sobre una tabla de 6 filas cuyo `EXPLAIN ANALYZE` es
+0.15 ms de ejecución (todo el tiempo es infra, no DB); (iii) al colapsar
+la cascada del bootstrap a 6 requests paralelas de server actions (s9
+Ronda 1), si excede la concurrencia de la instancia caliente Vercel
+spawnea una segunda lambda cold — vista en el smoke del usuario como
+un outlier de 2.49 s dentro de la tanda paralela. Warm ya mejoró
+~300–500 ms confirmado en Network waterfall. Opciones para bajar el
+techo cold, **evaluadas y NO implementadas** (decisión de costo/
+beneficio pendiente del usuario):
+- Vercel Fluid Compute / concurrent invocations on warm instance —
+  requiere revisión del plan actual (Hobby vs. Pro) y ajuste de
+  `vercel.json`. Bajo esfuerzo, elimina el spawn cold del outlier.
+- Consolidar las 6 server actions en 1 sola que haga `Promise.all`
+  server-side (evita spawn extra manteniendo paralelismo DB) —
+  ~30 min de trabajo, bajo riesgo.
+- Edge Runtime en server actions read-only — complejidad media con
+  supabase-js, elimina el cold start Node.
+- Warm-connection al pgbouncer via ping periódico — hack, no fix real.
+La Ronda 2(a) investigación (EXPLAIN ANALYZE sobre `getSites`) confirmó
+que **NO hay índice ni policy que agregar** — el fix real vive del lado
+de infra/edge, no del schema.
 
 **Módulo Ajustes de Inventario**: **cerrado end-to-end en prod**.
 Fase 1 (RPC atómico) + 2A (numeración) + 2B (WAC) + 2C v2 (motivo +
@@ -56,10 +94,98 @@ caso real.
 - `main` y `origin/main` sincronizados (`git status` limpio).
 
 **Próximo bloque**: sin definir. Al arrancar la próxima sesión, el
-usuario decide el siguiente foco (promociones aplicadas en POS,
-mejoras UX Alegra-like, otras deudas del §5 backlog). Ver §5 "Backlog
-vigente" y §1 "Cola de trabajo escrito-pero-no-aplicado" para
-candidatos.
+usuario decide el siguiente foco (cold-start de `/pos` según opción
+elegida arriba, promociones aplicadas en POS, mejoras UX Alegra-like,
+otras deudas del §5 backlog). Ver §5 "Backlog vigente" y §1 "Cola de
+trabajo escrito-pero-no-aplicado" para candidatos.
+
+### ✅ CERRADO Y DEPLOYED — s9 POS loading fixes + s10 sidebar scroll (2026-08-18)
+
+Dos ramas independientes mergeadas a main en la misma sesión, empujadas
+juntas en un solo `git push origin main`. Vercel corrió un único build
+de prod (`dpl_7SeUqpRzsDgiExRAn577ZnfXtWsx`, READY 50s, alias
+`app-solcraft.com`). Smoke post-deploy limpio (webhook 200, runtime
+logs 0 errores últimos 15 min).
+
+**s9-pos-loading-fixes** (merge `4d54ab7`, fix commit `43d53a4`):
+
+Problema 1 — carga infinita post-login sin recargar manualmente.
+Diagnóstico: SiteProvider ([lib/site-context.tsx](../lib/site-context.tsx))
+usaba key SWR estática `"site-bootstrap"`. Race con
+`signInWithPassword` + `router.push("/dashboard")`: si la server action
+`getSites()` corría antes de que la cookie de sesión estuviera escrita,
+`getAccessibleSiteIds()` devolvía `[]`, SWR cacheaba ese vacío y
+`revalidateOnFocus:false` impedía el retry. `currentSite` quedaba
+`null` para siempre; POS mostraba "Cargando…" indefinidamente. Fix de
+scope de productos por sede (s4) expuso el bug al eliminar el fallback
+silencioso a `whId=null`.
+
+Fix: key condicional dependiente de `useAuth()`. `null` mientras
+`authLoading`, `["site-bootstrap", user.id]` cuando resuelto, `null` si
+no hay user. SWR no fetchea hasta que auth resuelva y refetchea limpio
+al cambiar de usuario (logout/login como otro). Cubre login flow, hard
+refresh en otra ruta y token refresh mid-session. Elegido sobre
+`useEffect(mutate)` reactivo porque evita el frame intermedio con `[]`,
+y sobre "esperar sesión en login-form" porque esa sola no cubre hard
+refresh ni token refresh.
+
+Problema 2 (Ronda 1) — /pos tardaba ~6 s al cargar.
+Bootstrap en [app/pos/page.tsx](../app/pos/page.tsx) tenía 3 tandas
+seriales: `getWarehouseForSite` → `Promise.all([refreshShift,
+refreshData])` → `Promise.all([priceLists, promos])`. Solo la primera
+dependencia era real (whId). Colapsado a 2 tandas: `getWarehouseForSite`
+→ un único `Promise.all` con las 6 queries restantes
+(`getCurrentShift`, `getProductsWithStock`, `getCustomers`,
+`getCategories`, `getPriceListsForPOS`, `getActivePromotionsForPOS`).
+`getShiftReceivables` sigue como piggyback fire-and-forget post-render.
+
+Filtro `is_active`: agregado a `getProductsWithStock`
+([lib/inventory-actions.ts](../lib/inventory-actions.ts) —
+`products.is_active` existe NOT NULL default true, verificado antes de
+tocar). **NO agregado** en `getCustomers` porque `customers.is_active`
+no existe en el schema (solo `is_walk_in`, semántica distinta);
+requeriría cambio de schema — decisión de producto para otra sesión.
+
+Ronda 2(a) investigación (no aplicada): `EXPLAIN ANALYZE` sobre
+`SELECT * FROM sites ORDER BY is_central DESC, name` en prod con RLS
+authenticated devolvió Planning 0.4 ms + Execution 0.15 ms sobre 6
+filas, `sites_read` policy = `true` (sin filtro). Los 1356 ms p95 vistos
+en edge_logs son 100% cold-connection pool + PostgREST warmup — no hay
+índice ni policy que agregar. Ver "Deuda técnica identificada, NO
+cerrada" arriba para opciones de fix del cold-start.
+
+Smoke test usuario confirmado en preview antes del merge:
+- Fix carga post-login OK (login limpio + hard refresh en `/pos`).
+- Regresión producto inactivo OK (ya no aparece en el grid, sigue
+  visible en /inventory/products que usa otra query).
+- Venta end-to-end OK (abrir turno → agregar producto → cobrar contado
+  → recibo).
+- Warm (segunda visita) medido en Network waterfall: tanda paralela
+  ~1.2 s → mejora ~300–500 ms sobre el estimado warm previo. Cold
+  outlier de 2.49 s dentro de la tanda paralela — spawn de segunda
+  lambda cold documentado como deuda técnica arriba.
+
+**s10-sidebar-scroll-fix** (merge `9d52f35`, fix commit `90fe7d6`):
+
+Diagnóstico: el sidebar
+([components/dashboard-sidebar.tsx](../components/dashboard-sidebar.tsx))
+YA tenía `flex-1 overflow-y-auto` en la lista de navegación (mobile
+línea 213 y desktop línea 232). No scrolleaba por el bug clásico de
+flexbox: un flex item con `flex: 1 1 0%` tiene `min-height: auto` (no
+`0`) por default, entonces el contenedor se estira al alto del
+contenido y el overflow nunca se activa. Usuario terminaba haciendo
+zoom-out del navegador para ver "Gestión de inventario" y siguientes
+del grupo Inventario.
+
+Fix: `min-h-0` en el contenedor scrollable (mobile + desktop). `shrink-0`
+defensivo en header (`h-16`) y footer (`border-t p-4`) para que no se
+compriman cuando aparece la barra. `overflow-y-auto` pinta scrollbar
+solo con overflow real → en pantallas altas no aparece scrollbar
+innecesaria. Solo la lista de navegación scrollea; header y botón
+"Cerrar sesión" quedan fijos.
+
+Smoke test usuario confirmado en preview antes del merge: scroll
+interno operativo en preview.
 
 ### ✅ CERRADO Y DEPLOYED — Release triple 2C v2 + COGS + 2D (2026-08-18)
 
