@@ -1,11 +1,12 @@
 # ESTADO-PENDIENTES.md
 
 > **Propósito**: dump de estado para que una instancia nueva de Claude sin
-> memoria pueda retomar sin perder nada. Última actualización: **2026-08-17**
-> (Ajustes Fase 2A + 2B aplicados a prod — numeración secuencial por sede
-> + WAC en `products.cost` al incrementar; validado end-to-end en branch
-> desechable antes del apply, verificado en prod con ajustes reales
-> anulados post-test).
+> memoria pueda retomar sin perder nada. Última actualización: **2026-08-18**
+> (Release triple 2C v2 + COGS + 2D APLICADO A PROD — método aprobado por
+> contador: capitalización al comprar + COGS al vender. Merge commit
+> `892f647`, deploy `dpl_5FZTwJNSPUVyCrngvbTeDvpCPvkk` READY, smoke test
+> §3 completo del runbook pasó limpio con neto=0 en las 3 verify_*
+> integrity functions).
 
 ---
 
@@ -32,6 +33,69 @@ Runtime logs 15 min post-deploy del código: 0 errors/warnings/fatal.
 usuario decide el siguiente foco (ajustes Fase 2A/2B/2C/2D, promociones
 aplicadas en POS, mejoras UX Alegra-like, etc.). Ver §5 "Backlog vigente"
 y §1 "Cola de trabajo escrito-pero-no-aplicado" para candidatos.
+
+### ✅ CERRADO Y DEPLOYED — Release triple 2C v2 + COGS + 2D (2026-08-18)
+
+Aplicado a prod (`nxszaxwsrtlofqimbfig`) en ventana única el 2026-08-18.
+Método contable aprobado por el contador 2026-08-17: **capitalización al
+comprar (WAC) + reconocimiento COGS al vender**. Reemplaza el diseño
+original de "compra → expense inmediato" (que estaba pendiente de
+validación en 17c v1, ahora invalidado). Detalles en
+[docs/INVENTORY-ADJUSTMENTS-SPEC.md §6.2/§6.4/§6.5](INVENTORY-ADJUSTMENTS-SPEC.md).
+
+**SQL aplicado**:
+- `apply_17c_v2_adjustments_no_expense` — `create_adjustment` firma 4-arg
+  con `p_motivo`, sin asientos de incrementos (los 3 motivos capitalizan
+  vía WAC ya activo desde 2B), mantiene asiento de merma para
+  disminuciones. FK `accounting_entries.adjustment_id` (D4).
+  `verify_adjustment_accounting_integrity()`.
+- `apply_17e_cogs_in_sales` — `ALTER sale_items ADD unit_cost NUMERIC(12,2)`.
+  `create_sale` persiste `unit_cost` desde `products.cost` al momento de
+  la venta + emite 1 asiento agregado `expense "Costo de mercancía
+  vendida"`. `void_sale` reversa COGS desde `sale_items.unit_cost` (no
+  `products.cost` vivo, para reverso exacto contra descuadre por WAC
+  intermedio); early return con `amount_paid=0` eliminado para que la
+  reversa COGS aplique también en ventas a crédito Caso C.
+
+**TS merged** (sha `892f647`, merge `--no-ff` desde `s8-adjustments-2c-v2-cogs`):
+- `lib/inventory-actions.ts`: `createAdjustment` delega al RPC 4-arg
+  (elimina el patrón multi-step no-atómico pre-Fase 1);
+  `receiveMerchandise` pasa `motivo='compra'`; `ingressNewProduct`
+  delega en `createAdjustment` (elimina el INSERT directo a
+  `accounting_entries` viejo — coherente con método nuevo, ese asiento
+  ahora se reconoce como COGS al vender).
+- `components/inventory/adjustment-dialog.tsx`: selector Compra/Sobrante/
+  Corrección (obligatorio con incrementos, deshabilitado en 100% merma),
+  fila por producto muestra "WAC actual" como referencia.
+- `components/inventory/product-form-dialog.tsx`: validación `cost>0`
+  para productos físicos nuevos (bloqueo de submit, servicios exentos).
+
+**Verificación post-deploy** (smoke §3 del runbook, 2026-08-18):
+- §3.1 Compra Central: adj #3, motivo='compra', **0 asientos** (método
+  nuevo NO asienta al comprar), WAC=60000 sin cambio, stock 28 → 29.
+- §3.2 Venta contado 1 pantalón @ 80000: unit_cost=60000 persistido,
+  income=80000, COGS=60000, 2 asientos, WAC no cambia al vender,
+  utilidad bruta = 20000.
+- §3.3 Anular ambos: void_sale → 4 asientos (income venta + expense COGS
+  + expense anulación + income reversión COGS), **neto=0**;
+  void_adjustment → 0 asientos (no había ninguno en el original),
+  **neto=0**. Stock y WAC restaurados al valor pre-test.
+- `verify_kardex_integrity()`=0, `verify_credit_integrity()`=0,
+  `verify_adjustment_accounting_integrity()`=0.
+
+**Rollback disponible**: `scripts/17rollback_2c_v2_and_cogs.sql` (probado
+en branch validate-2c-v2-cogs pre-deploy). Restaura las 3 RPCs al estado
+post-2A+2B; columnas nuevas se dejan intactas para no matar datos ya
+insertados. Riesgo residual documentado en el header del script.
+
+**Cleanup ejecutado post-deploy**:
+- Branch Supabase `validate-2c-v2-cogs` (`qqnpdhjxzfiwzbrtywym`)
+  eliminado.
+- Rama git `s8-adjustments-2c-v2-cogs` eliminada de origin y local.
+- **Pendiente para el usuario**: si se agregaron env vars scoped a
+  `s8-adjustments-2c-v2-cogs` en Vercel Settings → Environment Variables
+  (para el smoke visual local §5 del runbook), borrarlas ahora — la rama
+  ya no existe, quedarían huérfanas.
 
 ### ✅ CERRADO Y DEPLOYED — Ajustes Fase 2A + 2B (numeración + WAC)
 
