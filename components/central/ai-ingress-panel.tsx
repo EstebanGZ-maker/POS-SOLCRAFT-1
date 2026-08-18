@@ -102,9 +102,26 @@ export function AiIngressPanel({
     }
   }
 
+  // Coincide con MAX_IMAGE_BYTES server-side (uploadProductMedia). Guard
+  // pre-flight: rechazamos archivos grandes ANTES de subirlos, para no
+  // gastar Server Action ni chocar con bodySizeLimit del framework (que
+  // devolvería 413 con mensaje genérico "Server Components render error"
+  // — casi ininteligible). Con este guard, el user ve un toast claro y
+  // no se agrega la card al panel.
+  const MAX_UPLOAD_BYTES = 5 * 1024 * 1024 // 5 MB
+
   async function handleFiles(files: FileList | null) {
     if (!files || files.length === 0) return
     for (const file of Array.from(files)) {
+      if (file.size > MAX_UPLOAD_BYTES) {
+        const mb = (file.size / 1024 / 1024).toFixed(1)
+        toast({
+          title: "Archivo demasiado grande",
+          description: `${file.name}: ${mb} MB. El máximo es 5 MB por archivo. Comprime la foto o toma una nueva.`,
+          variant: "destructive",
+        })
+        continue
+      }
       const dataUrl = await fileToDataUrl(file)
       const isVideo = file.type.startsWith("video")
       const id = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`

@@ -6,6 +6,17 @@ const nextConfig = {
   typescript: {
     ignoreBuildErrors: true,
   },
+  experimental: {
+    serverActions: {
+      // Default de Next.js es 1 MB. uploadProductMedia recibe fotos/videos
+      // codificados en base64 (~4/3 del tamaño real). Con MAX_IMAGE_BYTES
+      // interno = 5 MB, el body puede llegar a ~6.7 MB. 20 MB deja margen
+      // seguro y mantiene el 413 lejos del flujo real; validación fina de
+      // tamaño sigue del lado server (uploadProductMedia) y client
+      // (handleFiles en ai-ingress-panel).
+      bodySizeLimit: "20mb",
+    },
+  },
   images: {
     // sharp ya está instalado: Next optimiza y reescala automáticamente.
     // Además de la compresión al subir, cada tamaño se sirve al vuelo.
