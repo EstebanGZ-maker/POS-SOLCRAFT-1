@@ -131,37 +131,46 @@ export function AiIngressPanel({
     if (fileInputRef.current) fileInputRef.current.value = ""
   }
 
-  async function saveItem(item: IngressItem): Promise<boolean> {
+  async function saveItem(item: IngressItem): Promise<{ ok: boolean; code?: string }> {
     update(item.id, { status: "saving", errorMsg: undefined })
-    // Upload media
-    let imageUrl: string | null = null
-    const ext = item.isVideo ? "mp4" : "jpg"
-    const up = await uploadProductMedia(item.dataUrl, ext)
-    if (up.success) imageUrl = up.url ?? null
+    // Wrap TODO en try/catch: si uploadProductMedia o ingressNewProduct
+    // throwean (network, auth, exception no-esperada del RPC), el ítem
+    // quedaba en "saving" permanente con spinner infinito y el toast
+    // global nunca se disparaba — silent failure real.
+    try {
+      let imageUrl: string | null = null
+      const ext = item.isVideo ? "mp4" : "jpg"
+      const up = await uploadProductMedia(item.dataUrl, ext)
+      if (up.success) imageUrl = up.url ?? null
 
-    const res = await ingressNewProduct(
-      {
-        name: item.name,
-        type_prefix: item.type_prefix,
-        category: item.category,
-        description: item.description,
-        size: item.size,
-        color: item.color,
-        price: item.price,
-        cost: item.cost,
-        quantity: item.quantity,
-        image_url: imageUrl,
-        code: item.code.trim() || null,
-      },
-      centralWarehouseId,
-      centralSiteId,
-    )
-    if (res.success) {
-      update(item.id, { status: "done", savedCode: res.code })
-      return true
+      const res = await ingressNewProduct(
+        {
+          name: item.name,
+          type_prefix: item.type_prefix,
+          category: item.category,
+          description: item.description,
+          size: item.size,
+          color: item.color,
+          price: item.price,
+          cost: item.cost,
+          quantity: item.quantity,
+          image_url: imageUrl,
+          code: item.code.trim() || null,
+        },
+        centralWarehouseId,
+        centralSiteId,
+      )
+      if (res.success) {
+        update(item.id, { status: "done", savedCode: res.code })
+        return { ok: true, code: res.code }
+      }
+      update(item.id, { status: "error", errorMsg: res.message })
+      return { ok: false }
+    } catch (e: any) {
+      const msg = e?.message || "Error inesperado al ingresar el producto."
+      update(item.id, { status: "error", errorMsg: msg })
+      return { ok: false }
     }
-    update(item.id, { status: "error", errorMsg: res.message })
-    return false
   }
 
   async function ingressAll() {
@@ -178,15 +187,42 @@ export function AiIngressPanel({
       return
     }
     setSavingAll(true)
-    let ok = 0
+    const savedCodes: string[] = []
     for (const it of pending) {
-      const success = await saveItem(it)
-      if (success) ok++
+      const r = await saveItem(it)
+      if (r.ok && r.code) savedCodes.push(r.code)
     }
     setSavingAll(false)
-    if (ok > 0) {
-      toast({ title: "Mercancía ingresada", description: `${ok} producto(s) creados en la bodega central.` })
+    const ok = savedCodes.length
+    const failed = pending.length - ok
+    // Preview de códigos: los primeros 3 completos y "…" si hay más, para
+    // que el usuario confirme visualmente qué se creó sin ir a validar.
+    const codesPreview =
+      savedCodes.length > 3
+        ? `${savedCodes.slice(0, 3).join(", ")} y ${savedCodes.length - 3} más`
+        : savedCodes.join(", ")
+    if (ok > 0 && failed === 0) {
+      toast({
+        title: `${ok} producto(s) ingresado(s)`,
+        description: `Códigos: ${codesPreview}`,
+      })
       onIngressed?.()
+    } else if (ok > 0 && failed > 0) {
+      // Fallo parcial: reporta ambos lados. Neutral (no destructive) porque
+      // parte tuvo éxito; el detalle por-ítem sigue en cada card en rojo.
+      toast({
+        title: `${ok} ingresado(s), ${failed} con error`,
+        description: `Creados: ${codesPreview}. Revisa las tarjetas en rojo para el detalle de los fallidos.`,
+      })
+      onIngressed?.()
+    } else {
+      // ok === 0: todos fallaron. Sin este toast global el usuario solo
+      // veía errorMsg inline en cada card y podía parecer "no pasó nada".
+      toast({
+        title: `No se pudo ingresar ${failed} producto(s)`,
+        description: "Revisa cada tarjeta para ver el mensaje de error.",
+        variant: "destructive",
+      })
     }
   }
 
