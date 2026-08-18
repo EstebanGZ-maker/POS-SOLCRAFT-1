@@ -430,54 +430,22 @@ export async function createAdjustment(input: {
   warehouse_id: string
   notes?: string | null
   items: { product_id: string; cost: number; objective: "incrementar" | "disminuir"; quantity: number }[]
+  motivo?: "compra" | "sobrante" | "correccion" | null
 }) {
   await requireRole("admin", "encargado")
   const supabase = await createServerSupabaseClient()
-  const total = input.items.reduce((s, it) => s + it.cost * it.quantity, 0)
 
-  const { data: adj, error } = await supabase
-    .from("inventory_adjustments")
-    .insert({ warehouse_id: input.warehouse_id, notes: input.notes || null, total_adjusted: total })
-    .select("adjustment_id")
-    .single()
+  const { data, error } = await supabase.rpc("create_adjustment", {
+    p_warehouse_id: input.warehouse_id,
+    p_notes: input.notes || null,
+    p_items: input.items,
+    p_motivo: input.motivo ?? null,
+  })
   if (error) return { success: false, message: error.message }
-
-  const itemsToInsert = input.items.map((it) => ({
-    adjustment_id: adj.adjustment_id,
-    product_id: it.product_id,
-    cost: it.cost,
-    objective: it.objective,
-    quantity: it.quantity,
-  }))
-  const { error: itemsErr } = await supabase.from("adjustment_items").insert(itemsToInsert)
-  if (itemsErr) {
-    await supabase.from("inventory_adjustments").delete().eq("adjustment_id", adj.adjustment_id)
-    return { success: false, message: itemsErr.message }
-  }
-
-  const profile = await getUserProfile()
-  const stockResults = await Promise.all(
-    input.items.map((it) =>
-      supabase.rpc("adjust_warehouse_stock", {
-        p_product_id: it.product_id,
-        p_warehouse_id: input.warehouse_id,
-        p_delta: it.objective === "incrementar" ? it.quantity : -it.quantity,
-        p_movement_type: "ajuste",
-        p_reference_type: "adjustment",
-        p_reference_id: adj.adjustment_id,
-        p_user_id: profile?.id ?? null,
-        p_notes: input.notes || null,
-      }),
-    ),
-  )
-  const stockErr = stockResults.find((r) => r.error)
-  if (stockErr?.error) {
-    return { success: false, message: stockErr.error.message }
-  }
 
   revalidatePath("/inventory/adjustments")
   revalidatePath("/inventory/products")
-  return { success: true, message: "Ajuste creado correctamente." }
+  return { success: true, message: "Ajuste creado correctamente.", adjustment_id: data as string }
 }
 
 // ============ TRANSFERS (envíos) ============
@@ -929,16 +897,19 @@ export async function reconcileTransfer(
   return { success: true, message: msg, found: res.found, lost: res.lost }
 }
 
-// Receive/add merchandise into central warehouse (entrada de mercancía)
+// Receive/add merchandise into central warehouse (entrada de mercancía).
+// Delega en createAdjustment con motivo='compra' (Fase 2D — método
+// aprobado 2026-08-17: capitaliza a inventario vía WAC, COGS se
+// reconoce al vender).
 export async function receiveMerchandise(input: {
   warehouse_id: string
   notes?: string | null
   items: { product_id: string; cost: number; quantity: number }[]
 }) {
-  // reuse adjustment as an "incrementar" entry
   return createAdjustment({
     warehouse_id: input.warehouse_id,
     notes: input.notes ? `[Entrada] ${input.notes}` : "[Entrada de mercancía]",
+    motivo: "compra",
     items: input.items.map((it) => ({
       product_id: it.product_id,
       cost: it.cost,
@@ -1353,33 +1324,29 @@ export async function ingressNewProduct(input: IngressItemInput, warehouse_id: s
       })
     }
 
-    // Stock into the central warehouse
+    // Stock into the warehouse — vía createAdjustment con motivo='compra'
+    // (Fase 2D: canal único de entrada de mercancía). Bajo el método
+    // aprobado 2026-08-17, capitaliza a inventario vía WAC y NO asienta
+    // expense inmediato — el costo se reconoce como COGS al vender. Por
+    // eso el bloque de INSERT directo a accounting_entries que existía
+    // aquí se elimina: coherente, no regresión (era el asiento del
+    // método anterior).
     const qty = Math.max(0, Math.round(input.quantity || 0))
     if (qty > 0) {
-      const { error: stockErr } = await supabase.rpc("adjust_warehouse_stock", {
-        p_product_id: product.product_id,
-        p_warehouse_id: warehouse_id,
-        p_delta: qty,
-        p_movement_type: "compra",
-        p_reference_type: "ingress",
-        p_reference_id: product.product_id,
-        p_user_id: profile?.id ?? null,
-        p_notes: `Ingreso inicial ${code} x${qty}`,
+      const adjRes = await createAdjustment({
+        warehouse_id,
+        notes: `Ingreso inicial ${code} x${qty}`,
+        motivo: "compra",
+        items: [{
+          product_id: product.product_id,
+          cost: input.cost ?? 0,
+          objective: "incrementar" as const,
+          quantity: qty,
+        }],
       })
-      if (stockErr) {
-        return { success: false, message: stockErr.message }
+      if (!adjRes.success) {
+        return { success: false, message: adjRes.message }
       }
-    }
-
-    // Accounting: register the acquisition cost as an expense for the site
-    if (site_id && input.cost && qty > 0) {
-      await supabase.from("accounting_entries").insert({
-        site_id,
-        entry_type: "expense",
-        category: "Compra de mercancía",
-        description: `Ingreso ${code} x${qty}`,
-        amount: input.cost * qty,
-      })
     }
 
     revalidatePath("/central")
