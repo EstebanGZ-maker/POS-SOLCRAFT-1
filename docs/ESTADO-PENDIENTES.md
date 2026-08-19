@@ -140,6 +140,17 @@ Requiere:
 - Contrato de `ingressNewProduct` sigue igual — solo recibe la URL
   ya generada.
 
+**Deuda menor conocida post-s12** (no bloqueante): branch `isVideo`
+en `app/api/analyze-product/route.ts` (líneas 39, 57 — `const isVideo =
+(mediaType || "").startsWith("video")` y el texto condicional
+`"video" : "imagen"`) queda **inerte** tras s12: el panel de Ingreso IA
+ya no acepta video (`accept="image/*"`), así que `mediaType` siempre
+llega `image/*` y la rama nunca se ejecuta. Es código muerto benigno,
+sin runtime cost. Limpiar si se retoma soporte de video (habría que
+ampliar mime types del bucket + subir `file_size_limit` + volver a
+habilitar `video/*` en el `accept`), o borrar el branch definitivamente
+en un pass de cleanup.
+
 Mismo patrón de sesión: branch → preview → smoke test usuario → OK →
 merge → docs → borrar rama.
 
