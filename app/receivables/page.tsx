@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useState } from "react"
+import { useRouter, useSearchParams } from "next/navigation"
 import useSWR from "swr"
 import {
   Select,
@@ -12,6 +13,7 @@ import {
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
+import { Input } from "@/components/ui/input"
 import { PageHeader } from "@/components/page-header"
 import {
   Table,
@@ -21,13 +23,22 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
-import { ChevronDown, ChevronRight, HandCoins, Wallet } from "lucide-react"
+import { ChevronDown, ChevronRight, Download, HandCoins, Wallet } from "lucide-react"
 import { Fragment } from "react"
-import { getReceivables, type AgeBucket, type ReceivableGroup, type ReceivableSale } from "@/lib/actions"
+import {
+  exportReceivablesCSV,
+  getReceivables,
+  type AgeBucket,
+  type ReceivableGroup,
+  type ReceivableSale,
+  type ReceivablesBucketFilter,
+  type ReceivablesSort,
+} from "@/lib/actions"
 import { getSites, type Site } from "@/lib/site-actions"
 import { getCurrentShift } from "@/lib/shift-actions"
 import { formatCurrency } from "@/lib/utils"
 import { useAuth } from "@/lib/auth-context"
+import { useToast } from "@/hooks/use-toast"
 import { RegisterPaymentDialog } from "@/components/credit/register-payment-dialog"
 
 function bucketBadge(bucket: AgeBucket) {
@@ -55,27 +66,75 @@ interface PaymentTarget {
   shiftId: string | null
 }
 
+function isBucket(v: string | null): v is ReceivablesBucketFilter {
+  return v === "all" || v === "0-30" || v === "31-60" || v === "60+"
+}
+function isSort(v: string | null): v is ReceivablesSort {
+  return v === "age-desc" || v === "age-asc"
+}
+
 export default function ReceivablesPage() {
   const { role } = useAuth()
-  // Rol contador puede leer /receivables (defensa en profundidad ya está en
-  // getReceivables), pero no puede mutar. Ocultamos el CTA de "Registrar
-  // abono" para no mostrar un botón que fallaría server-side.
+  const { toast } = useToast()
+  const router = useRouter()
+  const searchParams = useSearchParams()
+
   const canMutate = role !== "contador"
-  const [siteFilter, setSiteFilter] = useState<string>("all")
+
+  // Estado leído de la URL — persiste al refrescar.
+  const siteFilter = searchParams.get("site") ?? "all"
+  const bucketFilter: ReceivablesBucketFilter = isBucket(searchParams.get("bucket"))
+    ? (searchParams.get("bucket") as ReceivablesBucketFilter)
+    : "all"
+  const sort: ReceivablesSort = isSort(searchParams.get("sort"))
+    ? (searchParams.get("sort") as ReceivablesSort)
+    : "age-desc"
+  const urlQ = searchParams.get("q") ?? ""
+
+  // Input local con debounce → escribe a la URL cada 300ms.
+  const [qInput, setQInput] = useState(urlQ)
+  useEffect(() => {
+    // Si la URL cambia (back/forward), sincroniza el input.
+    setQInput(urlQ)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [urlQ])
+  useEffect(() => {
+    const handle = setTimeout(() => {
+      if (qInput === urlQ) return
+      updateParams({ q: qInput.trim() || null })
+    }, 300)
+    return () => clearTimeout(handle)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [qInput])
+
+  function updateParams(patch: Record<string, string | null>) {
+    const next = new URLSearchParams(searchParams.toString())
+    for (const [k, v] of Object.entries(patch)) {
+      if (v == null || v === "" || (k === "sort" && v === "age-desc") || (k === "bucket" && v === "all") || (k === "site" && v === "all")) {
+        next.delete(k)
+      } else {
+        next.set(k, v)
+      }
+    }
+    const qs = next.toString()
+    router.replace(qs ? `/receivables?${qs}` : "/receivables", { scroll: false })
+  }
+
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [paymentTarget, setPaymentTarget] = useState<PaymentTarget | null>(null)
   const [refreshKey, setRefreshKey] = useState(0)
+  const [exporting, setExporting] = useState(false)
 
-  // Sedes que el usuario puede ver — para el filtro. RLS ya recorta el
-  // dropdown a las accesibles.
   const { data: sites } = useSWR<Site[]>("receivables-sites", () => getSites())
 
-  // Listado principal.
   const { data, mutate, isLoading } = useSWR(
-    ["receivables", siteFilter, refreshKey],
+    ["receivables", siteFilter, urlQ, bucketFilter, sort, refreshKey],
     async () => {
       const res = await getReceivables({
         site_id: siteFilter === "all" ? null : siteFilter,
+        q: urlQ || null,
+        bucket: bucketFilter,
+        sort,
       })
       return res
     },
@@ -105,7 +164,6 @@ export default function ReceivablesPage() {
     sale: ReceivableSale,
     group: ReceivableGroup,
   ) {
-    // Averigua si hay turno abierto en la sede DE LA VENTA para permitir cash.
     let shiftId: string | null = null
     if (sale.site_id) {
       const shift = await getCurrentShift(sale.site_id)
@@ -115,6 +173,35 @@ export default function ReceivablesPage() {
       sale: { ...sale, customer_id: group.customer_id, customer_name: group.customer_name },
       shiftId,
     })
+  }
+
+  async function handleExport() {
+    setExporting(true)
+    try {
+      const res = await exportReceivablesCSV({
+        site_id: siteFilter === "all" ? null : siteFilter,
+        q: urlQ || null,
+        bucket: bucketFilter,
+        sort,
+      })
+      if (!res.success) {
+        toast({ title: "No se pudo exportar", description: res.message, variant: "destructive" })
+        return
+      }
+      const blob = new Blob([res.content], { type: "text/csv;charset=utf-8" })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement("a")
+      a.href = url
+      a.download = res.filename
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(url)
+    } catch (err: any) {
+      toast({ title: "No se pudo exportar", description: err?.message ?? "Error inesperado", variant: "destructive" })
+    } finally {
+      setExporting(false)
+    }
   }
 
   return (
@@ -127,8 +214,20 @@ export default function ReceivablesPage() {
             : "Vista de solo lectura. Los abonos se registran desde el POS."
         }
       >
-        <Select value={siteFilter} onValueChange={setSiteFilter}>
-          <SelectTrigger className="w-[220px]">
+        <Button variant="outline" onClick={handleExport} disabled={exporting || groups.length === 0}>
+          <Download className="mr-1.5 h-4 w-4" />
+          {exporting ? "Exportando…" : "Exportar CSV"}
+        </Button>
+      </PageHeader>
+
+      <div className="mb-4 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <Input
+          placeholder="Buscar cliente, teléfono o # venta"
+          value={qInput}
+          onChange={(e) => setQInput(e.target.value)}
+        />
+        <Select value={siteFilter} onValueChange={(v) => updateParams({ site: v })}>
+          <SelectTrigger>
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -140,7 +239,27 @@ export default function ReceivablesPage() {
             ))}
           </SelectContent>
         </Select>
-      </PageHeader>
+        <Select value={bucketFilter} onValueChange={(v) => updateParams({ bucket: v })}>
+          <SelectTrigger>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">Toda la antigüedad</SelectItem>
+            <SelectItem value="0-30">0–30 días</SelectItem>
+            <SelectItem value="31-60">31–60 días</SelectItem>
+            <SelectItem value="60+">60+ días</SelectItem>
+          </SelectContent>
+        </Select>
+        <Select value={sort} onValueChange={(v) => updateParams({ sort: v })}>
+          <SelectTrigger>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="age-desc">Más antigua primero</SelectItem>
+            <SelectItem value="age-asc">Más reciente primero</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
 
       <div className="mb-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
         <Card>

@@ -629,7 +629,17 @@ export interface ReceivableGroup {
 // customer_credits para los customer_id ya listados. Decisión: útil para
 // mostrar "puede pagar Y con saldo a favor" en la vista, y evita que la UI
 // dispare N llamadas a getCustomerCreditBalance al pintar la tabla.
-export async function getReceivables(opts?: { site_id?: string | null }) {
+export type ReceivablesBucketFilter = "all" | AgeBucket
+export type ReceivablesSort = "age-desc" | "age-asc"
+
+export interface GetReceivablesOpts {
+  site_id?: string | null
+  q?: string | null
+  bucket?: ReceivablesBucketFilter | null
+  sort?: ReceivablesSort | null
+}
+
+export async function getReceivables(opts?: GetReceivablesOpts) {
   await requireRole("admin", "contador", "encargado", "vendedor")
   const supabase = await createServerSupabaseClient()
   let q = supabase
@@ -716,8 +726,74 @@ export async function getReceivables(opts?: { site_id?: string | null }) {
     g.oldest_bucket = toAgeBucket(g.oldest_days)
   }
 
-  const groups = Array.from(map.values()).sort((a, b) => b.total_pendiente - a.total_pendiente)
+  let groups = Array.from(map.values())
+
+  // Filtro por bucket sobre el grupo (mismo cálculo que ya usa la UI para el
+  // semáforo colapsado — no reimplementamos).
+  const bucket = opts?.bucket ?? "all"
+  if (bucket !== "all") {
+    groups = groups.filter((g) => g.oldest_bucket === bucket)
+  }
+
+  // Búsqueda unificada: nombre / teléfono (ILIKE-substring, case-insensitive)
+  // o número de venta exacto si el input parsea como entero. Filtramos post-
+  // agrupamiento sobre el mismo dataset ya scoped por rol/sede vía RLS —
+  // el user NO puede alcanzar filas fuera de su scope aunque manipule opts.q.
+  const rawQ = (opts?.q ?? "").trim()
+  if (rawQ) {
+    const needle = rawQ.toLowerCase()
+    const asNumero = /^\d+$/.test(rawQ) ? Number(rawQ) : null
+    groups = groups.filter((g) => {
+      if (g.customer_name.toLowerCase().includes(needle)) return true
+      if (g.customer_phone && g.customer_phone.toLowerCase().includes(needle)) return true
+      if (asNumero !== null && g.sales.some((s) => s.numero === asNumero)) return true
+      return false
+    })
+  }
+
+  // Sort: default más antigua primero (age-desc = oldest_days descendente).
+  const sort: ReceivablesSort = opts?.sort ?? "age-desc"
+  groups.sort((a, b) => (sort === "age-asc" ? a.oldest_days - b.oldest_days : b.oldest_days - a.oldest_days))
+
   return { success: true, groups }
+}
+
+// Export CSV del listado ya filtrado y ordenado. Reusa getReceivables entero
+// para heredar guards de rol/sede — el CSV nunca puede traer filas fuera del
+// scope del usuario. Server action: la UI recibe { filename, content } y
+// dispara la descarga con un Blob.
+export async function exportReceivablesCSV(opts?: GetReceivablesOpts) {
+  const { buildCSV } = await import("./csv")
+  const res = await getReceivables(opts)
+  if (!res.success) return { success: false as const, message: res.message }
+
+  const headers = [
+    "Cliente",
+    "Teléfono",
+    "Número de venta",
+    "Fecha",
+    "Antigüedad (bucket)",
+    "Días",
+    "Monto adeudado",
+  ]
+  const rows: unknown[][] = []
+  for (const g of res.groups) {
+    for (const s of g.sales) {
+      rows.push([
+        g.customer_name,
+        g.customer_phone ?? "",
+        s.numero ?? s.sale_id.slice(0, 8),
+        s.sale_date.slice(0, 10),
+        s.age_bucket,
+        s.age_days,
+        s.balance_due,
+      ])
+    }
+  }
+  const content = buildCSV(headers, rows)
+  const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")
+  const filename = `cuentas-por-cobrar-${stamp}.csv`
+  return { success: true as const, filename, content }
 }
 
 // Suma de customer_credits (positivos por emisión, negativos por redención).
