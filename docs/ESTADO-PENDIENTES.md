@@ -2,43 +2,53 @@
 
 > **Propósito**: dump de estado para que una instancia nueva de Claude sin
 > memoria pueda retomar sin perder nada. Última actualización: **2026-08-18**
-> (release s9 + s10 APLICADO A PROD: fix carga infinita post-login + colapso
-> de cascada bootstrap POS + scroll interno del sidebar. Merge commits
-> `4d54ab7` s9 y `9d52f35` s10, deploy `dpl_7SeUqpRzsDgiExRAn577ZnfXtWsx`
-> READY 50s de build, wompi webhook 200, runtime logs limpios).
+> (release s11 APLICADO A PROD: feedback visible en ingreso IA + bodySizeLimit
+> 20mb + guard client-side 5MB. Merge commit `46dcf86`. Cierra bugs de silent-
+> failure y el 413 explícito, PERO deja abierto y URGENTE el "Maximum array
+> nesting exceeded" del serializador Flight/RSC para fotos 2–5MB reales de
+> celular — próximo bloque inmediato es s12 con upload client-direct-to-
+> Supabase-Storage).
 
 ---
 
-## 0. LEE ESTO PRIMERO — estado tras sesión 2026-08-18 (POS perf + sidebar scroll)
+## 0. LEE ESTO PRIMERO — estado tras sesión 2026-08-18 (POS perf + sidebar + ingreso IA feedback)
 
-**Estado de ramas**: ninguna rama de trabajo abierta. `main` en `9d52f35`
-(merges `4d54ab7` s9-pos-loading-fixes + `9d52f35` s10-sidebar-scroll-fix).
-Ramas `s9-pos-loading-fixes` y `s10-sidebar-scroll-fix` **borradas de
+**Estado de ramas**: ninguna rama de trabajo abierta. `main` en `46dcf86`
+(merges `4d54ab7` s9-pos-loading-fixes + `9d52f35` s10-sidebar-scroll-fix
++ `46dcf86` s11-ai-ingress-feedback). Ramas `s9-pos-loading-fixes`,
+`s10-sidebar-scroll-fix` y `s11-ai-ingress-feedback` **borradas de
 origin y local** tras el merge. Ramas históricas `s1-s3p0-rpc-hardening`,
 `s2-adjustments-phase1`, `s3-credit-fiar-ui`, `s3p0-hotfix-to-main`,
 `merge-s1-s3p0-to-main` siguen en origin como legado — no bloquean nada.
+
+**Próximo bloque inmediato** (definido): `s12-ai-ingress-client-upload`.
+Refactor de `uploadProductMedia` a upload client-direct-to-Supabase-
+Storage para el binario (bucket `product-media`), bypaseando el Server
+Action para el archivo. Cierra end-to-end el problema del panel de
+ingreso IA que s11 NO resolvió (ver "ABIERTO Y URGENTE" abajo). Aún
+no arrancado.
 
 **Prod (`nxszaxwsrtlofqimbfig`)**: kardex OK
 (`verify_kardex_integrity()`=0), credit OK
 (`verify_credit_integrity()`=0), ajustes-contabilidad OK
 (`verify_adjustment_accounting_integrity()`=0). Sirviendo
-`dpl_7SeUqpRzsDgiExRAn577ZnfXtWsx` (sha `9d52f35`, target=production,
-READY 50s de build el 2026-08-18, alias `app-solcraft.com`). Deploy
-anterior `dpl_5FZTwJNSPUVyCrngvbTeDvpCPvkk` (sha `892f647`) queda como
-rollback candidate. `GET /api/wompi/webhook` responde HTTP 200 con
-`{ok:true, configured:false}`. Runtime logs limpios (0 errores últimos
-15 min post-deploy, todos 200/304, todos apuntando al deploy nuevo).
+`dpl_2VfonfhfZwKeCBCiWj4kJor3zXzM` (sha `46dcf86`, target=production,
+READY el 2026-08-18, alias `app-solcraft.com`). Deploy anterior
+`dpl_HgzDpzSvQrTSDz2DpNigfVR9t7ka` (sha `708ef48`, docs-only) queda
+como rollback candidate. `GET /api/wompi/webhook` responde HTTP 200
+con `{ok:true, configured:false}` post-deploy s11.
 
-**Nota de cadencia de release s9 + s10**: los dos merges fueron
-empujados juntos en un solo `git push origin main`, no en dos deploys
-escalonados. Historia git limpia con 2 merge commits separados
-(`4d54ab7` s9 y `9d52f35` s10) más 2 commits de fix internos
-(`43d53a4` s9 y `90fe7d6` s10), pero Vercel corrió un único build de
-prod. En caso de regresión hay que revisar los 3 archivos combinados
-(`lib/site-context.tsx`, `app/pos/page.tsx`, `lib/inventory-actions.ts`
-del s9 + `components/dashboard-sidebar.tsx` del s10) — el rollback por
-componente independiente requiere revert manual de commits en vez de
-promote de deploy previo.
+**Cadencia de release en esta sesión** (3 merges, 2 pushes, 2 deploys
+de prod): (a) s9 + s10 empujados juntos en un solo push —
+`4d54ab7` s9 y `9d52f35` s10, prod deploy `dpl_7SeUqpRzsDgiExRAn577ZnfXtWsx`;
+(b) s11 empujado por separado — `46dcf86`, prod deploy
+`dpl_2VfonfhfZwKeCBCiWj4kJor3zXzM` (el actual). Historia git limpia
+con 3 merge commits + 4 commits de fix internos (`43d53a4` s9,
+`90fe7d6` s10, `5e7a1ac` + `002a67c` s11). Rollback por componente
+independiente requiere `git revert` selectivo — s9 y s10 comparten
+un solo deploy (revert por commits), s11 tiene deploy propio y puede
+rollbackearse promoviendo `dpl_HgzDpzSvQrTSDz2DpNigfVR9t7ka` si hace
+falta.
 
 **Deuda técnica identificada, NO cerrada**: cold-start de infraestructura
 en `/pos` sigue generando ~4–6 s de latencia percibida en frío (primera
@@ -69,26 +79,69 @@ La Ronda 2(a) investigación (EXPLAIN ANALYZE sobre `getSites`) confirmó
 que **NO hay índice ni policy que agregar** — el fix real vive del lado
 de infra/edge, no del schema.
 
-**Deuda técnica identificada, NO cerrada** (2026-08-18, encontrada en
-smoke de s11-ai-ingress-feedback): errores de nivel-framework de
-Server Actions (413 body exceeded, network, timeout, deploy en curso)
-escapan al try/catch cliente y disparan el ErrorBoundary/mensaje
-genérico de Next.js "An error occurred in the Server Components
-render" — el feedback amigable diseñado en s11 (toast, card roja con
-mensaje legible) NO se muestra en esos casos porque la excepción
-ocurre antes de que el promise cliente resuelva y React la eleva al
-boundary. Mitigado en s11 subiendo `bodySizeLimit` a 20 MB y agregando
-guard pre-flight de 5 MB en `handleFiles` (coincide con
-`MAX_IMAGE_BYTES` server-side), cerrando la ventana práctica de 413
-para el flujo IA. Ventanas residuales: (i) timeouts/network fails en
-uploads legítimos <5 MB, (ii) otros flujos de Server Action con
-payload grande (bulk transfers si crecen). **Solución robusta pendiente,
-no incluida**: refactorizar `uploadProductMedia` a upload
-client-side directo a Supabase Storage (`supabase.storage.from(...)
-.upload(file)` con anon key + RLS), ~60-100 líneas. Elimina el hop
-Server Action por completo para el binario, con lo cual todos los
-framework errors (413, timeout, deploy) desaparecen para uploads.
-Decisión de scope + prioridad pendiente del usuario.
+**ABIERTO Y URGENTE — próximo bloque inmediato (s12)**: fotos reales
+de celular en el panel de ingreso IA (`/central` → "Ingreso
+inteligente con IA") **siguen fallando** con el mensaje genérico
+"An error occurred in the Server Components render" dentro de la
+card individual, aún después del release s11. Causa raíz confirmada
+en runtime logs de prod (deployment de s11 preview, 22:40:28 UTC):
+
+```
+POST /central 500
+[Error: Maximum array nesting exceeded. Large nested arrays can be
+ dangerous. Try adding intermediate objects.]
+digest: '554251266'
+```
+
+Es un límite del **serializador Flight/RSC de React** (no configurable,
+distinto del `bodySizeLimit` de Next.js). Cuando un string base64 es
+grande, React lo particiona en chunks anidados y la profundidad supera
+el límite intrínseco de seguridad del protocolo. Se dispara antes de
+que corra la Server Action, elude el try/catch cliente (React eleva
+al ErrorBoundary), y NO hay flag para desactivarlo.
+
+Lo que s11 cerró parcialmente:
+- **413 body exceeded**: cerrado con `bodySizeLimit = "20mb"`.
+- **Silent failures del panel** (spinner infinito, sin toast global):
+  cerrados con try/catch defensivo en `saveItem` + toast de éxito
+  enriquecido con códigos + toast destructive de fallo total + toast
+  neutral de fallo parcial.
+- **Guard client-side de 5 MB** en `handleFiles`: bloquea archivos
+  claramente excesivos antes de subirlos, con toast amigable.
+
+Lo que s11 NO resolvió — **el problema real end-to-end**:
+- Fotos ≤ 5 MB raw (que pasan el guard) pero grandes dentro de eso
+  (~2–5 MB raw = ~2.7–6.7 MB base64) pegan en "Maximum array nesting
+  exceeded" al codificarlas en el body del Server Action. Ventana de
+  fallo real, no edge case remoto: es el caso normal de fotos de
+  celular moderno legítimas.
+- Cadena confirmada en smoke: primera card (foto chica) pasó OK;
+  segunda card (foto más grande, aún ≤ 5 MB) falló con el mensaje
+  genérico. El user tiene que ir a validar manualmente igual que
+  antes de s11 para este caso.
+
+**Único fix real** (planeado en s12-ai-ingress-client-upload): refactor
+de `uploadProductMedia` a upload **client-direct-to-Supabase-Storage**
+usando `supabase.storage.from("product-media").upload(file)` con la
+anon key + RLS del bucket. Bypasea el Server Action para el binario,
+eliminando el hop de serialización Flight/RSC por completo — con eso
+desaparecen TODOS los framework/serializer errors para uploads
+(nesting, 413, timeout, network). Estimación: ~60–100 líneas.
+Requiere:
+- Auditar RLS del bucket `product-media` en Supabase (confirmar que
+  `authenticated` puede INSERT scoped correctamente, o crear policy
+  si no existe).
+- Nuevo helper client-side (`lib/storage-client.ts` o similar) que
+  wrappe la subida y devuelva `{success, url, path}` con el mismo
+  contrato que la Server Action actual, para minimizar el cambio en
+  `saveItem`.
+- `uploadProductMedia` Server Action queda como fallback opcional o
+  se deprecia si no tiene otros usos (verificar con grep antes).
+- Contrato de `ingressNewProduct` sigue igual — solo recibe la URL
+  ya generada.
+
+Mismo patrón de sesión: branch → preview → smoke test usuario → OK →
+merge → docs → borrar rama.
 
 **Módulo Ajustes de Inventario**: **cerrado end-to-end en prod**.
 Fase 1 (RPC atómico) + 2A (numeración) + 2B (WAC) + 2C v2 (motivo +
@@ -119,6 +172,69 @@ usuario decide el siguiente foco (cold-start de `/pos` según opción
 elegida arriba, promociones aplicadas en POS, mejoras UX Alegra-like,
 otras deudas del §5 backlog). Ver §5 "Backlog vigente" y §1 "Cola de
 trabajo escrito-pero-no-aplicado" para candidatos.
+
+### ✅ CERRADO Y DEPLOYED — s11 ai-ingress feedback + bodySizeLimit + guard 5MB (2026-08-18)
+
+Rama `s11-ai-ingress-feedback` mergeada a main (merge commit `46dcf86`,
+fix commits `5e7a1ac` + `002a67c`). Prod deploy
+`dpl_2VfonfhfZwKeCBCiWj4kJor3zXzM` READY, alias `app-solcraft.com`,
+wompi webhook 200 post-deploy. Rama borrada de origin y local.
+
+Contexto del reporte original: "al ingresar mercancía con IA, no me
+sale mensaje de ingreso exitoso, el usuario tiene que ir a validar
+manualmente". Diagnóstico y fix en dos rondas de commits.
+
+**Ronda 1 (`5e7a1ac`)** — Feedback visible del panel:
+El toast ya estaba cableado pero había tres gaps: (i) `saveItem` sin
+try/catch → si `uploadProductMedia` o `ingressNewProduct` throweaban,
+el ítem quedaba en `status:"saving"` PERMANENTE con spinner infinito,
+loop roto sin toast global (silent failure real que coincide 1:1 con
+el síntoma reportado); (ii) sin toast global cuando `ok === 0`
+(todos fallaron); (iii) fallo parcial silencioso (2/3 OK).
+
+Fix: `saveItem` wrap en try/catch, retorna `{ok, code?}` para poder
+listar códigos en el toast. Toast éxito enriquecido con códigos
+asignados (primeros 3 + "N más"). Toast destructive de fallo total.
+Toast neutral de fallo parcial que remite a cards en rojo.
+
+**Ronda 2 (`002a67c`)** — bodySizeLimit + guard client-side:
+Diagnóstico del error "An error occurred in the Server Components
+render" que apareció en preview post-s11-ronda-1. Runtime logs de
+Vercel confirmaron:
+
+```
+POST /central 500 Error: Body exceeded 1 MB limit.
+statusCode: 413, digest: '219008105'
+```
+
+Default de Next.js es 1 MB por Server Action. `uploadProductMedia`
+recibe base64 (~4/3 del tamaño real). Cualquier foto de cámara
+moderna >750 KB dispara 413 ANTES de que la función corra. El
+try/catch de Ronda 1 no ayuda para este caso porque es
+framework-level (React eleva al ErrorBoundary antes del promise
+cliente). **NO era bug nuevo de s11** — preexistía desde que se
+agregó `uploadProductMedia`. Ronda 1 sí cazó los gaps 2 y 3, no el
+413.
+
+Fix Ronda 2: (a) `next.config.mjs` agrega
+`experimental.serverActions.bodySizeLimit = "20mb"` con margen sobre
+el `MAX_IMAGE_BYTES = 5 MB` server-side; (b) `handleFiles` guard
+pre-flight rechazando files > 5 MB con toast destructive amigable,
+coincidente con `MAX_IMAGE_BYTES` server-side, bloqueando ANTES de
+llegar al Server Action.
+
+**Lo que s11 NO cerró** (deuda pasa a s12): fotos ≤ 5 MB pero grandes
+dentro de eso (~2–5 MB raw, ~2.7–6.7 MB base64) pegan en "Maximum
+array nesting exceeded" del serializador Flight/RSC de React —
+límite intrínseco no configurable. Ver bloque "ABIERTO Y URGENTE"
+arriba en §0 para el detalle completo y el plan de s12.
+
+Smoke test verificado por el usuario en preview antes del merge:
+primera card ingresada OK, segunda card falló con el error genérico
+(exactamente el caso que confirmó la necesidad de s12). Merge
+autorizado a pesar del gap porque Ronda 1 cierra silent failures
+reales (spinner infinito, ausencia de toast) que sí eran regresión
+funcional aparte del 413.
 
 ### ✅ CERRADO Y DEPLOYED — s9 POS loading fixes + s10 sidebar scroll (2026-08-18)
 
