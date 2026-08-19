@@ -20,12 +20,30 @@ merge. Ramas históricas `s1-s3p0-rpc-hardening`,
 
 **Próximo bloque**: sin definir. Al arrancar la próxima sesión, el
 usuario decide el siguiente foco. Candidatos identificados:
-- **Investigar fallo IA** (no-bloqueante, arrastrado desde s12):
-  confirmar si `/api/analyze-product` (Gemini) tiene fallo recurrente
-  o fue puntual. Diagnóstico en env vars, timeouts, o rate limits del
-  AI Gateway de Vercel.
-- **Cold-start `/pos`** (~4–6 s primera carga tras idle) — 4 opciones
-  documentadas más abajo, decisión de costo/beneficio pendiente.
+- **Cold-start `/pos`** — Fluid Compute **ACTIVADO** 2026-08-19 vía
+  Vercel Dashboard → Settings → Functions. Medición inicial contra
+  `app-solcraft.com/pos` (curl, 3 requests seguidas): TTFB
+  0.70s / 0.54s / 0.35s, todos 200. Runtime logs del deploy actual
+  (`dpl_8yuv2rCGQKLkNvU9dxLDCNbicJ2v`) muestran /pos mayormente
+  `cache=HIT` (static) y algunos `REVALIDATED` (serverless) — sin
+  latencia visible por línea (la MCP no expone ms), pero no aparecen
+  picos anómalos en la última hora. Falta **validación en browser
+  real** con navegación autenticada (curl no ejercita el data-fetch
+  client-side del POS, que es lo que el usuario percibe como 4–6 s).
+  Estado: **pendiente confirmar con uso real** — si el próximo login
+  del usuario sigue viendo 4–6 s, siguiente paso es Opción C (dynamic
+  imports de componentes no críticos en `/pos`). Si mejoró, cerrar
+  como resuelto por infra.
+- **Investigar fallo IA** — **CERRADO 2026-08-19**. Root cause: cliente
+  enviaba `File.type` vacío u `application/octet-stream` (cámara
+  Android vía intent) → Storage lo persistía como octet-stream y/o
+  Gemini lo rechazaba. Fix defensivo en `lib/storage-client.ts`
+  (normaliza contentType a image/jpeg) y `app/api/analyze-product/route.ts`
+  (normaliza mediaType antes de armar payload Gemini). Commit
+  `700c6aa`, deploy `dpl_8yuv2rCGQKLkNvU9dxLDCNbicJ2v` READY,
+  runtime logs muestran POST /api/analyze-product 200 tras el deploy.
+  No requiere validación mobile — es defensa en profundidad, se activa
+  solo si vuelve a aparecer.
 - **Backlog Alegra parity** (ROADMAP.md) — promociones aplicadas en POS,
   reportes, mejoras UX.
 
