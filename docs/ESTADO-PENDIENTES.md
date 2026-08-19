@@ -2,53 +2,61 @@
 
 > **Propósito**: dump de estado para que una instancia nueva de Claude sin
 > memoria pueda retomar sin perder nada. Última actualización: **2026-08-18**
-> (release s11 APLICADO A PROD: feedback visible en ingreso IA + bodySizeLimit
-> 20mb + guard client-side 5MB. Merge commit `46dcf86`. Cierra bugs de silent-
-> failure y el 413 explícito, PERO deja abierto y URGENTE el "Maximum array
-> nesting exceeded" del serializador Flight/RSC para fotos 2–5MB reales de
-> celular — próximo bloque inmediato es s12 con upload client-direct-to-
-> Supabase-Storage).
+> (release s12 APLICADO A PROD: upload client-direct-to-Supabase-Storage en
+> panel de Ingreso IA. Merge commit `a7053bf`. Cierra el "Maximum array
+> nesting exceeded" del serializador Flight/RSC end-to-end — fotos 2–5MB de
+> celular ya suben limpio. Bug s11 residual cerrado).
 
 ---
 
-## 0. LEE ESTO PRIMERO — estado tras sesión 2026-08-18 (POS perf + sidebar + ingreso IA feedback)
+## 0. LEE ESTO PRIMERO — estado tras sesión 2026-08-18 (s12 ai-ingress client-direct upload)
 
-**Estado de ramas**: ninguna rama de trabajo abierta. `main` en `46dcf86`
-(merges `4d54ab7` s9-pos-loading-fixes + `9d52f35` s10-sidebar-scroll-fix
-+ `46dcf86` s11-ai-ingress-feedback). Ramas `s9-pos-loading-fixes`,
-`s10-sidebar-scroll-fix` y `s11-ai-ingress-feedback` **borradas de
-origin y local** tras el merge. Ramas históricas `s1-s3p0-rpc-hardening`,
+**Estado de ramas**: ninguna rama de trabajo abierta. `main` en `a7053bf`
+(merge `a7053bf` s12-ai-ingress-client-upload). Rama
+`s12-ai-ingress-client-upload` **borrada de origin y local** tras el
+merge. Ramas históricas `s1-s3p0-rpc-hardening`,
 `s2-adjustments-phase1`, `s3-credit-fiar-ui`, `s3p0-hotfix-to-main`,
 `merge-s1-s3p0-to-main` siguen en origin como legado — no bloquean nada.
 
-**Próximo bloque inmediato** (definido): `s12-ai-ingress-client-upload`.
-Refactor de `uploadProductMedia` a upload client-direct-to-Supabase-
-Storage para el binario (bucket `product-media`), bypaseando el Server
-Action para el archivo. Cierra end-to-end el problema del panel de
-ingreso IA que s11 NO resolvió (ver "ABIERTO Y URGENTE" abajo). Aún
-no arrancado.
+**Próximo bloque**: sin definir. Al arrancar la próxima sesión, el
+usuario decide el siguiente foco. Candidatos identificados:
+- **Investigar fallo IA** (no-bloqueante, ver §0 "ítem separado" abajo):
+  confirmar si `/api/analyze-product` (Gemini) tiene fallo recurrente
+  o fue puntual. Diagnóstico en cerca de env vars, timeouts, o rate
+  limits del AI Gateway de Vercel.
+- **Cold-start `/pos`** (~4–6 s primera carga tras idle) — 4 opciones
+  documentadas en §0 abajo, decisión de costo/beneficio pendiente.
+- **Backlog Alegra parity** (ROADMAP.md) — promociones aplicadas en POS,
+  reportes, mejoras UX.
 
 **Prod (`nxszaxwsrtlofqimbfig`)**: kardex OK
 (`verify_kardex_integrity()`=0), credit OK
 (`verify_credit_integrity()`=0), ajustes-contabilidad OK
 (`verify_adjustment_accounting_integrity()`=0). Sirviendo
-`dpl_2VfonfhfZwKeCBCiWj4kJor3zXzM` (sha `46dcf86`, target=production,
-READY el 2026-08-18, alias `app-solcraft.com`). Deploy anterior
-`dpl_HgzDpzSvQrTSDz2DpNigfVR9t7ka` (sha `708ef48`, docs-only) queda
-como rollback candidate. `GET /api/wompi/webhook` responde HTTP 200
-con `{ok:true, configured:false}` post-deploy s11.
+`dpl_CMG8LuPvrHqRN6vSHugHvNYDwEtw` (sha `a7053bf`, target=production,
+READY el 2026-08-19 en 48s, alias `app-solcraft.com`). Deploy anterior
+`dpl_2VfonfhfZwKeCBCiWj4kJor3zXzM` (sha `46dcf86`, s11) queda como
+rollback candidate. `GET /api/wompi/webhook` responde HTTP 200 con
+`{ok:true, configured:false}` post-deploy s12. Runtime logs limpios
+(0 errors/warnings/fatals últimos 15 min post-deploy).
 
-**Cadencia de release en esta sesión** (3 merges, 2 pushes, 2 deploys
-de prod): (a) s9 + s10 empujados juntos en un solo push —
-`4d54ab7` s9 y `9d52f35` s10, prod deploy `dpl_7SeUqpRzsDgiExRAn577ZnfXtWsx`;
-(b) s11 empujado por separado — `46dcf86`, prod deploy
-`dpl_2VfonfhfZwKeCBCiWj4kJor3zXzM` (el actual). Historia git limpia
-con 3 merge commits + 4 commits de fix internos (`43d53a4` s9,
-`90fe7d6` s10, `5e7a1ac` + `002a67c` s11). Rollback por componente
-independiente requiere `git revert` selectivo — s9 y s10 comparten
-un solo deploy (revert por commits), s11 tiene deploy propio y puede
-rollbackearse promoviendo `dpl_HgzDpzSvQrTSDz2DpNigfVR9t7ka` si hace
-falta.
+**Cadencia de release s12** (1 merge, 1 push, 1 deploy de prod): rama
+`s12-ai-ingress-client-upload` con commit `440b639` (feat) → merge
+`a7053bf` con `--no-ff`, prod deploy `dpl_CMG8LuPvrHqRN6vSHugHvNYDwEtw`
+(READY 48s). Rollback disponible: promover
+`dpl_2VfonfhfZwKeCBCiWj4kJor3zXzM` (s11, sha `46dcf86`) si el bug
+reaparece — mismo módulo, sin drift de schema entre s11 y s12.
+
+**Ítem separado no-bloqueante — investigar fallo puntual del análisis
+IA**: durante el smoke de s12 en preview, la primera foto subida
+disparó "La IA no pudo analizar el archivo. Completa los datos
+manualmente." (fallback de `/api/analyze-product` → Gemini vía AI
+Gateway de Vercel). El upload directo al bucket sí funcionó — el fallo
+fue del analizador IA, no de s12. Candidatos: (a) `AI_GATEWAY_API_KEY`
+no configurada o expirada en env de preview; (b) rate limit / timeout
+puntual de Gemini; (c) foto específica que Gemini no procesa. No
+bloquea el flujo (el usuario completa manual), pero merece confirmar
+si es recurrente o puntual — próxima sesión.
 
 **Deuda técnica identificada, NO cerrada**: cold-start de infraestructura
 en `/pos` sigue generando ~4–6 s de latencia percibida en frío (primera
@@ -78,67 +86,6 @@ beneficio pendiente del usuario):
 La Ronda 2(a) investigación (EXPLAIN ANALYZE sobre `getSites`) confirmó
 que **NO hay índice ni policy que agregar** — el fix real vive del lado
 de infra/edge, no del schema.
-
-**ABIERTO Y URGENTE — próximo bloque inmediato (s12)**: fotos reales
-de celular en el panel de ingreso IA (`/central` → "Ingreso
-inteligente con IA") **siguen fallando** con el mensaje genérico
-"An error occurred in the Server Components render" dentro de la
-card individual, aún después del release s11. Causa raíz confirmada
-en runtime logs de prod (deployment de s11 preview, 22:40:28 UTC):
-
-```
-POST /central 500
-[Error: Maximum array nesting exceeded. Large nested arrays can be
- dangerous. Try adding intermediate objects.]
-digest: '554251266'
-```
-
-Es un límite del **serializador Flight/RSC de React** (no configurable,
-distinto del `bodySizeLimit` de Next.js). Cuando un string base64 es
-grande, React lo particiona en chunks anidados y la profundidad supera
-el límite intrínseco de seguridad del protocolo. Se dispara antes de
-que corra la Server Action, elude el try/catch cliente (React eleva
-al ErrorBoundary), y NO hay flag para desactivarlo.
-
-Lo que s11 cerró parcialmente:
-- **413 body exceeded**: cerrado con `bodySizeLimit = "20mb"`.
-- **Silent failures del panel** (spinner infinito, sin toast global):
-  cerrados con try/catch defensivo en `saveItem` + toast de éxito
-  enriquecido con códigos + toast destructive de fallo total + toast
-  neutral de fallo parcial.
-- **Guard client-side de 5 MB** en `handleFiles`: bloquea archivos
-  claramente excesivos antes de subirlos, con toast amigable.
-
-Lo que s11 NO resolvió — **el problema real end-to-end**:
-- Fotos ≤ 5 MB raw (que pasan el guard) pero grandes dentro de eso
-  (~2–5 MB raw = ~2.7–6.7 MB base64) pegan en "Maximum array nesting
-  exceeded" al codificarlas en el body del Server Action. Ventana de
-  fallo real, no edge case remoto: es el caso normal de fotos de
-  celular moderno legítimas.
-- Cadena confirmada en smoke: primera card (foto chica) pasó OK;
-  segunda card (foto más grande, aún ≤ 5 MB) falló con el mensaje
-  genérico. El user tiene que ir a validar manualmente igual que
-  antes de s11 para este caso.
-
-**Único fix real** (planeado en s12-ai-ingress-client-upload): refactor
-de `uploadProductMedia` a upload **client-direct-to-Supabase-Storage**
-usando `supabase.storage.from("product-media").upload(file)` con la
-anon key + RLS del bucket. Bypasea el Server Action para el binario,
-eliminando el hop de serialización Flight/RSC por completo — con eso
-desaparecen TODOS los framework/serializer errors para uploads
-(nesting, 413, timeout, network). Estimación: ~60–100 líneas.
-Requiere:
-- Auditar RLS del bucket `product-media` en Supabase (confirmar que
-  `authenticated` puede INSERT scoped correctamente, o crear policy
-  si no existe).
-- Nuevo helper client-side (`lib/storage-client.ts` o similar) que
-  wrappe la subida y devuelva `{success, url, path}` con el mismo
-  contrato que la Server Action actual, para minimizar el cambio en
-  `saveItem`.
-- `uploadProductMedia` Server Action queda como fallback opcional o
-  se deprecia si no tiene otros usos (verificar con grep antes).
-- Contrato de `ingressNewProduct` sigue igual — solo recibe la URL
-  ya generada.
 
 **Deuda menor conocida post-s12** (no bloqueante): branch `isVideo`
 en `app/api/analyze-product/route.ts` (líneas 39, 57 — `const isVideo =
@@ -183,6 +130,79 @@ usuario decide el siguiente foco (cold-start de `/pos` según opción
 elegida arriba, promociones aplicadas en POS, mejoras UX Alegra-like,
 otras deudas del §5 backlog). Ver §5 "Backlog vigente" y §1 "Cola de
 trabajo escrito-pero-no-aplicado" para candidatos.
+
+### ✅ CERRADO Y DEPLOYED — s12 ai-ingress client-direct upload a Storage (2026-08-19)
+
+Rama `s12-ai-ingress-client-upload` mergeada a main (merge commit
+`a7053bf`, fix commit `440b639`). Prod deploy
+`dpl_CMG8LuPvrHqRN6vSHugHvNYDwEtw` READY en 48s, alias
+`app-solcraft.com`, webhook 200 post-deploy, runtime logs limpios
+(0 errors/warnings/fatals últimos 15 min). Rama borrada de origin y
+local.
+
+**Contexto**: s11 dejó abierto el "Maximum array nesting exceeded" del
+serializador Flight/RSC de React — fotos de celular reales (2–5 MB
+raw = ~2.7–6.7 MB base64) fallaban al codificarlas en el body del
+Server Action `uploadProductMedia`, antes de que la función corriera.
+Framework-level, no configurable, no cazable por try/catch cliente.
+
+**Fix**: refactor de la subida a **client-direct-to-Supabase-Storage**
+bypaseando Server Actions para el binario:
+
+- **`lib/storage-client.ts` (nuevo)**: `uploadProductImageClient(file:
+  File)` sube directo al bucket `product-media` con
+  `supabase.storage.from().upload()` usando el browser client de
+  `@supabase/ssr` (auth via cookie de sesión del user logueado). Guards:
+  mime en `image/{jpeg,png,webp,avif}`, 0 < size ≤ 5 MB. Contrato
+  idéntico al Server Action: `{success, url, path}` / `{success,
+  message}` — el call site cambia 1 línea.
+
+- **`components/central/ai-ingress-panel.tsx`**: `saveItem` reemplaza
+  `uploadProductMedia(dataUrl, ext)` por `uploadProductImageClient(item
+  .file)`. `IngressItem` guarda ahora `file: File` (para subida) además
+  del `dataUrl` (para preview e IA). Se elimina la ruta de video en su
+  totalidad: `accept="image/*"` (antes `image/*,video/*`), `isVideo`
+  fuera, preview solo `<img>`, badge solo "Foto", copy actualizado
+  ("Sube fotos", "Subir foto", empty state ajustado). Ver §7 para el
+  detalle de decisiones sobre video.
+
+- **`uploadProductMedia` Server Action se conserva intacto**: sigue
+  siendo usado por `components/inventory/product-form-dialog.tsx` y
+  `components/inventory/product-gallery-manager.tsx`, que llaman a
+  `compressImage()` antes de subir — el base64 resultante es KB, no
+  choca con el nesting limit. Solo el panel IA no comprimía
+  (intencional: Gemini analiza foto full-res).
+
+- **RLS del bucket `product-media` verificada pre-refactor**: policies
+  INSERT/UPDATE/DELETE gated por `is_admin_or_encargado()`, SELECT
+  público (para storefront). Bucket file_size_limit = 5 MB (coincide
+  con `MAX_IMAGE_BYTES` del server action + guard cliente s11).
+  Vendedor no llega al panel (sidebar `permission:transfers_send` +
+  `requireRole` en server actions) — coincide con la policy sin
+  necesidad de ampliarla.
+
+**Contrato de `ingressNewProduct` sin cambios** — sigue recibiendo
+`image_url: string | null` idéntico.
+
+**Deuda menor documentada post-s12** (no bloqueante):
+- Branch `isVideo` en `app/api/analyze-product/route.ts` (líneas 39,
+  57) queda inerte tras eliminar el path de video: `mediaType` siempre
+  llega `image/*`, la rama nunca se ejecuta. Código muerto benigno,
+  sin runtime cost. Limpiar si se retoma soporte de video (habría que
+  ampliar `allowed_mime_types` del bucket + subir `file_size_limit` +
+  reintroducir `video/*` en el `accept`), o borrar el branch
+  definitivamente en un pass de cleanup.
+- **Fallo puntual del análisis IA** durante el smoke de preview
+  (`/api/analyze-product` → Gemini) — ver "Ítem separado no-
+  bloqueante" en §0 arriba. Candidato para próxima sesión.
+
+**Smoke test confirmado por el usuario en preview + prod**:
+- Preview: foto legítima de 2–5 MB (el caso que rompía en s11)
+  subió limpia con "Ingresar todo" — card en verde con código
+  asignado, producto persistido con `image_url` pública clickeable.
+- Prod: deploy `dpl_CMG8LuPvrHqRN6vSHugHvNYDwEtw` verificado post-
+  push. Sin regresión en `product-form-dialog` / `product-gallery-
+  manager` (rutas de subida que siguen usando el server action).
 
 ### ✅ CERRADO Y DEPLOYED — s11 ai-ingress feedback + bodySizeLimit + guard 5MB (2026-08-18)
 

@@ -1620,19 +1620,85 @@ Diagnóstico y fix en dos rondas dentro de la misma rama.
   coincidente con `MAX_IMAGE_BYTES` server-side. Cierra el caso 413
   explícito.
 
-**Deuda técnica NO cerrada por s11 (pasa a s12)**: fotos ≤ 5 MB pero
-grandes dentro de eso (~2–5 MB raw, ~2.7–6.7 MB base64) pegan en
-"Maximum array nesting exceeded" del serializador Flight/RSC de React
-— límite intrínseco no configurable, distinto del `bodySizeLimit` de
-Next.js. Se dispara antes de que corra la Server Action, elude el
-try/catch cliente (React eleva al ErrorBoundary). Runtime logs
-confirmaron: `POST /central 500 [Error: Maximum array nesting exceeded]
-digest: '554251266'`. Único fix real: refactor de `uploadProductMedia`
-a upload **client-direct-to-Supabase-Storage** (`supabase.storage.
-from("product-media").upload(file)` con anon key + RLS). Estimación
-60–100 líneas. Planeado en `s12-ai-ingress-client-upload`. Primer
-paso al arrancar: auditar RLS del bucket `product-media` en Supabase
-antes de tocar código.
+**Deuda técnica de s11 CERRADA por s12** (ver §7.15 abajo).
+
+## §7.15 — s12 ai-ingress client-direct upload a Storage (2026-08-19)
+
+Rama `s12-ai-ingress-client-upload` mergeada a main (merge `a7053bf`,
+commit interno `440b639`). Prod deploy
+`dpl_CMG8LuPvrHqRN6vSHugHvNYDwEtw` READY en 48s, alias
+`app-solcraft.com`. Cierra el bug residual de s11 ("Maximum array
+nesting exceeded" del serializador Flight/RSC de React) end-to-end.
+
+**Diseño**: refactor de la subida en el panel de Ingreso IA a
+**client-direct-to-Supabase-Storage** — bypasea Server Actions para el
+binario, eliminando el hop de serialización Flight/RSC. Con eso
+desaparecen TODOS los framework/serializer errors para uploads
+(nesting, 413, timeout).
+
+**Pre-refactor: auditoría RLS del bucket `product-media`** — confirmada
+sin cambios:
+- Bucket público (SELECT anon), `file_size_limit=5 MB`,
+  `allowed_mime_types=[image/jpeg, image/png, image/webp, image/avif]`.
+- Policies sobre `storage.objects` para bucket_id='product-media':
+  INSERT/UPDATE/DELETE con `is_admin_or_encargado()` (SECDEF STABLE,
+  chequea `user_profiles.role IN ('admin','encargado')` para
+  `auth.uid()`), SELECT público.
+- Coincidencia con roles del panel confirmada: sidebar tiene
+  `permission:transfers_send` (vendedor no lo ve), server actions
+  `ingressNewProduct`/`receiveMerchandise` empiezan con
+  `requireRole("admin","encargado")` — el mismo par de roles que la
+  policy. No hace falta ampliar policy ni cambiar guards.
+
+**Cambios**:
+- **`lib/storage-client.ts` (nuevo)**: `uploadProductImageClient(file:
+  File): Promise<{success:true,url,path}|{success:false,message}>`.
+  Usa `createClient()` de `@/lib/supabase/client` (browser client de
+  `@supabase/ssr`, auth via cookie de sesión). Guards mime + size
+  coincidentes con el bucket. Path
+  `products/{Date.now()}-{rand}.{ext}`, `upsert:false`, `contentType`
+  desde `file.type`.
+- **`components/central/ai-ingress-panel.tsx`**:
+  - `IngressItem` guarda `file: File` (para la subida directa) además
+    de `dataUrl` (para preview y análisis IA).
+  - `saveItem` reemplaza `uploadProductMedia(dataUrl, ext)` por
+    `uploadProductImageClient(item.file)`. Try/catch defensivo
+    conservado.
+  - Elimina la ruta de video: `accept="image/*,video/*"` →
+    `"image/*"`, `isVideo` fuera, preview `<video>|<img>` → solo
+    `<img>`, badge solo "Foto", copy "Sube fotos" / "Subir foto".
+  - `capture="environment"` conservado (funciona con imágenes: hint
+    para cámara vs galería en mobile).
+- **`uploadProductMedia` Server Action se conserva intacto**: otros 2
+  callers activos (`product-form-dialog`, `product-gallery-manager`)
+  lo siguen usando; comprimen con `compressImage()` antes de subir, no
+  chocan con el nesting limit.
+
+**Decisión: solo fotos, sin video** — auditoría del código real
+confirmó que la UI decía "fotos o videos" pero el bucket (mime types)
+y el server action (sniff binario) rechazaban video silenciosamente
+desde antes de s12. Habilitar video de verdad requería ampliar
+allowed_mime_types del bucket + subir file_size_limit + validación
+adicional — decisión de producto, fuera de scope. Se optó por alinear
+la UI con lo que realmente funciona (solo fotos).
+
+**Deuda menor documentada** (no bloqueante): branch `isVideo` en
+`app/api/analyze-product/route.ts` (líneas 39, 57) queda inerte tras
+s12 — `mediaType` siempre llega `image/*`. Código muerto benigno,
+limpiar en futuro pass o si se retoma soporte de video.
+
+**Ítem separado detectado durante smoke**: fallo puntual de
+`/api/analyze-product` (Gemini via AI Gateway de Vercel) durante la
+primera prueba en preview — el analizador IA devolvió error, el
+usuario completó los datos manualmente y el ingreso funcionó
+igual (fallback documentado). Candidato para próxima sesión:
+confirmar si es recurrente o puntual, revisar env vars
+`AI_GATEWAY_API_KEY` en preview, o rate limits.
+
+**Smoke test confirmado por el usuario en preview + prod**: foto
+2–5 MB (el caso que rompía en s11) sube limpia, producto persistido
+con URL pública del bucket, sin regresión en callers del server
+action que se conservó.
 
 ---
 
