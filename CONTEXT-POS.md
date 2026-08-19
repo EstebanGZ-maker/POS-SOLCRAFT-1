@@ -1546,6 +1546,94 @@ capitalización sin asientos), 2D (unificación entradas + UI motivo/
 WAC + validación cost>0), 3 (UI detalle + anular) — TODO en prod.
 Sin ninguna sub-fase pendiente.
 
+### 7.14 Cierre de sesión 2026-08-18 (bloque 2) — s9 POS perf + s10 sidebar + s11 ai-ingress feedback
+
+Tres releases en la misma sesión, 2 pushes a `main`, 2 deploys de prod.
+Prod actual: `dpl_2VfonfhfZwKeCBCiWj4kJor3zXzM` (sha `46dcf86`), alias
+`app-solcraft.com`, wompi 200. Ramas `s9-pos-loading-fixes`,
+`s10-sidebar-scroll-fix` y `s11-ai-ingress-feedback` borradas de
+origin y local tras merge.
+
+**s9-pos-loading-fixes** (merge `4d54ab7`, fix `43d53a4`):
+- Fix carga infinita post-login: `SiteProvider`
+  ([lib/site-context.tsx](lib/site-context.tsx)) usaba key SWR estática
+  `"site-bootstrap"` — race con `signInWithPassword` + `router.push`
+  hacía que `getSites()` corriera antes de la cookie de sesión,
+  devolviera `[]`, y SWR cacheara ese vacío sin revalidar. `currentSite`
+  quedaba `null` y el POS mostraba "Cargando…" indefinidamente. Fix:
+  key condicional dependiente de `useAuth()` (`null` mientras
+  `authLoading`, `["site-bootstrap", user.id]` cuando resuelto, `null`
+  si no hay user). Cubre login, hard refresh en otra ruta y token
+  refresh mid-session.
+- Colapso de cascada del bootstrap POS: `app/pos/page.tsx` tenía 3
+  tandas seriales — `getWarehouseForSite` → `Promise.all([refreshShift,
+  refreshData])` → `Promise.all([priceLists, promos])`. Solo la primera
+  dependencia era real (whId). Colapsado a 2 tandas: `getWarehouseForSite`
+  → un único `Promise.all` con las 6 queries restantes. Warm mejoró
+  ~300–500 ms medido en Network waterfall del usuario.
+- Filtro `is_active`: agregado a `getProductsWithStock` (products.is_active
+  existe NOT NULL default true). NO agregado en `getCustomers` porque
+  `customers.is_active` no existe en el schema (solo `is_walk_in`,
+  semántica distinta — decisión de producto para otra sesión).
+- **Investigación paralela**: `EXPLAIN ANALYZE` de `getSites` en prod
+  = Planning 0.4 ms + Execution 0.15 ms sobre 6 filas. `sites_read`
+  policy = `true`. Los 1356 ms p95 en edge_logs son 100% cold-connection
+  del pool pgbouncer + PostgREST warmup — no hay índice ni policy que
+  agregar. Deuda "cold-start /pos" queda documentada con 4 opciones
+  evaluadas (Vercel Fluid Compute, consolidar server actions en 1,
+  Edge Runtime, warm-connection hack), decisión pendiente del usuario.
+
+**s10-sidebar-scroll-fix** (merge `9d52f35`, fix `90fe7d6`):
+El sidebar ([components/dashboard-sidebar.tsx](components/dashboard-sidebar.tsx))
+YA tenía `flex-1 overflow-y-auto` en la lista de navegación (mobile
+línea 213 y desktop línea 232). No scrolleaba por el bug clásico de
+flexbox: un flex item con `flex: 1 1 0%` tiene `min-height: auto` (no
+`0`) por default, entonces el contenedor se estira al alto del
+contenido y el overflow nunca se activa. El usuario terminaba haciendo
+zoom-out del navegador para ver items al final del grupo Inventario.
+
+Fix: `min-h-0` en el contenedor scrollable (mobile + desktop).
+`shrink-0` defensivo en header (`h-16`) y footer (`border-t p-4`) para
+que no se compriman cuando aparece la barra. `overflow-y-auto` pinta
+scrollbar solo con overflow real → en pantallas altas no aparece
+scrollbar innecesaria.
+
+**s11-ai-ingress-feedback** (merge `46dcf86`, fixes `5e7a1ac` +
+`002a67c`):
+Reporte del usuario: "al ingresar mercancía con IA, no me sale mensaje
+de ingreso exitoso, el usuario tiene que ir a validar manualmente".
+Diagnóstico y fix en dos rondas dentro de la misma rama.
+
+- Ronda 1 (`5e7a1ac`) — Feedback visible: `saveItem` en
+  [components/central/ai-ingress-panel.tsx](components/central/ai-ingress-panel.tsx)
+  ahora tiene try/catch defensivo y retorna `{ok, code?}`. Toast éxito
+  enriquecido con códigos asignados (primeros 3 + "N más"). Toast
+  destructive de fallo total. Toast neutral de fallo parcial que remite
+  a cards en rojo. Cierra silent failures reales (spinner infinito
+  cuando `uploadProductMedia`/`ingressNewProduct` throweaban antes,
+  ausencia de toast global cuando `ok===0`).
+- Ronda 2 (`002a67c`) — bodySizeLimit + guard client-side:
+  `next.config.mjs` agrega `experimental.serverActions.bodySizeLimit
+  = "20mb"` (default de Next.js es 1 MB, fotos base64 de cámara moderna
+  disparaban 413 antes de que la función corriera). `handleFiles` guard
+  pre-flight rechazando files > 5 MB con toast destructive amigable,
+  coincidente con `MAX_IMAGE_BYTES` server-side. Cierra el caso 413
+  explícito.
+
+**Deuda técnica NO cerrada por s11 (pasa a s12)**: fotos ≤ 5 MB pero
+grandes dentro de eso (~2–5 MB raw, ~2.7–6.7 MB base64) pegan en
+"Maximum array nesting exceeded" del serializador Flight/RSC de React
+— límite intrínseco no configurable, distinto del `bodySizeLimit` de
+Next.js. Se dispara antes de que corra la Server Action, elude el
+try/catch cliente (React eleva al ErrorBoundary). Runtime logs
+confirmaron: `POST /central 500 [Error: Maximum array nesting exceeded]
+digest: '554251266'`. Único fix real: refactor de `uploadProductMedia`
+a upload **client-direct-to-Supabase-Storage** (`supabase.storage.
+from("product-media").upload(file)` con anon key + RLS). Estimación
+60–100 líneas. Planeado en `s12-ai-ingress-client-upload`. Primer
+paso al arrancar: auditar RLS del bucket `product-media` en Supabase
+antes de tocar código.
+
 ---
 
 Fin del contexto.
