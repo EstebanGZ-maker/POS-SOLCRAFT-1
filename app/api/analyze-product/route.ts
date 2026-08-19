@@ -38,6 +38,14 @@ export async function POST(req: Request) {
 
     const isVideo = (mediaType || "").startsWith("video")
 
+    // Gemini solo acepta image/{jpeg,png,webp,heic,heif}. Si el browser mandó
+    // application/octet-stream (cámara Android vía intent, archivos sin
+    // extensión) o cualquier otro tipo raro, normalizamos a image/jpeg — el
+    // panel IA solo sube imágenes, así que es seguro.
+    const GEMINI_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"])
+    const rawType = (mediaType || "").toLowerCase()
+    const normalizedMediaType = isVideo || GEMINI_IMAGE_TYPES.has(rawType) ? mediaType || "image/jpeg" : "image/jpeg"
+
     const { object } = await generateObject({
       model: "google/gemini-2.5-flash",
       schema: productSchema,
@@ -59,7 +67,7 @@ export async function POST(req: Request) {
             {
               type: "file",
               data: dataUrl,
-              mediaType: mediaType || "image/jpeg",
+              mediaType: normalizedMediaType,
             },
           ],
         },
