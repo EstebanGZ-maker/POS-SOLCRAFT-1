@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useState } from "react"
+import Link from "next/link"
 import { useRouter, useSearchParams } from "next/navigation"
 import useSWR from "swr"
 import {
@@ -320,7 +321,19 @@ export default function ReceivablesPage() {
                           </Button>
                         </TableCell>
                         <TableCell>
-                          <div className="font-medium">{g.customer_name}</div>
+                          <div className="font-medium">
+                            {g.sales.length === 1 ? (
+                              <Link
+                                href={`/receivables/${g.sales[0].sale_id}`}
+                                onClick={(e) => e.stopPropagation()}
+                                className="hover:underline"
+                              >
+                                {g.customer_name}
+                              </Link>
+                            ) : (
+                              g.customer_name
+                            )}
+                          </div>
                           {g.customer_phone && (
                             <div className="text-xs text-muted-foreground">
                               {g.customer_phone}
@@ -364,9 +377,12 @@ export default function ReceivablesPage() {
                                 >
                                   <div className="min-w-0 flex-1">
                                     <div className="flex items-baseline gap-2">
-                                      <span className="text-sm font-medium">
+                                      <Link
+                                        href={`/receivables/${s.sale_id}`}
+                                        className="text-sm font-medium hover:underline"
+                                      >
                                         {s.numero != null ? `Venta #${s.numero}` : `Venta ${s.sale_id.slice(0, 8)}`}
-                                      </span>
+                                      </Link>
                                       {bucketBadge(s.age_bucket)}
                                     </div>
                                     <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
