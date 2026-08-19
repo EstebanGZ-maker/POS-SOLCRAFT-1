@@ -1,31 +1,31 @@
 # ESTADO-PENDIENTES.md
 
 > **Propósito**: dump de estado para que una instancia nueva de Claude sin
-> memoria pueda retomar sin perder nada. Última actualización: **2026-08-18**
-> (release s12 APLICADO A PROD: upload client-direct-to-Supabase-Storage en
-> panel de Ingreso IA. Merge commit `a7053bf`. Cierra el "Maximum array
-> nesting exceeded" del serializador Flight/RSC end-to-end — fotos 2–5MB de
-> celular ya suben limpio. Bug s11 residual cerrado).
+> memoria pueda retomar sin perder nada. Última actualización: **2026-08-19**
+> (release s13 APLICADO A PROD: filtro "ocultar productos nunca recibidos
+> aquí" en /inventory/products. Merge commit `e81f4d2`. Reduce ruido de
+> catálogo por sede — encargados/vendedores ven solo productos con
+> historial en su bodega por default).
 
 ---
 
-## 0. LEE ESTO PRIMERO — estado tras sesión 2026-08-18 (s12 ai-ingress client-direct upload)
+## 0. LEE ESTO PRIMERO — estado tras sesión 2026-08-19 (s13 products relevance filter)
 
-**Estado de ramas**: ninguna rama de trabajo abierta. `main` en `a7053bf`
-(merge `a7053bf` s12-ai-ingress-client-upload). Rama
-`s12-ai-ingress-client-upload` **borrada de origin y local** tras el
+**Estado de ramas**: ninguna rama de trabajo abierta. `main` en `e81f4d2`
+(merge `e81f4d2` s13-products-relevance-filter). Rama
+`s13-products-relevance-filter` **borrada de origin y local** tras el
 merge. Ramas históricas `s1-s3p0-rpc-hardening`,
 `s2-adjustments-phase1`, `s3-credit-fiar-ui`, `s3p0-hotfix-to-main`,
 `merge-s1-s3p0-to-main` siguen en origin como legado — no bloquean nada.
 
 **Próximo bloque**: sin definir. Al arrancar la próxima sesión, el
 usuario decide el siguiente foco. Candidatos identificados:
-- **Investigar fallo IA** (no-bloqueante, ver §0 "ítem separado" abajo):
+- **Investigar fallo IA** (no-bloqueante, arrastrado desde s12):
   confirmar si `/api/analyze-product` (Gemini) tiene fallo recurrente
-  o fue puntual. Diagnóstico en cerca de env vars, timeouts, o rate
-  limits del AI Gateway de Vercel.
+  o fue puntual. Diagnóstico en env vars, timeouts, o rate limits del
+  AI Gateway de Vercel.
 - **Cold-start `/pos`** (~4–6 s primera carga tras idle) — 4 opciones
-  documentadas en §0 abajo, decisión de costo/beneficio pendiente.
+  documentadas más abajo, decisión de costo/beneficio pendiente.
 - **Backlog Alegra parity** (ROADMAP.md) — promociones aplicadas en POS,
   reportes, mejoras UX.
 
@@ -33,19 +33,19 @@ usuario decide el siguiente foco. Candidatos identificados:
 (`verify_kardex_integrity()`=0), credit OK
 (`verify_credit_integrity()`=0), ajustes-contabilidad OK
 (`verify_adjustment_accounting_integrity()`=0). Sirviendo
-`dpl_CMG8LuPvrHqRN6vSHugHvNYDwEtw` (sha `a7053bf`, target=production,
-READY el 2026-08-19 en 48s, alias `app-solcraft.com`). Deploy anterior
-`dpl_2VfonfhfZwKeCBCiWj4kJor3zXzM` (sha `46dcf86`, s11) queda como
-rollback candidate. `GET /api/wompi/webhook` responde HTTP 200 con
-`{ok:true, configured:false}` post-deploy s12. Runtime logs limpios
-(0 errors/warnings/fatals últimos 15 min post-deploy).
+`dpl_H9cTVRLXcPUido35cPHaiRspRJ7z` (sha `e81f4d2`, target=production,
+READY el 2026-08-19, alias `app-solcraft.com`). Deploy anterior
+`dpl_77ehZ8sF87CJzgdNQiyzraTV1WqP` (sha `d3a59eb`, docs s12) queda
+como rollback candidate. `GET /api/wompi/webhook` responde HTTP 200
+con `{ok:true, configured:false}` post-deploy s13. Runtime logs
+limpios (0 errors/warnings/fatals últimos 15 min post-deploy).
 
-**Cadencia de release s12** (1 merge, 1 push, 1 deploy de prod): rama
-`s12-ai-ingress-client-upload` con commit `440b639` (feat) → merge
-`a7053bf` con `--no-ff`, prod deploy `dpl_CMG8LuPvrHqRN6vSHugHvNYDwEtw`
-(READY 48s). Rollback disponible: promover
-`dpl_2VfonfhfZwKeCBCiWj4kJor3zXzM` (s11, sha `46dcf86`) si el bug
-reaparece — mismo módulo, sin drift de schema entre s11 y s12.
+**Cadencia de release s13** (1 merge, 1 push, 1 deploy de prod): rama
+`s13-products-relevance-filter` con commit `aa83de8` (feat) → merge
+`e81f4d2` con `--no-ff`, prod deploy `dpl_H9cTVRLXcPUido35cPHaiRspRJ7z`.
+Rollback disponible: promover `dpl_77ehZ8sF87CJzgdNQiyzraTV1WqP` (docs
+s12) o `dpl_CMG8LuPvrHqRN6vSHugHvNYDwEtw` (s12 feat) — cambio 100% TS
+sin drift de schema, revert seguro por deploy.
 
 **Ítem separado no-bloqueante — investigar fallo puntual del análisis
 IA**: durante el smoke de s12 en preview, la primera foto subida
@@ -130,6 +130,57 @@ usuario decide el siguiente foco (cold-start de `/pos` según opción
 elegida arriba, promociones aplicadas en POS, mejoras UX Alegra-like,
 otras deudas del §5 backlog). Ver §5 "Backlog vigente" y §1 "Cola de
 trabajo escrito-pero-no-aplicado" para candidatos.
+
+### ✅ CERRADO Y DEPLOYED — s13 products relevance filter (2026-08-19)
+
+Rama `s13-products-relevance-filter` mergeada a main (merge commit
+`e81f4d2`, feat commit `aa83de8`). Prod deploy
+`dpl_H9cTVRLXcPUido35cPHaiRspRJ7z` READY, alias `app-solcraft.com`,
+webhook 200 post-deploy, runtime logs limpios. Rama borrada de
+origin y local.
+
+**Problema**: `/inventory/products` mostraba el catálogo completo en
+toda sede aunque la sede solo tuviera 1–3 productos con historial
+real — ruido puro para inventario físico. Medido en prod: bodegas de
+venta como La Ceja y Rionegro tenían 1 producto relevante de 16
+totales (94 % ruido). El Carmen Damas / Hombres: 3 de 16 (81 %).
+
+**Diseño**: filtro basado en existencia de fila en `product_stock`
+para (product_id, warehouse_id). Verificado en prod que esa condición
+coincide 1:1 con "hubo al menos un movimiento" (23 filas en
+`product_stock` = 23 combinaciones DISTINCT en `stock_movements`) —
+`product_stock` es el índice natural, no hace falta consultar
+`stock_movements`. `EXPLAIN ANALYZE`: 0.223 ms sobre los índices
+existentes (PK compuesta + `idx_product_stock_warehouse`), sin
+necesidad de agregar índices. Los agotados (`quantity=0`) sí aparecen
+en la vista filtrada — tuvieron stock antes y podrían reponerse.
+
+**Cambios**:
+- **`lib/inventory-actions.ts` — `getProductsWithStock`**: signature
+  extendida con `opts?: { onlyRelevant?: boolean }`. Cuando
+  `onlyRelevant=true` **y** `warehouse_id` está presente, cambia a
+  `product_stock!inner (...)` + `.eq("product_stock.warehouse_id", wid)`.
+  Sin `warehouse_id` o sin flag, comportamiento idéntico al actual —
+  todos los callers legacy (`receiveMerchandise`, `BulkSend`,
+  `ai-ingress`, POS) siguen funcionando sin cambios.
+- **`app/inventory/products/page.tsx`**: checkbox nuevo
+  "Ocultar productos nunca recibidos aquí" junto al select de bodega.
+  Default por rol (`useAuth()`): **ON** para encargado/vendedor, **OFF**
+  para admin/contador. `disabled` cuando `warehouseId="all"` con
+  tooltip explicativo. Mismo patrón `userOverride` que el filtro de
+  bodega de s4: cambio de `currentSite.site_id` resetea al default;
+  misma sede preserva el override. SWR key incluye
+  `effectiveOnlyRelevant` → refetch al cambiar. Banner de estado
+  enriquecido cuando el filtro está activo.
+
+**Sin cambios de RLS ni de schema**. Sin migraciones. Scope estricto
+solo a `/inventory/products` + `getProductsWithStock`.
+
+**Smoke test confirmado por el usuario en preview** (7 puntos):
+default por rol correcto, override persiste, all deshabilita el
+filtro con tooltip, cambio de sede resetea, admin ve catálogo
+completo por default, agotados siguen visibles, listado se reduce al
+activar el filtro.
 
 ### ✅ CERRADO Y DEPLOYED — s12 ai-ingress client-direct upload a Storage (2026-08-19)
 
