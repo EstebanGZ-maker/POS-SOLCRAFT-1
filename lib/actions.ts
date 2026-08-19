@@ -796,6 +796,180 @@ export async function exportReceivablesCSV(opts?: GetReceivablesOpts) {
   return { success: true as const, filename, content }
 }
 
+// Detalle completo de una venta a crédito para /receivables/[sale_id].
+// RLS filtra sales por has_site_access → si el user no tiene acceso a la sede
+// de la venta, la query devuelve null y la página muestra 404. Es el guard
+// server-side (no basta ocultar el link en la lista).
+//
+// Reusa el shape de items de getReceiptData (name/code/description/unit/qty/
+// unit_price/discount/tax_rate) para poder pasar los mismos items al
+// ReceiptDialog existente si el usuario elige imprimir.
+export interface ReceivableSaleDetail {
+  sale: {
+    sale_id: string
+    numero: number | null
+    sale_date: string
+    seller: string | null
+    status: string
+    is_on_account: boolean
+    payment_method: string | null
+    total_amount: number
+    subtotal: number | null
+    discount_total: number
+    tax_total: number
+    amount_paid: number
+    balance_due: number
+    site_id: string | null
+    customer_id: string
+  }
+  site_name: string | null
+  customer: {
+    customer_id: string
+    name: string
+    phone: string | null
+    email: string | null
+    id_type: string | null
+    id_number: string | null
+    address: string | null
+  } | null
+  items: {
+    sale_item_id: string
+    name: string
+    code: string | null
+    description: string | null
+    unit: string | null
+    quantity: number
+    unit_price: number
+    discount: number
+    tax_rate: number
+    subtotal: number
+  }[]
+  payments: {
+    payment_id: string
+    amount: number
+    payment_method: string
+    status: string
+    shift_id: string | null
+    received_by: string | null
+    notes: string | null
+    created_at: string
+  }[]
+  accounting_entries: {
+    entry_id: string
+    entry_type: "income" | "expense"
+    category: string | null
+    description: string | null
+    amount: number
+    entry_date: string
+  }[]
+}
+
+export async function getReceivableSaleDetail(sale_id: string): Promise<ReceivableSaleDetail | null> {
+  await requireRole("admin", "contador", "encargado", "vendedor")
+  const supabase = await createServerSupabaseClient()
+
+  const { data: sale, error: saleErr } = await supabase
+    .from("sales")
+    .select(`
+      sale_id, numero, sale_date, seller, status, is_on_account, payment_method,
+      total_amount, subtotal, discount_total, tax_total, amount_paid, balance_due,
+      site_id, customer_id,
+      customers ( customer_id, name, phone, email, id_type, id_number, address ),
+      sites ( name ),
+      sale_items (
+        sale_item_id, quantity, unit_price, discount, tax_rate,
+        products ( name, code, description, unit )
+      )
+    `)
+    .eq("sale_id", sale_id)
+    .maybeSingle()
+
+  if (saleErr) {
+    console.error("getReceivableSaleDetail (sale):", saleErr)
+    return null
+  }
+  if (!sale) return null
+
+  const s = sale as any
+  const items = (s.sale_items || []).map((it: any) => ({
+    sale_item_id: it.sale_item_id as string,
+    name: it.products?.name ?? "—",
+    code: it.products?.code ?? null,
+    description: it.products?.description ?? null,
+    unit: it.products?.unit ?? null,
+    quantity: Number(it.quantity) || 0,
+    unit_price: Number(it.unit_price) || 0,
+    discount: Number(it.discount) || 0,
+    tax_rate: Number(it.tax_rate) || 0,
+    subtotal: (Number(it.unit_price) || 0) * (Number(it.quantity) || 0),
+  }))
+
+  const { data: payRows, error: payErr } = await supabase
+    .from("sale_payments")
+    .select("payment_id, amount, payment_method, status, shift_id, received_by, notes, created_at")
+    .eq("sale_id", sale_id)
+    .order("created_at", { ascending: true })
+  if (payErr) console.error("getReceivableSaleDetail (payments):", payErr)
+
+  const { data: entryRows, error: entryErr } = await supabase
+    .from("accounting_entries")
+    .select("entry_id, entry_type, category, description, amount, entry_date")
+    .eq("sale_id", sale_id)
+    .order("entry_date", { ascending: true })
+  if (entryErr) console.error("getReceivableSaleDetail (entries):", entryErr)
+
+  return {
+    sale: {
+      sale_id: s.sale_id,
+      numero: s.numero ?? null,
+      sale_date: s.sale_date,
+      seller: s.seller ?? null,
+      status: s.status,
+      is_on_account: Boolean(s.is_on_account),
+      payment_method: s.payment_method ?? null,
+      total_amount: Number(s.total_amount) || 0,
+      subtotal: s.subtotal != null ? Number(s.subtotal) : null,
+      discount_total: Number(s.discount_total) || 0,
+      tax_total: Number(s.tax_total) || 0,
+      amount_paid: Number(s.amount_paid) || 0,
+      balance_due: Number(s.balance_due) || 0,
+      site_id: s.site_id ?? null,
+      customer_id: s.customer_id as string,
+    },
+    site_name: s.sites?.name ?? null,
+    customer: s.customers
+      ? {
+          customer_id: s.customers.customer_id,
+          name: s.customers.name,
+          phone: s.customers.phone ?? null,
+          email: s.customers.email ?? null,
+          id_type: s.customers.id_type ?? null,
+          id_number: s.customers.id_number ?? null,
+          address: s.customers.address ?? null,
+        }
+      : null,
+    items,
+    payments: (payRows ?? []).map((p: any) => ({
+      payment_id: p.payment_id,
+      amount: Number(p.amount) || 0,
+      payment_method: p.payment_method,
+      status: p.status,
+      shift_id: p.shift_id ?? null,
+      received_by: p.received_by ?? null,
+      notes: p.notes ?? null,
+      created_at: p.created_at,
+    })),
+    accounting_entries: (entryRows ?? []).map((e: any) => ({
+      entry_id: e.entry_id,
+      entry_type: e.entry_type as "income" | "expense",
+      category: e.category ?? null,
+      description: e.description ?? null,
+      amount: Number(e.amount) || 0,
+      entry_date: e.entry_date,
+    })),
+  }
+}
+
 // Suma de customer_credits (positivos por emisión, negativos por redención).
 export async function getCustomerCreditBalance(customer_id: string) {
   await requireRole("admin", "contador", "encargado", "vendedor")
