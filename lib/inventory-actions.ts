@@ -6,14 +6,30 @@ import { requireRole } from "@/lib/role-guard"
 import { getUserProfile, getAccessibleSiteIds } from "@/lib/auth-helpers"
 
 // ============ PRODUCTS (extended) ============
-// Products with their stock in a specific warehouse (or total if no warehouse)
-export async function getProductsWithStock(warehouse_id?: string | null) {
+// Products with their stock in a specific warehouse (or total if no warehouse).
+// Cuando onlyRelevant=true junto con un warehouse_id, restringe el catálogo a
+// productos que YA tuvieron stock en esa bodega (existe fila en product_stock
+// para ese warehouse). Incluye agotados (quantity=0) — la fila existente
+// significa que hubo movimiento histórico. Sin warehouse_id el flag se ignora
+// porque "relevancia" no está definida sin bodega.
+export async function getProductsWithStock(
+  warehouse_id?: string | null,
+  opts?: { onlyRelevant?: boolean },
+) {
   const supabase = await createServerSupabaseClient()
-  const { data, error } = await supabase
+  const useInner = Boolean(warehouse_id) && Boolean(opts?.onlyRelevant)
+  const stockSelect = useInner
+    ? "product_stock!inner ( warehouse_id, quantity, min_quantity, max_quantity )"
+    : "product_stock ( warehouse_id, quantity, min_quantity, max_quantity )"
+  let query = supabase
     .from("products")
-    .select("*, categories ( category_id, name ), product_stock ( warehouse_id, quantity, min_quantity, max_quantity )")
+    .select(`*, categories ( category_id, name ), ${stockSelect}`)
     .eq("is_active", true)
     .order("name", { ascending: true })
+  if (useInner) {
+    query = query.eq("product_stock.warehouse_id", warehouse_id!)
+  }
+  const { data, error } = await query
   if (error) {
     console.error("Error fetching products with stock:", error)
     return []

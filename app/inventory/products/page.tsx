@@ -48,13 +48,25 @@ import { getProductsWithStock, deleteProductSafe } from "@/lib/inventory-actions
 import { getCategories } from "@/lib/actions"
 import { getSitesWithWarehouses } from "@/lib/site-actions"
 import { useSite } from "@/lib/site-context"
+import { useAuth } from "@/lib/auth-context"
+import { Checkbox } from "@/components/ui/checkbox"
+import { Label } from "@/components/ui/label"
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { ProductFormDialog } from "@/components/inventory/product-form-dialog"
+
+// Roles que ven "solo con historial" por default: los que hacen inventario
+// físico en una sede. Admin/contador ven catálogo completo por default
+// (necesitan la vista global para crear/enviar/reportar).
+const DEFAULT_ONLY_RELEVANT_ROLES = new Set(["encargado", "vendedor"])
 
 export default function ProductsPage() {
   const { currentSite } = useSite()
+  const { role } = useAuth()
   const [warehouseId, setWarehouseId] = useState<string>("all")
   const [userOverride, setUserOverride] = useState(false)
   const lastSiteRef = useRef<string | undefined>(undefined)
+  const [onlyRelevant, setOnlyRelevant] = useState(false)
+  const [userOverrideRelevant, setUserOverrideRelevant] = useState(false)
   const [search, setSearch] = useState("")
   const [activeCats, setActiveCats] = useState<string[]>([])
   const [formOpen, setFormOpen] = useState(false)
@@ -64,8 +76,13 @@ export default function ProductsPage() {
   const { data: sites = [] } = useSWR("sites-wh", getSitesWithWarehouses)
   const { data: categories = [] } = useSWR("categories", getCategories)
   const wid = warehouseId === "all" ? null : warehouseId
-  const { data: products = [], isLoading, mutate } = useSWR(["products-stock", wid], () =>
-    getProductsWithStock(wid),
+  // Solo aplicamos el filtro cuando hay bodega elegida — "relevancia" no
+  // está definida sin bodega concreta. Aunque el checkbox esté marcado,
+  // en modo "all" no se manda al server.
+  const effectiveOnlyRelevant = Boolean(wid) && onlyRelevant
+  const { data: products = [], isLoading, mutate } = useSWR(
+    ["products-stock", wid, effectiveOnlyRelevant],
+    () => getProductsWithStock(wid, { onlyRelevant: effectiveOnlyRelevant }),
   )
 
   const warehouses = useMemo(
@@ -94,11 +111,20 @@ export default function ProductsPage() {
     return primary?.warehouse_id ?? "all"
   }, [currentSite, warehouses])
 
+  // Default del filtro de relevancia según rol: encargado/vendedor ON,
+  // admin/contador OFF. Se recalcula si el rol cambia (login como otro).
+  const defaultOnlyRelevant = useMemo(
+    () => (role ? DEFAULT_ONLY_RELEVANT_ROLES.has(role) : false),
+    [role],
+  )
+
   // Re-alineación:
-  //  - Cambio de currentSite.site_id → SIEMPRE resetear al nuevo default + limpiar
-  //    userOverride (cambiar de sede es señal más fuerte que un override previo).
-  //  - Misma sede pero cambia defaultWarehouseId (warehouses acaba de cargar en
-  //    el mount inicial) → alinear solo si no hay userOverride.
+  //  - Cambio de currentSite.site_id → SIEMPRE resetear al nuevo default de
+  //    bodega + relevancia + limpiar overrides (cambiar de sede es señal
+  //    más fuerte que un override previo).
+  //  - Misma sede pero cambia el default (warehouses o rol acaba de cargar
+  //    en el mount inicial) → alinear solo si no hay userOverride
+  //    correspondiente.
   useEffect(() => {
     const siteId = currentSite?.site_id
     const isNewSite = siteId !== lastSiteRef.current
@@ -106,18 +132,27 @@ export default function ProductsPage() {
       lastSiteRef.current = siteId
       setUserOverride(false)
       setWarehouseId(defaultWarehouseId)
-    } else if (!userOverride) {
-      setWarehouseId(defaultWarehouseId)
+      setUserOverrideRelevant(false)
+      setOnlyRelevant(defaultOnlyRelevant)
+    } else {
+      if (!userOverride) setWarehouseId(defaultWarehouseId)
+      if (!userOverrideRelevant) setOnlyRelevant(defaultOnlyRelevant)
     }
-    // userOverride se omite de deps a propósito: cuando el usuario cambia el
-    // Select, ya llamamos setWarehouseId directamente en el handler y no
-    // queremos que este effect corra otra vez para sobrescribirlo.
+    // userOverride/userOverrideRelevant se omiten de deps a propósito:
+    // cuando el usuario cambia el control, ya llamamos setState directo
+    // en el handler y no queremos que este effect corra otra vez para
+    // sobrescribirlo.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [defaultWarehouseId, currentSite?.site_id])
+  }, [defaultWarehouseId, defaultOnlyRelevant, currentSite?.site_id])
 
   const onWarehouseChange = (v: string) => {
     setWarehouseId(v)
     setUserOverride(true)
+  }
+
+  const onOnlyRelevantChange = (v: boolean) => {
+    setOnlyRelevant(v)
+    setUserOverrideRelevant(true)
   }
 
   const selectedWarehouse = useMemo(
@@ -184,6 +219,32 @@ export default function ProductsPage() {
             </SelectContent>
           </Select>
         </div>
+        <TooltipProvider delayDuration={200}>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <label
+                className={
+                  "flex items-center gap-2 rounded-md border px-3 py-2 text-sm " +
+                  (warehouseId === "all"
+                    ? "cursor-not-allowed opacity-50"
+                    : "cursor-pointer hover:bg-accent")
+                }
+              >
+                <Checkbox
+                  checked={effectiveOnlyRelevant}
+                  disabled={warehouseId === "all"}
+                  onCheckedChange={(c) => onOnlyRelevantChange(Boolean(c))}
+                />
+                <span className="whitespace-nowrap">Ocultar productos nunca recibidos aquí</span>
+              </label>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" className="max-w-xs">
+              {warehouseId === "all"
+                ? "Elige una bodega específica para activar este filtro."
+                : "Oculta productos del catálogo que nunca han tenido stock en la bodega seleccionada. Los agotados (cantidad 0) sí aparecen — tuvieron stock antes y podrían reponerse."}
+            </TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
         <div className="relative flex-1">
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <Input
@@ -241,7 +302,10 @@ export default function ProductsPage() {
             <strong className="font-semibold">
               {selectedWarehouse ? `${selectedWarehouse.site_name} · ${selectedWarehouse.name}` : "una bodega"}
             </strong>
-            .
+            {effectiveOnlyRelevant && (
+              <> — filtrado a productos <strong className="font-semibold">con historial en esta bodega</strong>.</>
+            )}
+            {!effectiveOnlyRelevant && "."}
           </span>
         )}
       </div>
