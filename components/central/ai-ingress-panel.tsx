@@ -11,16 +11,16 @@ import { Textarea } from "@/components/ui/textarea"
 import { Badge } from "@/components/ui/badge"
 import { useToast } from "@/hooks/use-toast"
 import { formatCurrency } from "@/lib/utils"
-import { uploadProductMedia, ingressNewProduct } from "@/lib/inventory-actions"
-import { Sparkles, Camera, Loader2, Trash2, Check, ImageIcon, Video, RefreshCw } from "lucide-react"
+import { ingressNewProduct } from "@/lib/inventory-actions"
+import { uploadProductImageClient } from "@/lib/storage-client"
+import { Sparkles, Camera, Loader2, Trash2, Check, ImageIcon, RefreshCw } from "lucide-react"
 
 type ItemStatus = "analyzing" | "ready" | "saving" | "done" | "error"
 
 type IngressItem = {
   id: string
+  file: File
   dataUrl: string
-  mediaType: string
-  isVideo: boolean
   status: ItemStatus
   savedCode?: string
   errorMsg?: string
@@ -102,12 +102,9 @@ export function AiIngressPanel({
     }
   }
 
-  // Coincide con MAX_IMAGE_BYTES server-side (uploadProductMedia). Guard
-  // pre-flight: rechazamos archivos grandes ANTES de subirlos, para no
-  // gastar Server Action ni chocar con bodySizeLimit del framework (que
-  // devolvería 413 con mensaje genérico "Server Components render error"
-  // — casi ininteligible). Con este guard, el user ve un toast claro y
-  // no se agrega la card al panel.
+  // Guard pre-flight: coincide con MAX_IMAGE_BYTES del bucket product-media
+  // y del helper uploadProductImageClient. Toast amigable antes de crear
+  // la card, evita gastar upload + análisis IA en archivos imposibles.
   const MAX_UPLOAD_BYTES = 5 * 1024 * 1024 // 5 MB
 
   async function handleFiles(files: FileList | null) {
@@ -123,13 +120,11 @@ export function AiIngressPanel({
         continue
       }
       const dataUrl = await fileToDataUrl(file)
-      const isVideo = file.type.startsWith("video")
       const id = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
       const newItem: IngressItem = {
         id,
+        file,
         dataUrl,
-        mediaType: file.type,
-        isVideo,
         status: "analyzing",
         name: "",
         type_prefix: "XX",
@@ -145,20 +140,20 @@ export function AiIngressPanel({
       setItems((prev) => [...prev, newItem])
       analyze(id, dataUrl, file.type)
     }
+
     if (fileInputRef.current) fileInputRef.current.value = ""
   }
 
   async function saveItem(item: IngressItem): Promise<{ ok: boolean; code?: string }> {
     update(item.id, { status: "saving", errorMsg: undefined })
-    // Wrap TODO en try/catch: si uploadProductMedia o ingressNewProduct
+    // Wrap try/catch: si uploadProductImageClient o ingressNewProduct
     // throwean (network, auth, exception no-esperada del RPC), el ítem
     // quedaba en "saving" permanente con spinner infinito y el toast
     // global nunca se disparaba — silent failure real.
     try {
       let imageUrl: string | null = null
-      const ext = item.isVideo ? "mp4" : "jpg"
-      const up = await uploadProductMedia(item.dataUrl, ext)
-      if (up.success) imageUrl = up.url ?? null
+      const up = await uploadProductImageClient(item.file)
+      if (up.success) imageUrl = up.url
 
       const res = await ingressNewProduct(
         {
@@ -256,7 +251,7 @@ export function AiIngressPanel({
             <div>
               <h3 className="font-semibold text-foreground">Ingreso inteligente con IA</h3>
               <p className="max-w-xl text-sm text-muted-foreground">
-                Sube fotos o videos de las prendas. La IA detecta el tipo, la descripción, la talla y sugiere el precio
+                Sube fotos de las prendas. La IA detecta el tipo, la descripción, la talla y sugiere el precio
                 y costo. Cada producto recibe un código único como{" "}
                 <span className="font-mono font-medium text-foreground">CA-M-95-00</span>.
               </p>
@@ -266,7 +261,7 @@ export function AiIngressPanel({
             <input
               ref={fileInputRef}
               type="file"
-              accept="image/*,video/*"
+              accept="image/*"
               multiple
               capture="environment"
               className="hidden"
@@ -274,7 +269,7 @@ export function AiIngressPanel({
             />
             <Button onClick={() => fileInputRef.current?.click()}>
               <Camera className="mr-2 h-4 w-4" />
-              Subir foto / video
+              Subir foto
             </Button>
           </div>
         </CardContent>
@@ -287,7 +282,7 @@ export function AiIngressPanel({
               <ImageIcon className="h-7 w-7 text-muted-foreground" />
             </div>
             <p className="text-sm text-muted-foreground">
-              Aún no has subido archivos. Toma una foto de la prenda o sube un video para comenzar.
+              Aún no has subido fotos. Toma una foto de la prenda para comenzar.
             </p>
           </CardContent>
         </Card>
@@ -309,15 +304,11 @@ export function AiIngressPanel({
                 <CardContent className="flex flex-col gap-4 py-4 lg:flex-row">
                   {/* Media preview */}
                   <div className="relative h-40 w-full shrink-0 overflow-hidden rounded-lg bg-muted lg:h-44 lg:w-44">
-                    {item.isVideo ? (
-                      <video src={item.dataUrl} className="h-full w-full object-cover" muted playsInline controls />
-                    ) : (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img src={item.dataUrl || "/placeholder.svg"} alt={item.name || "Producto"} className="h-full w-full object-cover" />
-                    )}
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={item.dataUrl || "/placeholder.svg"} alt={item.name || "Producto"} className="h-full w-full object-cover" />
                     <Badge variant="secondary" className="absolute left-2 top-2 gap-1">
-                      {item.isVideo ? <Video className="h-3 w-3" /> : <ImageIcon className="h-3 w-3" />}
-                      {item.isVideo ? "Video" : "Foto"}
+                      <ImageIcon className="h-3 w-3" />
+                      Foto
                     </Badge>
                   </div>
 
@@ -447,7 +438,10 @@ export function AiIngressPanel({
                             <Button
                               variant="ghost"
                               size="sm"
-                              onClick={() => update(item.id, { status: "analyzing", errorMsg: undefined }) || analyze(item.id, item.dataUrl, item.mediaType)}
+                              onClick={() => {
+                                update(item.id, { status: "analyzing", errorMsg: undefined })
+                                analyze(item.id, item.dataUrl, item.file.type)
+                              }}
                             >
                               <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
                               Re-analizar
