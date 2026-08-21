@@ -25,12 +25,13 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
-import { ArrowLeft, Loader2, Send, X } from "lucide-react"
+import { AlertTriangle, ArrowLeft, Loader2, Send, X } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
 import { dispatchPendingTransfer, getTransferDetail } from "@/lib/inventory-actions"
 import { TRANSFER_STATUS_LABELS, isTransferStatus } from "@/lib/transfer-status"
 import { useAuth } from "@/lib/auth-context"
 import { CancelTransferDialog } from "@/components/central/cancel-transfer-dialog"
+import { CloseGhostTransferDialog } from "@/components/central/close-ghost-transfer-dialog"
 
 function statusBadgeClass(status: string): string {
   switch (status) {
@@ -58,11 +59,13 @@ export function TransferDetailClient({ initialDetail }: Props) {
   const [confirmDispatch, setConfirmDispatch] = useState(false)
   const [dispatching, setDispatching] = useState(false)
   const [cancelOpen, setCancelOpen] = useState(false)
+  const [ghostOpen, setGhostOpen] = useState(false)
   const [, startTransition] = useTransition()
 
   const isAdminOrEncargado = role === "admin" || role === "encargado"
   const canDispatch = isAdminOrEncargado && t.status === "pendiente"
   const canCancel = isAdminOrEncargado && (t.status === "pendiente" || t.status === "en_transito")
+  const canCloseGhost = role === "admin" && Boolean(t.is_ghost)
 
   async function refreshDetail() {
     const fresh = await getTransferDetail(t.transfer_id)
@@ -135,6 +138,46 @@ export function TransferDetailClient({ initialDetail }: Props) {
           refreshDetail()
         }}
       />
+
+      <CloseGhostTransferDialog
+        open={ghostOpen}
+        onOpenChange={setGhostOpen}
+        transfer={{
+          transfer_id: t.transfer_id,
+          label: `${t.from_wh?.sites?.name} → ${t.to_wh?.sites?.name}`,
+        }}
+        onDone={() => {
+          setGhostOpen(false)
+          refreshDetail()
+        }}
+      />
+
+      {canCloseGhost && (
+        <div className="rounded-md border border-amber-500/40 bg-amber-500/5 p-3 text-sm">
+          <div className="flex items-start gap-2">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+            <div className="flex-1">
+              <div className="font-medium text-amber-800 dark:text-amber-200">
+                Registro fantasma detectado
+              </div>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Este traslado figura en tránsito pero no tiene ningún movimiento
+                de stock asociado (kardex vacío para este reference_id).
+                Probablemente quedó huérfano por un fallo del despacho antiguo.
+                Solo un admin puede cerrarlo como corrección de registro.
+              </p>
+              <Button
+                size="sm"
+                variant="outline"
+                className="mt-2 border-amber-500/50 text-amber-800 hover:bg-amber-500/10 dark:text-amber-200"
+                onClick={() => setGhostOpen(true)}
+              >
+                Cerrar registro fantasma
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <Card>
         <CardContent className="grid grid-cols-1 gap-3 pt-4 text-sm sm:grid-cols-2 lg:grid-cols-4">

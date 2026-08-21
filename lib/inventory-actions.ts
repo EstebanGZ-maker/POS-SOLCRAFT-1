@@ -770,9 +770,23 @@ export async function createBulkTransfer(
         }),
       ),
     )
-    for (const m of moves) {
-      if (m.error) results.push({ ok: false, msg: m.error.message })
+    const moveErrors = moves.map((m) => m.error).filter(Boolean) as { message: string }[]
+
+    if (moveErrors.length > 0) {
+      // Mitigación TS (no atómica pero limpia el 99% de casos): si algún RPC
+      // falla, borramos el transfer + transfer_items recién insertados para
+      // no dejar un registro fantasma (transfer en_transito sin
+      // stock_movements). El fix definitivo requiere una RPC SQL atómica
+      // (create_bulk_transfer_atomic) — ver ESTADO-PENDIENTES.md.
+      await supabase.from("transfer_items").delete().eq("transfer_id", tr.transfer_id)
+      await supabase.from("transfers").delete().eq("transfer_id", tr.transfer_id)
+      results.push({
+        ok: false,
+        msg: `no se pudo despachar (${moveErrors.map((e) => e.message).join("; ")}), no se creó ningún registro`,
+      })
+      continue
     }
+
     results.push({ ok: true, msg: "Envío registrado" })
   }
 
@@ -813,7 +827,21 @@ export async function getTransferDetail(transfer_id: string) {
     console.error("getTransferDetail:", error)
     return null
   }
-  return data as any
+  if (!data) return null
+
+  // Flag ghost = en_transito sin ningún stock_movements asociado. Sirve para
+  // que el detalle muestre el CTA de cierre administrativo (adminCloseGhost
+  // Transfer) sólo cuando corresponde. Query separada porque el join filtrado
+  // no expresa "no existe" limpiamente en supabase-js.
+  let is_ghost = false
+  if ((data as any).status === "en_transito") {
+    const { count } = await supabase
+      .from("stock_movements")
+      .select("*", { count: "exact", head: true })
+      .eq("reference_id", transfer_id)
+    is_ghost = (count ?? 0) === 0
+  }
+  return { ...(data as any), is_ghost }
 }
 
 // Despacha un traslado en estado "pendiente": valida stock ítem por ítem en
@@ -1126,11 +1154,74 @@ export async function cancelTransfer(transfer_id: string, reason: string) {
   if (t.status === "recibido_con_pendiente") {
     return {
       success: false,
-      message: 'Este traslado ya fue recibido parcialmente. Usa "Cerrar como pérdida total" en el flujo de reconciliación.',
+      message:
+        'No se puede cancelar: el destino ya recibió parte de la mercancía. ' +
+        'Para cerrar el faltante, ve a "Recibir mercancía → Reconciliar traslados" ' +
+        'y usa el botón "Cerrar como pérdida total". El traslado quedará como "Recibido" ' +
+        'con la parte faltante dada de baja como pérdida en tránsito.',
     }
   }
 
   return { success: false, message: `No se puede cancelar un traslado en estado "${t.status}".` }
+}
+
+// Cerrar administrativamente un traslado "fantasma": status='en_transito' pero
+// sin ningún stock_movements asociado (registro huérfano por fallo mid-flow
+// del despacho antiguo, ver ESTADO-PENDIENTES.md — deuda técnica de atomicidad
+// en createBulkTransfer). Solo admin puede ejecutarlo, y valida explícitamente
+// la ausencia de stock_movements ANTES de cerrar para evitar uso indebido
+// sobre traslados con stock real.
+export async function adminCloseGhostTransfer(transfer_id: string, reason: string) {
+  const profile = await requireRole("admin")
+  const supabase = await createServerSupabaseClient()
+
+  const cleanReason = (reason ?? "").trim()
+  if (cleanReason.length < 3) {
+    return { success: false, message: "Escribe una nota de al menos 3 caracteres." }
+  }
+
+  const { data: tr, error: trErr } = await supabase
+    .from("transfers")
+    .select("transfer_id, status, notes")
+    .eq("transfer_id", transfer_id)
+    .maybeSingle()
+  if (trErr || !tr) {
+    return { success: false, message: "No se encontró el traslado." }
+  }
+  if (tr.status !== "en_transito") {
+    return {
+      success: false,
+      message: `Solo aplica a traslados en tránsito sin movimientos. Estado actual: "${tr.status}".`,
+    }
+  }
+
+  const { count, error: cntErr } = await supabase
+    .from("stock_movements")
+    .select("*", { count: "exact", head: true })
+    .eq("reference_id", transfer_id)
+  if (cntErr) {
+    return { success: false, message: `No se pudo validar movimientos: ${cntErr.message}` }
+  }
+  if ((count ?? 0) > 0) {
+    return {
+      success: false,
+      message: `Este traslado SÍ tiene ${count} movimiento(s) de stock asociado(s). No es un fantasma. Usa "Cancelar" (reversará el stock al origen) en lugar de esta acción.`,
+    }
+  }
+
+  const stampedNote = `[Corrección admin] ${cleanReason} — cerrado como cancelado sin reversar stock (registro fantasma sin stock_movements). Ejecutado por ${profile.id}.`
+  const { error: updErr } = await supabase
+    .from("transfers")
+    .update({
+      status: "cancelado",
+      notes: (tr.notes ?? "") + `\n${stampedNote}`,
+    })
+    .eq("transfer_id", transfer_id)
+  if (updErr) return { success: false, message: updErr.message }
+
+  revalidatePath("/central/transfers")
+  revalidatePath(`/central/transfers/${transfer_id}`)
+  return { success: true, message: "Registro fantasma cerrado. No hubo stock que revertir." }
 }
 
 // ============ TRANSFER RECEPTION (checklist) ============
