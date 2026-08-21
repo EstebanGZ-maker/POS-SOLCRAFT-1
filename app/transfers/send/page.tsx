@@ -126,19 +126,26 @@ export default function SendTransferPage() {
     setQty((prev) => ({ ...prev, [productId]: clamped }))
   }
 
-  async function handleSend() {
+  async function handleSend(asPending: boolean) {
     setSending(true)
-    const res = await createBulkTransfer({
-      from_warehouse_id: fromWarehouseId,
-      to_warehouse_ids: toWarehouseIds,
-      notes: notes || null,
-      items: selectedItems.map((i) => ({ product_id: i.product_id, quantity: i.quantity })),
-    })
+    const res = await createBulkTransfer(
+      {
+        from_warehouse_id: fromWarehouseId,
+        to_warehouse_ids: toWarehouseIds,
+        notes: notes || null,
+        items: selectedItems.map((i) => ({ product_id: i.product_id, quantity: i.quantity })),
+      },
+      { as_pending: asPending },
+    )
     setSending(false)
     setConfirmOpen(false)
 
     toast({
-      title: res.success ? "Envío registrado" : "Error en el envío",
+      title: res.success
+        ? asPending
+          ? "Pendiente guardado"
+          : "Envío registrado"
+        : "Error",
       description: res.message,
       variant: res.success ? "default" : "destructive",
     })
@@ -357,9 +364,11 @@ export default function SendTransferPage() {
       <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
         <DialogContent className="max-w-lg max-h-[85vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>Confirmar envío</DialogTitle>
+            <DialogTitle>Confirmar traslado</DialogTitle>
             <DialogDescription>
-              El stock sale de origen y queda en tránsito hasta que el destino lo reciba.
+              «Despachar ahora» mueve el stock a tránsito hasta que el destino
+              lo reciba. «Guardar como pendiente» solo registra el plan y no
+              toca el stock; podrás despacharlo más tarde desde el historial.
             </DialogDescription>
           </DialogHeader>
 
@@ -399,11 +408,15 @@ export default function SendTransferPage() {
             </div>
           </div>
 
-          <DialogFooter>
+          <DialogFooter className="gap-2 sm:gap-2">
             <Button variant="outline" onClick={() => setConfirmOpen(false)}>Cancelar</Button>
-            <Button onClick={handleSend} disabled={sending} className="gap-2">
+            <Button variant="secondary" onClick={() => handleSend(true)} disabled={sending} className="gap-2">
               {sending && <Loader2 className="h-4 w-4 animate-spin" />}
-              Confirmar envío
+              Guardar como pendiente
+            </Button>
+            <Button onClick={() => handleSend(false)} disabled={sending} className="gap-2">
+              {sending && <Loader2 className="h-4 w-4 animate-spin" />}
+              Despachar ahora
             </Button>
           </DialogFooter>
         </DialogContent>
