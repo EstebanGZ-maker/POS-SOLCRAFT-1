@@ -637,9 +637,11 @@ export async function getTransfers(opts?: GetTransfersOpts) {
   return data || []
 }
 
-// Re-export para consumo de la UI sin conocer la ruta interna del módulo.
-export { TRANSFER_STATUSES }
-export type { TransferStatus }
+// NOTA: TRANSFER_STATUSES / TransferStatus / isTransferStatus se importan
+// directo desde "@/lib/transfer-status" — este archivo tiene "use server" y
+// Next.js exige que solo exporte funciones async (re-exportar un const rompe
+// el build en runtime y propaga el error a toda página que importe algo de
+// aquí).
 
 export async function updateWholesalePrices(updates: { product_id: string; wholesale_price: number }[]) {
   await requireRole("admin", "encargado")
