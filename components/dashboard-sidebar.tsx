@@ -31,6 +31,7 @@ import {
   ShoppingBag,
   ClipboardCheck,
   HandCoins,
+  Truck,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
@@ -89,6 +90,7 @@ function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
       centralOnly: true,
       items: [
         { name: "Entradas y envíos", href: "/central", icon: Send, permission: "transfers_send" },
+        { name: "Historial de envíos", href: "/central/transfers", icon: Truck, permission: "transfers_send" },
       ],
     },
     {
