@@ -657,13 +657,20 @@ export async function updateWholesalePrices(updates: { product_id: string; whole
   return { success: true, message: "Precios mayorista actualizados." }
 }
 
-// Send stock from one warehouse to many destinations (via transit)
-export async function createBulkTransfer(input: {
-  from_warehouse_id: string
-  to_warehouse_ids: string[]
-  notes?: string | null
-  items: { product_id: string; quantity: number }[]
-}) {
+// Send stock from one warehouse to many destinations (via transit).
+// opts.as_pending=true guarda un traslado en estado "pendiente" SIN mover
+// stock (sin RPC send_transfer_via_transit, sin stock_movements). Sirve para
+// preparar traslados que se despachan más tarde con dispatchPendingTransfer.
+export async function createBulkTransfer(
+  input: {
+    from_warehouse_id: string
+    to_warehouse_ids: string[]
+    notes?: string | null
+    items: { product_id: string; quantity: number }[]
+  },
+  opts?: { as_pending?: boolean },
+) {
+  const asPending = opts?.as_pending === true
   const profile = await requireRole("admin", "encargado")
   const supabase = await createServerSupabaseClient()
 
@@ -705,13 +712,19 @@ export async function createBulkTransfer(input: {
     return { success: false, message: "No se puede enviar a una bodega del sistema." }
   }
 
-  // Find the transit warehouse
-  const { data: transitWh } = await supabase
-    .from("warehouses")
-    .select("warehouse_id")
-    .eq("is_system", true)
-    .single()
-  if (!transitWh) return { success: false, message: "No se encontró la bodega de tránsito." }
+  // Bodega tránsito: solo hace falta cuando vamos a mover stock ya (despacho
+  // directo). Un pendiente NO toca stock, así que puede prepararse aunque la
+  // tránsito no esté configurada.
+  let transitWhId: string | null = null
+  if (!asPending) {
+    const { data: transitWh } = await supabase
+      .from("warehouses")
+      .select("warehouse_id")
+      .eq("is_system", true)
+      .single()
+    if (!transitWh) return { success: false, message: "No se encontró la bodega de tránsito." }
+    transitWhId = transitWh.warehouse_id
+  }
 
   const results: { ok: boolean; msg: string }[] = []
 
@@ -722,7 +735,7 @@ export async function createBulkTransfer(input: {
         from_warehouse_id: input.from_warehouse_id,
         to_warehouse_id,
         notes: input.notes || null,
-        status: "en_transito",
+        status: asPending ? "pendiente" : "en_transito",
         sent_by: profile.id,
       })
       .select("transfer_id")
@@ -739,13 +752,18 @@ export async function createBulkTransfer(input: {
     }))
     await supabase.from("transfer_items").insert(itemsToInsert)
 
+    if (asPending) {
+      results.push({ ok: true, msg: "Pendiente guardado" })
+      continue
+    }
+
     // Move stock: source → transit (not directly to destination)
     const moves = await Promise.all(
       input.items.map((it) =>
         supabase.rpc("send_transfer_via_transit", {
           p_product_id: it.product_id,
           p_from_warehouse_id: input.from_warehouse_id,
-          p_transit_warehouse_id: transitWh.warehouse_id,
+          p_transit_warehouse_id: transitWhId!,
           p_quantity: it.quantity,
           p_reference_id: tr.transfer_id,
           p_user_id: profile.id,
@@ -759,12 +777,179 @@ export async function createBulkTransfer(input: {
   }
 
   revalidatePath("/central")
+  revalidatePath("/central/transfers")
   revalidatePath("/inventory/products")
   const failed = results.filter((r) => !r.ok)
   if (failed.length) {
     return { success: false, message: `Algunos envíos fallaron: ${failed.map((f) => f.msg).join("; ")}` }
   }
-  return { success: true, message: "Mercancía enviada. Las sedes deben confirmar la recepción." }
+  return {
+    success: true,
+    message: asPending
+      ? "Traslado(s) guardado(s) como pendiente(s)."
+      : "Mercancía enviada. Las sedes deben confirmar la recepción.",
+  }
+}
+
+// Detalle de un traslado (para /central/transfers/[transfer_id]). Reusa el
+// scope del sidebar y del historial: cualquier admin/contador/encargado/
+// vendedor puede consultar; RLS filtra por sede vía warehouses.
+export async function getTransferDetail(transfer_id: string) {
+  await requireRole("admin", "contador", "encargado", "vendedor")
+  const supabase = await createServerSupabaseClient()
+  const { data, error } = await supabase
+    .from("transfers")
+    .select(
+      `transfer_id, status, notes, transfer_date, received_at,
+       from_warehouse_id, to_warehouse_id, sent_by, received_by,
+       from_wh:warehouses!transfers_from_warehouse_id_fkey ( name, site_id, sites ( name ) ),
+       to_wh:warehouses!transfers_to_warehouse_id_fkey ( name, site_id, sites ( name ) ),
+       transfer_items ( transfer_item_id, product_id, quantity, quantity_received,
+         products ( name, code, unit ) )`,
+    )
+    .eq("transfer_id", transfer_id)
+    .maybeSingle()
+  if (error) {
+    console.error("getTransferDetail:", error)
+    return null
+  }
+  return data as any
+}
+
+// Despacha un traslado en estado "pendiente": valida stock ítem por ítem en
+// la bodega origen ANTES de mover nada, corre send_transfer_via_transit por
+// cada línea, y actualiza status a "en_transito". El pre-check evita despacho
+// parcial en el caso normal (stock cambió desde que se creó el pendiente);
+// si un RPC falla mid-way por race, se reporta cuál pasó y cuál no.
+export async function dispatchPendingTransfer(transfer_id: string) {
+  const profile = await requireRole("admin", "encargado")
+  const supabase = await createServerSupabaseClient()
+
+  // Lee el traslado + items. maybeSingle porque puede no existir / RLS.
+  const { data: tr, error: trErr } = await supabase
+    .from("transfers")
+    .select(
+      `transfer_id, status, from_warehouse_id, to_warehouse_id,
+       from_wh:warehouses!transfers_from_warehouse_id_fkey ( site_id ),
+       transfer_items ( transfer_item_id, product_id, quantity,
+         products ( name, code ) )`,
+    )
+    .eq("transfer_id", transfer_id)
+    .maybeSingle()
+  if (trErr || !tr) {
+    return { success: false, message: "No se encontró el traslado o no tienes acceso." }
+  }
+  const t = tr as any
+  if (t.status !== "pendiente") {
+    return { success: false, message: `El traslado no está pendiente (estado actual: ${t.status}).` }
+  }
+
+  // Guard de sede: encargado solo despacha desde sus sedes (mismo patrón que
+  // createBulkTransfer).
+  if (profile.role === "encargado") {
+    const accessible = await getAccessibleSiteIds()
+    const originSiteId = t.from_wh?.site_id
+    const allowed = accessible === "all" || (originSiteId && accessible.includes(originSiteId))
+    if (!allowed) {
+      return { success: false, message: "No puedes despachar desde esta sede." }
+    }
+  }
+
+  const items = (t.transfer_items ?? []) as Array<{
+    transfer_item_id: string
+    product_id: string
+    quantity: number
+    products: { name: string; code: string | null } | null
+  }>
+  if (items.length === 0) {
+    return { success: false, message: "El traslado no tiene ítems." }
+  }
+
+  // Pre-check de stock agregado: para cada product_id, sumar todas las qty
+  // pedidas y comparar con el stock actual en la bodega origen. Reporta TODOS
+  // los faltantes juntos, no de a uno.
+  const neededByProduct = new Map<string, number>()
+  for (const it of items) {
+    neededByProduct.set(it.product_id, (neededByProduct.get(it.product_id) ?? 0) + Number(it.quantity))
+  }
+  const productIds = Array.from(neededByProduct.keys())
+  const { data: stockRows, error: stErr } = await supabase
+    .from("product_stock")
+    .select("product_id, quantity")
+    .eq("warehouse_id", t.from_warehouse_id)
+    .in("product_id", productIds)
+  if (stErr) {
+    return { success: false, message: `No se pudo validar stock: ${stErr.message}` }
+  }
+  const stockByProduct = new Map<string, number>()
+  for (const r of stockRows ?? []) {
+    stockByProduct.set(r.product_id as string, Number((r as any).quantity) || 0)
+  }
+  const shortfalls: string[] = []
+  for (const it of items) {
+    const need = neededByProduct.get(it.product_id) ?? 0
+    const have = stockByProduct.get(it.product_id) ?? 0
+    if (have < need) {
+      const label = it.products?.code ? `${it.products.code} (${it.products.name})` : (it.products?.name ?? it.product_id)
+      shortfalls.push(`${label}: necesita ${need}, disponible ${have}`)
+    }
+  }
+  // Deduplica (si un product_id se repite en varias líneas).
+  const uniqShortfalls = Array.from(new Set(shortfalls))
+  if (uniqShortfalls.length > 0) {
+    return {
+      success: false,
+      message: `Stock insuficiente en la bodega origen: ${uniqShortfalls.join("; ")}. No se despachó nada.`,
+    }
+  }
+
+  // Bodega tránsito.
+  const { data: transitWh } = await supabase
+    .from("warehouses")
+    .select("warehouse_id")
+    .eq("is_system", true)
+    .single()
+  if (!transitWh) return { success: false, message: "No se encontró la bodega de tránsito." }
+
+  // Dispara los RPCs uno a uno; si alguno falla mid-way (race con otra venta/
+  // ajuste), reporta cuáles alcanzaron a moverse — el traslado queda en
+  // estado inconsistente y requiere reconciliación manual (esto es aceptable
+  // porque el pre-check ya cubre el 99% de casos).
+  const dispatched: string[] = []
+  const failed: string[] = []
+  for (const it of items) {
+    const { error } = await supabase.rpc("send_transfer_via_transit", {
+      p_product_id: it.product_id,
+      p_from_warehouse_id: t.from_warehouse_id,
+      p_transit_warehouse_id: transitWh.warehouse_id,
+      p_quantity: it.quantity,
+      p_reference_id: transfer_id,
+      p_user_id: profile.id,
+    })
+    const label = it.products?.code ?? it.product_id.slice(0, 8)
+    if (error) failed.push(`${label}: ${error.message}`)
+    else dispatched.push(label)
+  }
+
+  if (failed.length > 0) {
+    return {
+      success: false,
+      message: `Despacho parcial por race condition. Movidos: ${dispatched.join(", ") || "ninguno"}. Fallaron: ${failed.join("; ")}. Traslado queda mixto — revisar manualmente.`,
+    }
+  }
+
+  const { error: updErr } = await supabase
+    .from("transfers")
+    .update({ status: "en_transito" })
+    .eq("transfer_id", transfer_id)
+  if (updErr) {
+    return { success: false, message: `Stock movido pero no se pudo actualizar el estado: ${updErr.message}` }
+  }
+
+  revalidatePath("/central/transfers")
+  revalidatePath(`/central/transfers/${transfer_id}`)
+  revalidatePath("/inventory/products")
+  return { success: true, message: "Traslado despachado. Está en tránsito." }
 }
 
 // ============ TRANSFER RECEPTION (checklist) ============

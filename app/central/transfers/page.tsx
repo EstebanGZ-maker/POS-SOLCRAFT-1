@@ -1,11 +1,13 @@
 "use client"
 
 import { useEffect, useState } from "react"
+import Link from "next/link"
 import { useRouter, useSearchParams } from "next/navigation"
 import useSWR from "swr"
 import { PageHeader } from "@/components/page-header"
 import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import {
   Select,
@@ -14,7 +16,19 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { getTransfers } from "@/lib/inventory-actions"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
+import { useToast } from "@/hooks/use-toast"
+import { useAuth } from "@/lib/auth-context"
+import { dispatchPendingTransfer, getTransfers } from "@/lib/inventory-actions"
 import { getSites, type Site } from "@/lib/site-actions"
 import {
   TRANSFER_STATUSES,
@@ -22,7 +36,7 @@ import {
   isTransferStatus,
   type TransferStatus,
 } from "@/lib/transfer-status"
-import { Truck } from "lucide-react"
+import { Loader2, Send, Truck } from "lucide-react"
 
 function statusBadgeClass(status: string): string {
   switch (status) {
@@ -48,6 +62,11 @@ function statusLabel(status: string): string {
 export default function TransfersPage() {
   const router = useRouter()
   const searchParams = useSearchParams()
+  const { toast } = useToast()
+  const { role } = useAuth()
+  const canDispatch = role === "admin" || role === "encargado"
+  const [dispatchTarget, setDispatchTarget] = useState<{ id: string; label: string } | null>(null)
+  const [dispatching, setDispatching] = useState(false)
 
   const status: TransferStatus | "all" = isTransferStatus(searchParams.get("status"))
     ? (searchParams.get("status") as TransferStatus)
@@ -86,7 +105,7 @@ export default function TransfersPage() {
 
   const { data: sites } = useSWR<Site[]>("transfers-sites", () => getSites())
 
-  const { data: transfers = [], isLoading } = useSWR(
+  const { data: transfers = [], isLoading, mutate } = useSWR(
     ["transfers", status, siteFilter, dateFrom, dateTo, urlQ],
     () =>
       getTransfers({
@@ -98,6 +117,20 @@ export default function TransfersPage() {
         q: urlQ || null,
       }),
   )
+
+  async function handleDispatch() {
+    if (!dispatchTarget) return
+    setDispatching(true)
+    const res = await dispatchPendingTransfer(dispatchTarget.id)
+    setDispatching(false)
+    setDispatchTarget(null)
+    toast({
+      title: res.success ? "Despachado" : "No se pudo despachar",
+      description: res.message,
+      variant: res.success ? "default" : "destructive",
+    })
+    if (res.success) mutate()
+  }
 
   return (
     <div className="p-6 max-w-6xl mx-auto space-y-6">
@@ -153,6 +186,26 @@ export default function TransfersPage() {
         />
       </div>
 
+      <AlertDialog open={!!dispatchTarget} onOpenChange={(v) => !v && setDispatchTarget(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>¿Despachar este traslado?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {dispatchTarget?.label && <span className="block mb-2 font-medium">{dispatchTarget.label}</span>}
+              Se validará stock en la bodega origen y, si alcanza, se moverá a
+              tránsito. Si no alcanza para algún producto, no se despachará nada.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={dispatching}>Cancelar</AlertDialogCancel>
+            <AlertDialogAction onClick={handleDispatch} disabled={dispatching}>
+              {dispatching && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              Despachar
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       <Card>
         <CardContent className="p-0">
           <table className="w-full text-sm">
@@ -164,26 +217,29 @@ export default function TransfersPage() {
                 <th className="p-3 font-medium">Destino</th>
                 <th className="p-3 font-medium text-right">Productos</th>
                 <th className="p-3 font-medium">Estado</th>
+                <th className="p-3 font-medium text-right">Acciones</th>
               </tr>
             </thead>
             <tbody>
               {isLoading ? (
                 <tr>
-                  <td colSpan={6} className="p-6 text-center text-muted-foreground">
+                  <td colSpan={7} className="p-6 text-center text-muted-foreground">
                     Cargando...
                   </td>
                 </tr>
               ) : transfers.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="p-6 text-center text-muted-foreground">
+                  <td colSpan={7} className="p-6 text-center text-muted-foreground">
                     No hay traslados con los filtros seleccionados.
                   </td>
                 </tr>
               ) : (
                 transfers.map((t: any) => (
                   <tr key={t.transfer_id} className="border-t">
-                    <td className="p-3 font-mono text-xs text-muted-foreground">
-                      {t.transfer_id.slice(0, 8)}
+                    <td className="p-3 font-mono text-xs">
+                      <Link href={`/central/transfers/${t.transfer_id}`} className="text-primary hover:underline">
+                        {t.transfer_id.slice(0, 8)}
+                      </Link>
                     </td>
                     <td className="p-3">
                       {new Date(t.transfer_date).toLocaleDateString("es-CO")}
@@ -199,6 +255,23 @@ export default function TransfersPage() {
                       <Badge variant="secondary" className={statusBadgeClass(t.status)}>
                         {statusLabel(t.status)}
                       </Badge>
+                    </td>
+                    <td className="p-3 text-right">
+                      {t.status === "pendiente" && canDispatch && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() =>
+                            setDispatchTarget({
+                              id: t.transfer_id,
+                              label: `${t.from_wh?.sites?.name} → ${t.to_wh?.sites?.name}`,
+                            })
+                          }
+                        >
+                          <Send className="mr-1.5 h-3.5 w-3.5" />
+                          Despachar
+                        </Button>
+                      )}
                     </td>
                   </tr>
                 ))
