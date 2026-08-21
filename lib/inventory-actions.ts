@@ -564,20 +564,84 @@ export async function getTransferStockView(input: {
     .sort((a, b) => a.name.localeCompare(b.name))
 }
 
-export async function getTransfers() {
+import { TRANSFER_STATUSES, type TransferStatus } from "@/lib/transfer-status"
+
+export interface GetTransfersOpts {
+  status?: TransferStatus | null
+  site_id?: string | null
+  date_from?: string | null
+  date_to?: string | null
+  q?: string | null
+}
+
+export async function getTransfers(opts?: GetTransfersOpts) {
+  await requireRole("admin", "contador", "encargado", "vendedor")
   const supabase = await createServerSupabaseClient()
-  const { data, error } = await supabase
+
+  // Pre-filtro por sede: mapea site_id → warehouse_ids y luego filtra en
+  // transfers con OR(from ∈ ids, to ∈ ids). Un solo selector, match en
+  // cualquier dirección.
+  let siteWarehouseIds: string[] | null = null
+  if (opts?.site_id) {
+    const { data: whs, error: whErr } = await supabase
+      .from("warehouses")
+      .select("warehouse_id")
+      .eq("site_id", opts.site_id)
+    if (whErr) {
+      console.error("getTransfers (warehouses):", whErr)
+      return []
+    }
+    siteWarehouseIds = (whs ?? []).map((w: any) => w.warehouse_id as string)
+    if (siteWarehouseIds.length === 0) return []
+  }
+
+  // Pre-filtro por búsqueda de producto: joina transfer_items→products,
+  // filtra por code/name ILIKE, y colecta el set de transfer_ids.
+  let matchedTransferIds: string[] | null = null
+  const rawQ = (opts?.q ?? "").trim()
+  if (rawQ) {
+    const pattern = `%${rawQ}%`
+    const { data: hits, error: qErr } = await supabase
+      .from("transfer_items")
+      .select("transfer_id, products!inner(name, code)")
+      .or(`name.ilike.${pattern},code.ilike.${pattern}`, { foreignTable: "products" })
+    if (qErr) {
+      console.error("getTransfers (search):", qErr)
+      return []
+    }
+    matchedTransferIds = Array.from(new Set((hits ?? []).map((r: any) => r.transfer_id as string)))
+    if (matchedTransferIds.length === 0) return []
+  }
+
+  let q = supabase
     .from("transfers")
     .select(
-      "*, from_wh:warehouses!transfers_from_warehouse_id_fkey ( name, sites ( name ) ), to_wh:warehouses!transfers_to_warehouse_id_fkey ( name, sites ( name ) ), transfer_items ( transfer_item_id, quantity )",
+      "*, from_wh:warehouses!transfers_from_warehouse_id_fkey ( name, site_id, sites ( name ) ), to_wh:warehouses!transfers_to_warehouse_id_fkey ( name, site_id, sites ( name ) ), transfer_items ( transfer_item_id, quantity )",
     )
     .order("transfer_date", { ascending: false })
+
+  if (opts?.status) q = q.eq("status", opts.status)
+  if (opts?.date_from) q = q.gte("transfer_date", opts.date_from)
+  if (opts?.date_to) q = q.lte("transfer_date", opts.date_to)
+  if (siteWarehouseIds) {
+    const list = siteWarehouseIds.join(",")
+    q = q.or(`from_warehouse_id.in.(${list}),to_warehouse_id.in.(${list})`)
+  }
+  if (matchedTransferIds) q = q.in("transfer_id", matchedTransferIds)
+
+  const { data, error } = await q
   if (error) {
     console.error("Error fetching transfers:", error)
     return []
   }
   return data || []
 }
+
+// NOTA: TRANSFER_STATUSES / TransferStatus / isTransferStatus se importan
+// directo desde "@/lib/transfer-status" — este archivo tiene "use server" y
+// Next.js exige que solo exporte funciones async (re-exportar un const rompe
+// el build en runtime y propaga el error a toda página que importe algo de
+// aquí).
 
 export async function updateWholesalePrices(updates: { product_id: string; wholesale_price: number }[]) {
   await requireRole("admin", "encargado")
