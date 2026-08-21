@@ -25,11 +25,12 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
-import { ArrowLeft, Loader2, Send } from "lucide-react"
+import { ArrowLeft, Loader2, Send, X } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
-import { dispatchPendingTransfer } from "@/lib/inventory-actions"
+import { dispatchPendingTransfer, getTransferDetail } from "@/lib/inventory-actions"
 import { TRANSFER_STATUS_LABELS, isTransferStatus } from "@/lib/transfer-status"
 import { useAuth } from "@/lib/auth-context"
+import { CancelTransferDialog } from "@/components/central/cancel-transfer-dialog"
 
 function statusBadgeClass(status: string): string {
   switch (status) {
@@ -56,9 +57,18 @@ export function TransferDetailClient({ initialDetail }: Props) {
   const [t, setT] = useState<any>(initialDetail)
   const [confirmDispatch, setConfirmDispatch] = useState(false)
   const [dispatching, setDispatching] = useState(false)
+  const [cancelOpen, setCancelOpen] = useState(false)
   const [, startTransition] = useTransition()
 
-  const canDispatch = (role === "admin" || role === "encargado") && t.status === "pendiente"
+  const isAdminOrEncargado = role === "admin" || role === "encargado"
+  const canDispatch = isAdminOrEncargado && t.status === "pendiente"
+  const canCancel = isAdminOrEncargado && (t.status === "pendiente" || t.status === "en_transito")
+
+  async function refreshDetail() {
+    const fresh = await getTransferDetail(t.transfer_id)
+    if (fresh) setT(fresh)
+    startTransition(() => router.refresh())
+  }
   const items = (t.transfer_items ?? []) as Array<any>
 
   async function handleDispatch() {
@@ -99,7 +109,32 @@ export function TransferDetailClient({ initialDetail }: Props) {
             Despachar
           </Button>
         )}
+        {canCancel && (
+          <Button
+            size="sm"
+            variant="ghost"
+            className="text-destructive hover:text-destructive"
+            onClick={() => setCancelOpen(true)}
+          >
+            <X className="mr-1.5 h-4 w-4" />
+            Cancelar
+          </Button>
+        )}
       </PageHeader>
+
+      <CancelTransferDialog
+        open={cancelOpen}
+        onOpenChange={setCancelOpen}
+        transfer={{
+          transfer_id: t.transfer_id,
+          status: t.status,
+          label: `${t.from_wh?.sites?.name} → ${t.to_wh?.sites?.name}`,
+        }}
+        onDone={() => {
+          setCancelOpen(false)
+          refreshDetail()
+        }}
+      />
 
       <Card>
         <CardContent className="grid grid-cols-1 gap-3 pt-4 text-sm sm:grid-cols-2 lg:grid-cols-4">

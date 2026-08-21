@@ -952,6 +952,187 @@ export async function dispatchPendingTransfer(transfer_id: string) {
   return { success: true, message: "Traslado despachado. Está en tránsito." }
 }
 
+// Cancelar un traslado. Semántica dependiente del estado:
+//  - "pendiente"   → UPDATE status='cancelado', sin tocar stock (nunca se reservó).
+//  - "en_transito" → reverso: transito_salida (-qty) + traslado_entrada (+qty al
+//                    ORIGEN), luego UPDATE status='cancelado'. Pre-check agregado
+//                    por producto contra product_stock del tránsito (mismo patrón
+//                    defensivo que dispatchPendingTransfer / reconcile_transfer).
+//  - "recibido_con_pendiente" → NO se cancela: usar reconcile_transfer con
+//                    found_qty=0 (queda "recibido con pérdida total").
+//  - Otros estados → rechazo.
+// Nota: asume una sola bodega con is_system=true (convención del repo, no hay
+// UNIQUE constraint que lo enforcee — verificado en prod: 1 fila 2026-08-21).
+export async function cancelTransfer(transfer_id: string, reason: string) {
+  const profile = await requireRole("admin", "encargado")
+  const supabase = await createServerSupabaseClient()
+
+  const cleanReason = (reason ?? "").trim()
+  if (cleanReason.length < 3) {
+    return { success: false, message: "Escribe un motivo de al menos 3 caracteres." }
+  }
+
+  const { data: tr, error: trErr } = await supabase
+    .from("transfers")
+    .select(
+      `transfer_id, status, notes, from_warehouse_id, to_warehouse_id,
+       from_wh:warehouses!transfers_from_warehouse_id_fkey ( site_id ),
+       transfer_items ( transfer_item_id, product_id, quantity,
+         products ( name, code ) )`,
+    )
+    .eq("transfer_id", transfer_id)
+    .maybeSingle()
+  if (trErr || !tr) {
+    return { success: false, message: "No se encontró el traslado o no tienes acceso." }
+  }
+  const t = tr as any
+
+  if (profile.role === "encargado") {
+    const accessible = await getAccessibleSiteIds()
+    const originSiteId = t.from_wh?.site_id
+    const allowed = accessible === "all" || (originSiteId && accessible.includes(originSiteId))
+    if (!allowed) {
+      return { success: false, message: "No puedes cancelar traslados desde esta sede." }
+    }
+  }
+
+  if (t.status === "pendiente") {
+    const { error } = await supabase
+      .from("transfers")
+      .update({
+        status: "cancelado",
+        notes: (t.notes ?? "") + `\n[Cancelado] ${cleanReason}`,
+      })
+      .eq("transfer_id", transfer_id)
+    if (error) return { success: false, message: error.message }
+    revalidatePath("/central/transfers")
+    revalidatePath(`/central/transfers/${transfer_id}`)
+    return { success: true, message: "Traslado cancelado." }
+  }
+
+  if (t.status === "en_transito") {
+    const items = (t.transfer_items ?? []) as Array<{
+      product_id: string
+      quantity: number
+      products: { name: string; code: string | null } | null
+    }>
+    if (items.length === 0) {
+      return { success: false, message: "El traslado no tiene ítems para reversar." }
+    }
+
+    const { data: transitWh } = await supabase
+      .from("warehouses")
+      .select("warehouse_id")
+      .eq("is_system", true)
+      .single()
+    if (!transitWh) return { success: false, message: "No se encontró la bodega de tránsito." }
+
+    // Agrego qty por product_id (defensivo si un product_id repite líneas).
+    const neededByProduct = new Map<string, number>()
+    for (const it of items) {
+      neededByProduct.set(it.product_id, (neededByProduct.get(it.product_id) ?? 0) + Number(it.quantity))
+    }
+    const productIds = Array.from(neededByProduct.keys())
+    const { data: stockRows, error: stErr } = await supabase
+      .from("product_stock")
+      .select("product_id, quantity")
+      .eq("warehouse_id", transitWh.warehouse_id)
+      .in("product_id", productIds)
+    if (stErr) {
+      return { success: false, message: `No se pudo validar tránsito: ${stErr.message}` }
+    }
+    const stockByProduct = new Map<string, number>()
+    for (const r of stockRows ?? []) {
+      stockByProduct.set(r.product_id as string, Number((r as any).quantity) || 0)
+    }
+    const shortfalls: string[] = []
+    for (const [pid, need] of neededByProduct) {
+      const have = stockByProduct.get(pid) ?? 0
+      if (have < need) {
+        const item = items.find((i) => i.product_id === pid)
+        const label = item?.products?.code
+          ? `${item.products.code} (${item.products.name})`
+          : (item?.products?.name ?? pid)
+        shortfalls.push(`${label}: hay ${have} en tránsito, se necesita reversar ${need}`)
+      }
+    }
+    if (shortfalls.length > 0) {
+      return {
+        success: false,
+        message: `El tránsito no cuadra (probablemente ya fue recibido total o parcialmente): ${shortfalls.join("; ")}. No se canceló nada.`,
+      }
+    }
+
+    const note = `[Cancelado en tránsito] ${cleanReason}`
+    const applied: string[] = []
+    const failed: string[] = []
+    for (const it of items) {
+      const label = it.products?.code ?? it.product_id.slice(0, 8)
+      const { error: e1 } = await supabase.rpc("adjust_warehouse_stock", {
+        p_product_id: it.product_id,
+        p_warehouse_id: transitWh.warehouse_id,
+        p_delta: -Number(it.quantity),
+        p_movement_type: "transito_salida",
+        p_reference_type: "transfer_cancel",
+        p_reference_id: transfer_id,
+        p_user_id: profile.id,
+        p_notes: note,
+      })
+      if (e1) {
+        failed.push(`${label} (salida tránsito): ${e1.message}`)
+        continue
+      }
+      const { error: e2 } = await supabase.rpc("adjust_warehouse_stock", {
+        p_product_id: it.product_id,
+        p_warehouse_id: t.from_warehouse_id,
+        p_delta: Number(it.quantity),
+        p_movement_type: "traslado_entrada",
+        p_reference_type: "transfer_cancel",
+        p_reference_id: transfer_id,
+        p_user_id: profile.id,
+        p_notes: note,
+      })
+      if (e2) {
+        failed.push(`${label} (retorno origen): ${e2.message}`)
+        continue
+      }
+      applied.push(label)
+    }
+
+    if (failed.length > 0) {
+      return {
+        success: false,
+        message: `Cancelación parcial. Reversados: ${applied.join(", ") || "ninguno"}. Fallaron: ${failed.join("; ")}. Revisar manualmente antes de reintentar.`,
+      }
+    }
+
+    const { error: updErr } = await supabase
+      .from("transfers")
+      .update({
+        status: "cancelado",
+        notes: (t.notes ?? "") + `\n[Cancelado] ${cleanReason}`,
+      })
+      .eq("transfer_id", transfer_id)
+    if (updErr) {
+      return { success: false, message: `Stock reversado pero no se actualizó el estado: ${updErr.message}` }
+    }
+
+    revalidatePath("/central/transfers")
+    revalidatePath(`/central/transfers/${transfer_id}`)
+    revalidatePath("/inventory/products")
+    return { success: true, message: "Traslado cancelado. Stock devuelto al origen." }
+  }
+
+  if (t.status === "recibido_con_pendiente") {
+    return {
+      success: false,
+      message: 'Este traslado ya fue recibido parcialmente. Usa "Cerrar como pérdida total" en el flujo de reconciliación.',
+    }
+  }
+
+  return { success: false, message: `No se puede cancelar un traslado en estado "${t.status}".` }
+}
+
 // ============ TRANSFER RECEPTION (checklist) ============
 
 export async function getPendingTransfersForSite(siteId: string) {

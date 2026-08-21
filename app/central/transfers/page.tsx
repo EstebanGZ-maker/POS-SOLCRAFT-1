@@ -29,6 +29,8 @@ import {
 import { useToast } from "@/hooks/use-toast"
 import { useAuth } from "@/lib/auth-context"
 import { dispatchPendingTransfer, getTransfers } from "@/lib/inventory-actions"
+import { CancelTransferDialog } from "@/components/central/cancel-transfer-dialog"
+import { X } from "lucide-react"
 import { getSites, type Site } from "@/lib/site-actions"
 import {
   TRANSFER_STATUSES,
@@ -67,6 +69,7 @@ export default function TransfersPage() {
   const canDispatch = role === "admin" || role === "encargado"
   const [dispatchTarget, setDispatchTarget] = useState<{ id: string; label: string } | null>(null)
   const [dispatching, setDispatching] = useState(false)
+  const [cancelTarget, setCancelTarget] = useState<{ transfer_id: string; status: string; label: string } | null>(null)
 
   const status: TransferStatus | "all" = isTransferStatus(searchParams.get("status"))
     ? (searchParams.get("status") as TransferStatus)
@@ -186,6 +189,16 @@ export default function TransfersPage() {
         />
       </div>
 
+      <CancelTransferDialog
+        open={!!cancelTarget}
+        onOpenChange={(v) => !v && setCancelTarget(null)}
+        transfer={cancelTarget}
+        onDone={() => {
+          setCancelTarget(null)
+          mutate()
+        }}
+      />
+
       <AlertDialog open={!!dispatchTarget} onOpenChange={(v) => !v && setDispatchTarget(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -257,21 +270,40 @@ export default function TransfersPage() {
                       </Badge>
                     </td>
                     <td className="p-3 text-right">
-                      {t.status === "pendiente" && canDispatch && (
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() =>
-                            setDispatchTarget({
-                              id: t.transfer_id,
-                              label: `${t.from_wh?.sites?.name} → ${t.to_wh?.sites?.name}`,
-                            })
-                          }
-                        >
-                          <Send className="mr-1.5 h-3.5 w-3.5" />
-                          Despachar
-                        </Button>
-                      )}
+                      <div className="flex justify-end gap-1.5">
+                        {t.status === "pendiente" && canDispatch && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() =>
+                              setDispatchTarget({
+                                id: t.transfer_id,
+                                label: `${t.from_wh?.sites?.name} → ${t.to_wh?.sites?.name}`,
+                              })
+                            }
+                          >
+                            <Send className="mr-1.5 h-3.5 w-3.5" />
+                            Despachar
+                          </Button>
+                        )}
+                        {(t.status === "pendiente" || t.status === "en_transito") && canDispatch && (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="text-destructive hover:text-destructive"
+                            onClick={() =>
+                              setCancelTarget({
+                                transfer_id: t.transfer_id,
+                                status: t.status,
+                                label: `${t.from_wh?.sites?.name} → ${t.to_wh?.sites?.name}`,
+                              })
+                            }
+                          >
+                            <X className="mr-1.5 h-3.5 w-3.5" />
+                            Cancelar
+                          </Button>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 ))
