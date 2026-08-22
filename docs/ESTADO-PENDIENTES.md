@@ -1,46 +1,115 @@
 # ESTADO-PENDIENTES.md
 
 > **Propósito**: dump de estado para que una instancia nueva de Claude sin
-> memoria pueda retomar sin perder nada. Última actualización: **2026-08-19**
-> (release s13 APLICADO A PROD: filtro "ocultar productos nunca recibidos
-> aquí" en /inventory/products. Merge commit `e81f4d2`. Reduce ruido de
-> catálogo por sede — encargados/vendedores ven solo productos con
-> historial en su bodega por default).
+> memoria pueda retomar sin perder nada. Última actualización: **2026-08-22**
+> (cierre de sesión s14-s20: CxC + traslados ciclo completo + refactor
+> bootstrap /pos con ganancia medida de -1.5s en cold. `main` en `aae73b1`).
 
 ---
 
-## Deuda técnica — atomicidad de `createBulkTransfer` (2026-08-21)
+## 0. LEE ESTO PRIMERO — estado tras sesión 2026-08-22 (s14 → s20 en prod)
 
-**Estado**: identificada, mitigada TS-only, fix definitivo pendiente.
+**Estado de ramas**: ninguna rama de trabajo abierta. `main` en `aae73b1`
+(merge s20). Todas las ramas s14-s20 fueron borradas de origin y local
+tras merge. Ramas históricas s1-s13 siguen en origin como legado.
 
-**Problema**: `lib/inventory-actions.ts:createBulkTransfer` no es atómico. El
-flujo por destino es: (1) INSERT transfers status='en_transito', (2) INSERT
-transfer_items, (3) Promise.all de RPC `send_transfer_via_transit`. Si algún
-RPC del paso 3 falla o el cliente pierde la respuesta, los pasos 1-2 quedan
-persistidos y el traslado queda en `en_transito` sin ningún `stock_movements`
-asociado — "registro fantasma". Detectados 2 casos históricos el 2026-08-19
-(`c7b2cdf3-…`, `e34a32c5-…`), cerrados administrativamente esta sesión.
+**Cerrado y en prod esta sesión:**
 
-**Mitigación TS (aplicada s18)**: si `moveErrors.length > 0`, se hace DELETE
-de transfer + transfer_items recién insertados antes de retornar el error.
-No es transacción real (el DELETE también podría fallar), pero cierra el
-99% de casos.
+- **s12 fix (700c6aa)**: `analyze-product` MIME type octet-stream → jpeg
+  fallback en el panel IA. Cubre cámara Android con `File.type` vacío.
+- **s14**: `/receivables` con búsqueda unificada (nombre/teléfono/número
+  de venta), filtro por bucket de antigüedad, orden por edad, export CSV
+  con BOM UTF-8. Server-side, searchParams URL, debounce 300ms. Nuevo
+  helper `lib/csv.ts` (primer módulo con export CSV, reusable).
+- **s15**: `/receivables/[sale_id]` — detalle de factura con tabs
+  Detalle / Pagos recibidos / Contabilidad. Reusa `ReceiptDialog` para
+  imprimir + `RegisterPaymentDialog` (mismo RPC `register_payment`).
+  Server component + `notFound()` si fuera de scope RLS.
+- **s16**: filtros server-side en `/central/transfers` (estado, sede
+  origen-OR-destino, rango fechas, búsqueda por código/nombre producto).
+  Fuente única `lib/transfer-status.ts` con los 5 valores del CHECK.
+  Fix incidental: `#{t.number}` renderizaba `#undefined` — reemplazado
+  por `transfer_id` truncado. Link "Historial de envíos" en sidebar.
+- **s17**: creación en `pendiente` + `dispatchPendingTransfer`. UI en
+  `/transfers/send` con 3 botones (Cancelar / Guardar pendiente /
+  Despachar). Detalle en `/central/transfers/[transfer_id]` con botón
+  Despachar (admin/encargado). Pre-check de stock agregado antes de
+  disparar RPCs; fallo parcial se reporta explícito.
+- **s18**: `cancelTransfer` con 3 semánticas — `pendiente`=UPDATE puro,
+  `en_transito`=reverso stock a origen vía `adjust_warehouse_stock` con
+  `reference_type='transfer_cancel'`, `recibido_con_pendiente`=atajo UI
+  "Cerrar como pérdida total" que llama `reconcile_transfer` con
+  `found_qty=0`. Detectados y cerrados los 2 traslados fantasma
+  históricos (`c7b2cdf3`, `e34a32c5`). Nueva `adminCloseGhostTransfer`
+  admin-only + mitigación TS de atomicidad en `createBulkTransfer`.
+- **s19**: dashboard/resumen por estado en `/central/transfers` — 5 cards
+  clicables (aplican filtro), alerta admin-only si hay fantasmas
+  detectados (query gateada server-side por rol, no solo oculta en UI).
+- **s20**: filtro relevancia por sede en `/pos` (reusa patrón s13,
+  aplica a todos los roles). Refactor bootstrap consolidado:
+  `getPOSBootstrap(sid)` en 1 sola server action con `Promise.allSettled`
+  real server-side. Causa root confirmada por logs `[pos-timing]`: Next.js
+  Server Actions con cookies se serializan HTTP request-por-request; el
+  `Promise.all` cliente-side era falso. Ganancia medida: warm 958ms,
+  cold 1308-1500ms (vs 2.2-2.7s serial anterior). Manejo de errores por
+  pieza — warehouse+products bloqueantes duros con "Reintentar", shift
+  distingue null-por-ausencia vs null-por-error (banner ámbar), resto
+  degrada suave con toast. Nuevos módulos: `lib/pos-bootstrap-queries.ts`
+  (funciones raw compartidas sin "use server") y `lib/pos-bootstrap.ts`
+  (server action). Dedupe de `auth-context` (2 fetchProfile → 1) y
+  `prefetch={false}` en sidebar cuando `/pos` activo — fixes menores que
+  ahorran ~490ms + ~300ms adicionales.
 
-**Fix definitivo pendiente**: envolver todo en una RPC SQL atómica
-(`create_bulk_transfer_atomic`) con FOR UPDATE de product_stock de origen +
-INSERT/RPC en un solo `BEGIN…COMMIT`. No urgente (la mitigación TS cubre lo
-común) pero necesario para eliminar el patrón — cualquier otro network drop
-distinto al que generó estos 2 casos podría volver a producir fantasmas si
-el DELETE de rescate también falla.
+**Deuda técnica ABIERTA (documentada, no urgente):**
 
-**Herramienta correctiva ya en producción**: `adminCloseGhostTransfer(id,
-reason)` — admin-only, valida `status='en_transito' AND count(stock_movements)=0`
-antes de UPDATE status='cancelado' con nota `[Corrección admin]`. Botón
-visible sólo cuando `getTransferDetail.is_ghost === true`.
+- **Atomicidad real de `createBulkTransfer`**: mitigación TS actual
+  (DELETE compensatorio si falla algún RPC del loop) cubre el 99% pero
+  no es transacción real — el DELETE también podría fallar por network
+  drop y dejar un fantasma nuevo. Fix definitivo: RPC SQL
+  `create_bulk_transfer_atomic` con FOR UPDATE + rollback real.
+  **Revisar en el mismo cambio si `dispatchPendingTransfer` (s17)
+  tiene el mismo patrón vulnerable en su loop** — probablemente sí.
+  Herramienta correctiva vigente: `adminCloseGhostTransfer` +
+  botón visible cuando `getTransferDetail.is_ghost === true`.
+- **SiteProvider** (`lib/site-context.tsx`): `bootstrap()` hace
+  `Promise.all([getSites(), getCurrentSiteId()])` — 2 server actions
+  serializadas por cookies (~1s combinado en cold). Candidato natural
+  para consolidar en un solo `getSiteBootstrap()` con el mismo patrón
+  de s20. Blast radius mayor (usado en toda la app, no solo /pos), por
+  eso quedó fuera de scope de s20. No urgente. Bloqueado por: medir
+  primero cuánto pesa realmente en el waterfall post-s20.
+- **`getShiftReceivables` post-bootstrap POS**: piggyback (no bloquea
+  render), pero es un round-trip extra visible en el waterfall.
+  Candidato a incluir en `getPOSBootstrap` como campo opcional. Bajo
+  impacto, sin urgencia.
+- **Logging temporal `[pos-timing]` (`lib/pos-timing.ts` +
+  `withPosTiming` en las 6 public actions + `getPOSBootstrap`)**:
+  mantener activo hasta completar 1 semana de monitoreo post-merge de
+  s20. Sirve para: (a) confirmar ganancia sostenida del refactor en
+  cold real; (b) monitorear `errors.products` / `errors.shift` que
+  quedaron sin forzar en smoke. Al cumplir la semana, remover en un
+  commit de limpieza aparte.
+
+**Pendiente sin tocar (sin urgencia, arrastre de sesiones anteriores):**
+
+- **Promociones aplicadas en venta**: CRUD existe en
+  `/inventory/promotions` y `getActivePromotionsForPOS` devuelve `promoMap`,
+  pero el `PaymentDialog` / `createSale` no aplican el descuento
+  automáticamente. Feature de paridad Alegra abierta.
+- **Gate del contador**: sobrante genuino sin factura (donación, hallazgo)
+  vs "comprado no registrado" — decisión de negocio pendiente con el
+  contador, no depende de código.
+
+**Próximo bloque**: sin definir. Al arrancar la próxima sesión, el
+usuario decide. Candidatos priorizables:
+1. Fix atomicidad `createBulkTransfer` + `dispatchPendingTransfer` (RPC SQL).
+2. Consolidación de `SiteProvider` (mismo patrón que `getPOSBootstrap`).
+3. Aplicar promociones en `PaymentDialog` / `createSale`.
+4. Backlog paridad Alegra: reportes, UX ventas suspendidas, etc.
 
 ---
 
-## 0. LEE ESTO PRIMERO — estado tras sesión 2026-08-19 (s13 products relevance filter)
+## Historial detallado — sesión 2026-08-19 (s13)
 
 **Estado de ramas**: ninguna rama de trabajo abierta. `main` en `e81f4d2`
 (merge `e81f4d2` s13-products-relevance-filter). Rama

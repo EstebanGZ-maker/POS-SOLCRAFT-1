@@ -1702,4 +1702,194 @@ action que se conservó.
 
 ---
 
+## §7.16 — Sesión 2026-08-22 (s14 → s20 en prod, `main` @ `aae73b1`)
+
+Bloque grande que cierra dos ciclos: CxC con detalle + traslados end-to-end
++ refactor del bootstrap /pos con ganancia medida. Todo APLICADO A PROD.
+
+**Fix menor (700c6aa) — `analyze-product` MIME type**:
+El panel IA (`components/central/ai-ingress-panel.tsx`) envía `File.type`
+como `mediaType` al endpoint. En cámara Android vía intent, `File.type`
+llega `""` o `"application/octet-stream"` → Gemini lo rechaza.
+Fix defensivo en `lib/storage-client.ts` (normaliza contentType al
+subir a Storage) y `app/api/analyze-product/route.ts` (normaliza a
+`image/jpeg` cualquier tipo fuera de `{jpeg,png,webp,heic,heif}`
+antes de armar el payload). No requiere validación mobile — se
+activa solo si vuelve a pasar.
+
+**s14 — /receivables con búsqueda/filtro/orden/export CSV**:
+- `getReceivables(opts)` ampliado con `{ q, bucket, sort, site_id }`.
+  Post-filter en TS sobre el mismo array agrupado — reusa el
+  `oldest_bucket` calculado (no reimplementa `toAgeBucket`).
+- Búsqueda unificada: 1 input para nombre / teléfono (ILIKE
+  case-insensitive substring) + número de venta exacto si parsea
+  como entero (`/^\d+$/`).
+- URL state con `searchParams`, debounce 300ms.
+- `exportReceivablesCSV(opts)` reusa `getReceivables` internamente
+  para heredar guards de rol/sede — el CSV nunca alcanza filas
+  fuera del scope del usuario aunque se manipule `opts`.
+- `lib/csv.ts` nuevo: helper mínimo `buildCSV(headers, rows)` con
+  escape RFC 4180 + BOM UTF-8 (Excel Windows respeta tildes/ñ).
+  Primer módulo del repo con export CSV, reusable.
+
+**s15 — /receivables/[sale_id] detalle de factura**:
+- Nueva ruta server component + `notFound()` si RLS filtra la venta.
+- 3 tabs: Detalle (items + totales), Pagos recibidos (historial de
+  `sale_payments` con activo/anulado), Contabilidad (`accounting_entries`
+  con estado vacío explicativo — el income de crédito se reconoce al
+  llegar los abonos, no al emitir).
+- Botón "Imprimir recibo" reusa `ReceiptDialog` (tirilla térmica del POS).
+- Botón "Registrar pago" reusa `RegisterPaymentDialog` → mismo RPC
+  `register_payment` con la misma regla de turno (cash requiere turno
+  abierto en sede; no-cash no). Confirmado con Esteban.
+- `getReceivableSaleDetail(sale_id)` en `lib/actions.ts` con
+  `requireRole` + shape `ReceivableSaleDetail`.
+- Links desde `/receivables`: nombre de cliente (solo si tiene 1 venta,
+  para no ambigüedad) + "Venta #NNN" en detalle expandido.
+
+**s16 — /central/transfers con filtros/búsqueda + fuente única de
+estados**:
+- `getTransfers(opts)` ampliado con `{ status, site_id, date_from,
+  date_to, q }`. Todo server-side. Site filter usa OR entre origen y
+  destino (pre-query a `warehouses` de la sede → `.or(from.in.(),
+  to.in.())`). Search por producto: pre-query a `transfer_items!inner
+  (products)` con ILIKE en name/code, colecta `transfer_id`s, filtra.
+- `lib/transfer-status.ts` nuevo: `TRANSFER_STATUSES` (los 5 del
+  CHECK constraint) + `TRANSFER_STATUS_LABELS` + `isTransferStatus`.
+  Fuente única — la UI y el resto del código consumen desde aquí.
+- Fix incidental: la tabla mostraba `#{t.number}` pero `transfers`
+  no tiene columna `number` — renderizaba `#undefined` en prod. Se
+  reemplaza por `transfer_id.slice(0,8)` monoespaciado. Bug preexistente.
+- Nuevo item en sidebar "Historial de envíos" bajo grupo "Bodega central".
+- Bug de deploy corregido en el commit `9b56510`: re-exportar
+  `TRANSFER_STATUSES` (const) desde `lib/inventory-actions.ts` (que
+  tiene `"use server"`) rompía runtime — Next.js exige que archivos
+  "use server" solo exporten funciones async. Fix: eliminar el
+  re-export; el consumidor ya importaba directo desde
+  `@/lib/transfer-status`. **Regla vigente**: nunca re-exportar
+  consts/type-guards desde archivos con "use server".
+
+**s17 — crear traslado en pendiente + despacharlo**:
+- `createBulkTransfer(input, opts?: { as_pending?: boolean })`: si
+  `as_pending=true`, INSERT con `status="pendiente"` sin bodega
+  tránsito ni RPC de stock. Comportamiento previo default intacto.
+- `dispatchPendingTransfer(transfer_id)`: admin/encargado + guard de
+  sede origen. Pre-check de stock agregado por producto (SUM por
+  `product_id` vs `product_stock` de origen). Si algún producto no
+  alcanza, reporta TODOS los faltantes y no despacha nada. Fallo
+  mid-way tras pre-check reporta parcial (traslado queda en pendiente,
+  no en_transito — el UPDATE sale del early-return).
+- UI en `/transfers/send`: dialog con 3 CTAs (Cancelar / Guardar
+  pendiente / Despachar ahora).
+- Detalle en `/central/transfers/[transfer_id]` con botón Despachar
+  cuando `status="pendiente"` (admin/encargado).
+- `getTransferDetail(transfer_id)` server action; server component +
+  `notFound()`.
+
+**s18 — cancelar traslado con 3 semánticas + fix fantasmas**:
+Ver también deuda de atomicidad en §0 de docs/ESTADO-PENDIENTES.md.
+- `cancelTransfer(id, reason)`: admin/encargado + guard de sede origen
+  + reason obligatorio (>=3 chars).
+  - `pendiente` → UPDATE puro sin tocar stock.
+  - `en_transito` → reverso vía `adjust_warehouse_stock`:
+    `transito_salida (-qty)` + `traslado_entrada (+qty AL ORIGEN)` con
+    `reference_type='transfer_cancel'` (distingue en kardex de recibo
+    normal o reconcile). Pre-check agregado, fallo parcial explícito.
+  - `recibido_con_pendiente` → NO se cancela. Mensaje redirige al
+    atajo "Cerrar como pérdida total" en `/transfers/reconcile` que
+    llama a `reconcile_transfer` con `found_qty=0` en todos los items
+    (estado final = `recibido`, no `cancelado` — intencional,
+    confirmado con Esteban).
+- `adminCloseGhostTransfer(id, reason)` admin-only: valida
+  `status='en_transito' AND count(stock_movements)=0` antes de UPDATE
+  `status='cancelado'`. Rechaza si el traslado SÍ tiene movimientos
+  reales (redirige a `cancelTransfer` normal). `getTransferDetail`
+  ahora expone `is_ghost` para la UI.
+- Mitigación TS en `createBulkTransfer`: si algún RPC del loop de
+  stock falla, DELETE compensatorio de transfer + transfer_items
+  recién insertados. **NO es transacción real** — deuda documentada
+  en §0. Cubre el 99% de casos.
+- 2 fantasmas históricos cerrados (`c7b2cdf3`, `e34a32c5`) vía SQL
+  directo con la misma semántica de la nueva action. Barrido posterior:
+  0 remanentes.
+
+**s19 — dashboard/resumen por estado con detección proactiva**:
+- `getTransferSummary()` separada de `getTransfers` (cache SWR
+  independiente, queries liviano sin joins). `Promise.all` interno:
+  by_status con COUNT vía TS reduce sobre SELECT `status` (Supabase JS
+  sin GROUP BY nativo), ghosts gateada por rol server-side
+  (`profile.role !== "admin"` → Promise.resolve estático sin ejecutar
+  query real). **Regla vigente**: gating de datos sensibles por rol se
+  hace server-side, no solo ocultando en UI.
+- UI en `/central/transfers`: 5 cards clicables aplican filtro,
+  alerta ámbar admin-only con link al primer sample_id (abre detalle
+  donde vive el botón `CloseGhostTransferDialog` de s18).
+
+**s20 — filtro relevancia /pos + refactor bootstrap consolidado**:
+
+*Parte A (filtro relevancia)*: reusa `opts.onlyRelevant=true` en las
+2 llamadas a `getProductsWithStock` de /pos (bootstrap + refreshData).
+Mismo patrón de s13. Aplica a TODOS los roles en /pos (contexto de
+venta, no auditoría). Impacto medido: 25 productos activos totales vs
+3 relevantes por sede sample = -88% payload.
+
+*Parte B (diagnóstico honesto del cold-start)*: dashboard Vercel
+mostraba **0% cold-start** en 12h (Fluid Compute funcionando). Bundle
+JS /pos = 939 KB uncompressed pero chunk propio solo 69 KB. **NO era
+cold ni bundle.** Timings `[pos-timing]` server-side confirmaron:
+- getWarehouseForSite: 472ms
+- getCurrentShift: 1004ms
+- getProductsWithStock: 333ms, getCustomers: 117ms, getCategories: 275ms
+- Los 3 de la "misma tanda" arrancaron con 830ms de gap entre sí →
+  **`Promise.all` cliente-side era falso**. Next.js Server Actions
+  con cookies se serializan HTTP request-por-request. Los ~2.7s de
+  cold percibido = suma serial de 6-8 actions.
+
+*Parte C (refactor A)*: `getPOSBootstrap(sid)` en 1 sola server action.
+- `lib/pos-bootstrap-queries.ts` nuevo (sin "use server"): 8 helpers
+  raw compartidos (`fetch*Raw`) reciben supabase client ya creado, sin
+  requireRole. Toda la lógica de query + mapeo (stock, priceMap,
+  promoMap, shift balance) vive aquí — fuente única para no
+  desincronizar entre bootstrap y server actions legacy.
+- `lib/pos-bootstrap.ts` nuevo (con "use server"): resuelve warehouse
+  serial (input de products), luego `Promise.allSettled` real
+  server-side (supabase-js paraleliza en HTTP/2 al pool de Supabase).
+  Retorna `POSBootstrap` con `errors` por pieza.
+- Las 6 públicas legacy delegan en los raw (getCurrentShift,
+  getWarehouseForSite, getCustomers, getCategories, getProductsWithStock,
+  getPriceListsForPOS, getActivePromotionsForPOS) — sin drift posible.
+- `app/pos/page.tsx`: 3 manejos de error confirmados con Esteban:
+  - warehouse+products **bloqueantes duros** (pantalla error + botón
+    Reintentar via `bootstrapReloadKey`).
+  - shift distingue **null-por-ausencia** (turno cerrado válido) de
+    **null-por-error** (banner ámbar: "Refrescá antes de abrir un
+    turno nuevo — podría haber uno abierto que no vimos"). Evita
+    riesgo de turno duplicado.
+  - customers/categories/priceLists/promotions degradan suave con
+    fallback vacío + toast.
+- **Ganancia medida (logs [pos-timing]):**
+  - `getPOSBootstrap`: 958ms warm, 1308-1500ms cold.
+  - vs suma serial anterior: 2.2-2.7s server acumulados.
+  - **-1.2 a -1.7 segundos** en cold percibido de /pos.
+
+*Fixes menores del mismo bloque s20:*
+- `lib/auth-context.tsx`: eliminado `getInitialSession()` manual.
+  Antes había 2 caminos (getInitialSession + onAuthStateChange
+  emitiendo INITIAL_SESSION al subscribe) que disparaban `fetchProfile`
+  en paralelo — 2 SELECT idénticos a user_profiles (~283ms+204ms).
+  Ahora solo `onAuthStateChange`. Ahorro ~490ms.
+- `components/dashboard-sidebar.tsx`: `prefetch={false}` en `<Link>`
+  cuando la ruta activa es `/pos`. Trade-off: primera navegación
+  desde /pos tarda ~200-500ms más, pero libera bandwidth durante
+  bootstrap crítico. En cualquier otra ruta el prefetch default se
+  mantiene.
+
+**Logging temporal `[pos-timing]` (`lib/pos-timing.ts` +
+`withPosTiming` en las 6 públicas + `getPOSBootstrap`)**: mantener
+activo hasta cumplir 1 semana post-merge de s20 (monitorear
+`errors.products` / `errors.shift` que no se forzaron en smoke).
+Al cumplir la semana, remover en commit de limpieza aparte.
+
+---
+
 Fin del contexto.
