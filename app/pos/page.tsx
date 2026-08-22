@@ -204,7 +204,7 @@ export default function POSPage() {
 
   async function refreshData(whId: string | null) {
     const [productsData, customersData, categoriesData] = await Promise.all([
-      getProductsWithStock(whId),
+      getProductsWithStock(whId, { onlyRelevant: true }),
       getCustomers(),
       getCategories(),
     ])
@@ -247,7 +247,7 @@ export default function POSPage() {
       const [shiftData, productsData, customersData, categoriesData, plData, promoData] =
         await Promise.all([
           getCurrentShift(sid),
-          getProductsWithStock(whId),
+          getProductsWithStock(whId, { onlyRelevant: true }),
           getCustomers(),
           getCategories(),
           getPriceListsForPOS(),
