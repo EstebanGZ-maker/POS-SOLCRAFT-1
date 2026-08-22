@@ -9,6 +9,37 @@
 
 ---
 
+## Deuda técnica — atomicidad de `createBulkTransfer` (2026-08-21)
+
+**Estado**: identificada, mitigada TS-only, fix definitivo pendiente.
+
+**Problema**: `lib/inventory-actions.ts:createBulkTransfer` no es atómico. El
+flujo por destino es: (1) INSERT transfers status='en_transito', (2) INSERT
+transfer_items, (3) Promise.all de RPC `send_transfer_via_transit`. Si algún
+RPC del paso 3 falla o el cliente pierde la respuesta, los pasos 1-2 quedan
+persistidos y el traslado queda en `en_transito` sin ningún `stock_movements`
+asociado — "registro fantasma". Detectados 2 casos históricos el 2026-08-19
+(`c7b2cdf3-…`, `e34a32c5-…`), cerrados administrativamente esta sesión.
+
+**Mitigación TS (aplicada s18)**: si `moveErrors.length > 0`, se hace DELETE
+de transfer + transfer_items recién insertados antes de retornar el error.
+No es transacción real (el DELETE también podría fallar), pero cierra el
+99% de casos.
+
+**Fix definitivo pendiente**: envolver todo en una RPC SQL atómica
+(`create_bulk_transfer_atomic`) con FOR UPDATE de product_stock de origen +
+INSERT/RPC en un solo `BEGIN…COMMIT`. No urgente (la mitigación TS cubre lo
+común) pero necesario para eliminar el patrón — cualquier otro network drop
+distinto al que generó estos 2 casos podría volver a producir fantasmas si
+el DELETE de rescate también falla.
+
+**Herramienta correctiva ya en producción**: `adminCloseGhostTransfer(id,
+reason)` — admin-only, valida `status='en_transito' AND count(stock_movements)=0`
+antes de UPDATE status='cancelado' con nota `[Corrección admin]`. Botón
+visible sólo cuando `getTransferDetail.is_ghost === true`.
+
+---
+
 ## 0. LEE ESTO PRIMERO — estado tras sesión 2026-08-19 (s13 products relevance filter)
 
 **Estado de ramas**: ninguna rama de trabajo abierta. `main` en `e81f4d2`

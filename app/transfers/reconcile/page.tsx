@@ -18,7 +18,7 @@ import { useToast } from "@/hooks/use-toast"
 import { formatCurrency } from "@/lib/utils"
 import { getTransfersToReconcile, reconcileTransfer } from "@/lib/inventory-actions"
 import {
-  ClipboardCheck, ArrowLeft, Loader2, AlertTriangle, PackageCheck, TriangleAlert,
+  ClipboardCheck, ArrowLeft, Loader2, AlertTriangle, PackageCheck, TriangleAlert, XCircle,
 } from "lucide-react"
 
 export default function ReconcileTransfersPage() {
@@ -230,7 +230,7 @@ export default function ReconcileTransfersPage() {
                 )}
               </div>
 
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2">
                 <Button
                   variant="outline"
                   onClick={() =>
@@ -238,6 +238,18 @@ export default function ReconcileTransfersPage() {
                   }
                 >
                   Todo apareció
+                </Button>
+                <Button
+                  variant="outline"
+                  className="border-destructive/50 text-destructive hover:bg-destructive/5 hover:text-destructive"
+                  onClick={() => {
+                    setFound(Object.fromEntries(lines.map((i: any) => [i.product_id, 0])))
+                    setConfirmOpen(true)
+                  }}
+                  disabled={lines.length === 0}
+                >
+                  <XCircle className="mr-1.5 h-4 w-4" />
+                  Cerrar como pérdida total
                 </Button>
                 <Button
                   onClick={() => setConfirmOpen(true)}
@@ -256,9 +268,15 @@ export default function ReconcileTransfersPage() {
         <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
           <DialogContent>
             <DialogHeader>
-              <DialogTitle>Cerrar el traslado</DialogTitle>
+              <DialogTitle>
+                {totals.found === 0 && totals.lost > 0
+                  ? "Cerrar como pérdida total"
+                  : "Cerrar el traslado"}
+              </DialogTitle>
               <DialogDescription>
-                Esta acción es definitiva y queda registrada en el kardex.
+                {totals.found === 0 && totals.lost > 0
+                  ? 'El traslado quedará en estado "Recibido" (no "Cancelado") con toda la mercancía dada de baja como pérdida en tránsito. Es la forma correcta de cerrar cuando el destino ya recibió parcialmente y el resto no va a llegar.'
+                  : "Esta acción es definitiva y queda registrada en el kardex."}
               </DialogDescription>
             </DialogHeader>
 
