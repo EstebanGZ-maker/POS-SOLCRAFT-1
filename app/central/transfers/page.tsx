@@ -28,7 +28,7 @@ import {
 } from "@/components/ui/alert-dialog"
 import { useToast } from "@/hooks/use-toast"
 import { useAuth } from "@/lib/auth-context"
-import { dispatchPendingTransfer, getTransfers } from "@/lib/inventory-actions"
+import { dispatchPendingTransfer, getTransfers, getTransferSummary } from "@/lib/inventory-actions"
 import { CancelTransferDialog } from "@/components/central/cancel-transfer-dialog"
 import { X } from "lucide-react"
 import { getSites, type Site } from "@/lib/site-actions"
@@ -38,7 +38,7 @@ import {
   isTransferStatus,
   type TransferStatus,
 } from "@/lib/transfer-status"
-import { Loader2, Send, Truck } from "lucide-react"
+import { AlertTriangle, ArrowRight, Loader2, Send, Truck } from "lucide-react"
 
 function statusBadgeClass(status: string): string {
   switch (status) {
@@ -108,6 +108,10 @@ export default function TransfersPage() {
 
   const { data: sites } = useSWR<Site[]>("transfers-sites", () => getSites())
 
+  // Summary independiente de los filtros de la tabla (siempre refleja el
+  // total real dentro del scope RLS). Se cachea por su propia key SWR.
+  const { data: summary, mutate: mutateSummary } = useSWR("transfer-summary", () => getTransferSummary())
+
   const { data: transfers = [], isLoading, mutate } = useSWR(
     ["transfers", status, siteFilter, dateFrom, dateTo, urlQ],
     () =>
@@ -132,7 +136,10 @@ export default function TransfersPage() {
       description: res.message,
       variant: res.success ? "default" : "destructive",
     })
-    if (res.success) mutate()
+    if (res.success) {
+      mutate()
+      mutateSummary()
+    }
   }
 
   return (
@@ -142,6 +149,56 @@ export default function TransfersPage() {
         description="Consulta los envíos de mercancía realizados desde la Bodega Central a las sedes."
         icon={Truck}
       />
+
+      {/* Resumen por estado — clicable, aplica el filtro en la tabla de abajo */}
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
+        {TRANSFER_STATUSES.map((s) => {
+          const n = summary?.by_status?.[s] ?? 0
+          const active = status === s
+          return (
+            <button
+              key={s}
+              type="button"
+              onClick={() => updateParams({ status: active ? "all" : s })}
+              className={`rounded-md border p-3 text-left transition hover:bg-muted/50 ${
+                active ? "border-primary ring-1 ring-primary" : ""
+              }`}
+              aria-pressed={active}
+            >
+              <div className="flex items-center gap-2">
+                <Badge variant="secondary" className={statusBadgeClass(s)}>
+                  {TRANSFER_STATUS_LABELS[s]}
+                </Badge>
+              </div>
+              <div className="mt-2 text-2xl font-bold">{n}</div>
+            </button>
+          )
+        })}
+      </div>
+
+      {/* Alerta admin-only: hay al menos 1 fantasma detectado */}
+      {role === "admin" && summary?.ghosts && summary.ghosts.count > 0 && summary.ghosts.sample_id && (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-amber-500/40 bg-amber-500/5 p-3 text-sm">
+          <div className="flex items-start gap-2">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+            <div>
+              <span className="font-medium text-amber-800 dark:text-amber-200">
+                {summary.ghosts.count} traslado{summary.ghosts.count === 1 ? "" : "s"} con inconsistencia detectada
+              </span>
+              <p className="text-xs text-muted-foreground">
+                En tránsito sin ningún movimiento de stock asociado (registro huérfano).
+                Ábrelo para cerrarlo como corrección de registro.
+              </p>
+            </div>
+          </div>
+          <Button asChild size="sm" variant="outline">
+            <Link href={`/central/transfers/${summary.ghosts.sample_id}`}>
+              Ver traslado
+              <ArrowRight className="ml-1.5 h-3.5 w-3.5" />
+            </Link>
+          </Button>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
         <Input
@@ -196,6 +253,7 @@ export default function TransfersPage() {
         onDone={() => {
           setCancelTarget(null)
           mutate()
+          mutateSummary()
         }}
       />
 

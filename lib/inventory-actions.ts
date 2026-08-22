@@ -1165,6 +1165,78 @@ export async function cancelTransfer(transfer_id: string, reason: string) {
   return { success: false, message: `No se puede cancelar un traslado en estado "${t.status}".` }
 }
 
+// Resumen agregado para el dashboard de /central/transfers. Independiente de
+// los filtros de la tabla (siempre refleja el total real dentro del scope RLS
+// del usuario). El bloque de fantasmas se ejecuta SOLO si el rol es admin —
+// el shape se mantiene igual para no-admin (count=0, sample_id=null) para
+// no filtrar respuesta ni condicionalmente romper el consumidor.
+export interface TransferSummary {
+  by_status: Record<TransferStatus, number>
+  ghosts: { count: number; sample_id: string | null }
+}
+
+export async function getTransferSummary(): Promise<TransferSummary> {
+  const profile = await requireRole("admin", "contador", "encargado", "vendedor")
+  const supabase = await createServerSupabaseClient()
+
+  // Base: 0 en cada estado, incluso los que no aparezcan en el GROUP BY.
+  const emptyByStatus = Object.fromEntries(
+    TRANSFER_STATUSES.map((s) => [s, 0]),
+  ) as Record<TransferStatus, number>
+
+  // Query 1: count por status. RLS filtra por sede automáticamente.
+  const statusPromise = supabase
+    .from("transfers")
+    .select("status")
+    .then(({ data, error }) => {
+      if (error) {
+        console.error("getTransferSummary (status):", error)
+        return emptyByStatus
+      }
+      const counts = { ...emptyByStatus }
+      for (const row of data ?? []) {
+        const s = (row as any).status as string
+        if (s in counts) counts[s as TransferStatus] += 1
+      }
+      return counts
+    })
+
+  // Query 2: fantasmas — solo para admin. Los demás roles reciben ceros
+  // sin que la query se ejecute (defensa en profundidad server-side).
+  const ghostsPromise: Promise<{ count: number; sample_id: string | null }> =
+    profile.role === "admin"
+      ? (async () => {
+          const { data, error } = await supabase
+            .from("transfers")
+            .select("transfer_id")
+            .eq("status", "en_transito")
+          if (error) {
+            console.error("getTransferSummary (ghosts list):", error)
+            return { count: 0, sample_id: null }
+          }
+          const ids = (data ?? []).map((r: any) => r.transfer_id as string)
+          if (ids.length === 0) return { count: 0, sample_id: null }
+          const { data: movRows, error: movErr } = await supabase
+            .from("stock_movements")
+            .select("reference_id")
+            .in("reference_id", ids)
+          if (movErr) {
+            console.error("getTransferSummary (ghosts moves):", movErr)
+            return { count: 0, sample_id: null }
+          }
+          const withMoves = new Set((movRows ?? []).map((r: any) => r.reference_id as string))
+          const ghosts = ids.filter((id) => !withMoves.has(id))
+          return {
+            count: ghosts.length,
+            sample_id: ghosts[0] ?? null,
+          }
+        })()
+      : Promise.resolve({ count: 0, sample_id: null })
+
+  const [by_status, ghosts] = await Promise.all([statusPromise, ghostsPromise])
+  return { by_status, ghosts }
+}
+
 // Cerrar administrativamente un traslado "fantasma": status='en_transito' pero
 // sin ningún stock_movements asociado (registro huérfano por fallo mid-flow
 // del despacho antiguo, ver ESTADO-PENDIENTES.md — deuda técnica de atomicidad
