@@ -75,18 +75,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }
 
   useEffect(() => {
-    const getInitialSession = async () => {
-      const {
-        data: { session },
-      } = await supabase.auth.getSession()
-      const u = session?.user ?? null
-      setUser(u)
-      if (u) await fetchProfile(u.id)
-      setLoading(false)
-    }
-
-    getInitialSession()
-
+    // Antes había DOS caminos que disparaban fetchProfile al montar:
+    // (1) getInitialSession() manual y (2) onAuthStateChange emitiendo
+    // INITIAL_SESSION al suscribirse. Duplicaba la query a user_profiles
+    // (~490ms desperdiciados en el waterfall de /pos). Ahora solo
+    // onAuthStateChange, que ya cubre INITIAL_SESSION al subscribirse
+    // (comportamiento documentado de supabase-js v2).
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange(async (_event: string, session: any) => {

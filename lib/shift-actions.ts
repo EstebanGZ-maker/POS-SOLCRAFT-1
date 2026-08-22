@@ -2,6 +2,7 @@
 
 import { createServerSupabaseClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
+import { withPosTiming } from "@/lib/pos-timing"
 
 export interface ShiftBalance {
   shift_id: string
@@ -46,19 +47,21 @@ function classifyMethod(method: string | null): "cash" | "debit" | "credit" | "t
 // Fuente de verdad del cash: RPC get_shift_balance (mismo que consume close_shift).
 // Elimina la divergencia con close_shift y cierra D10 del spec.
 export async function getCurrentShift(site_id: string): Promise<ShiftBalance | null> {
-  if (!site_id) return null
-  const supabase = await createServerSupabaseClient()
+  return withPosTiming("getCurrentShift", async () => {
+    if (!site_id) return null
+    const supabase = await createServerSupabaseClient()
 
-  const { data: shift, error } = await supabase
-    .from("pos_shifts")
-    .select("*")
-    .eq("site_id", site_id)
-    .eq("status", "open")
-    .maybeSingle()
+    const { data: shift, error } = await supabase
+      .from("pos_shifts")
+      .select("*")
+      .eq("site_id", site_id)
+      .eq("status", "open")
+      .maybeSingle()
 
-  if (error || !shift) return null
+    if (error || !shift) return null
 
-  return fetchShiftBalance(supabase, shift)
+    return fetchShiftBalance(supabase, shift)
+  })
 }
 
 async function fetchShiftBalance(supabase: any, shift: any): Promise<ShiftBalance> {

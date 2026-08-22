@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache"
 import { createServerSupabaseClient } from "@/lib/supabase/server"
 import { requireRole } from "@/lib/role-guard"
 import { getUserProfile, getAccessibleSiteIds } from "@/lib/auth-helpers"
+import { withPosTiming } from "@/lib/pos-timing"
 
 // ============ PRODUCTS (extended) ============
 // Products with their stock in a specific warehouse (or total if no warehouse).
@@ -16,37 +17,34 @@ export async function getProductsWithStock(
   warehouse_id?: string | null,
   opts?: { onlyRelevant?: boolean },
 ) {
-  const supabase = await createServerSupabaseClient()
-  const useInner = Boolean(warehouse_id) && Boolean(opts?.onlyRelevant)
-  const stockSelect = useInner
-    ? "product_stock!inner ( warehouse_id, quantity, min_quantity, max_quantity )"
-    : "product_stock ( warehouse_id, quantity, min_quantity, max_quantity )"
-  let query = supabase
-    .from("products")
-    .select(`*, categories ( category_id, name ), ${stockSelect}`)
-    .eq("is_active", true)
-    .order("name", { ascending: true })
-  if (useInner) {
-    query = query.eq("product_stock.warehouse_id", warehouse_id!)
-  }
-  const { data, error } = await query
-  if (error) {
-    console.error("Error fetching products with stock:", error)
-    return []
-  }
-  return (data || []).map((p: any) => {
-    const stockRows = p.product_stock || []
-    const totalStock = stockRows.reduce((s: number, r: any) => s + (r.quantity || 0), 0)
-    // Disponibilidad por sede. Sin `warehouse_id` no hay respuesta válida
-    // per-sede: devolvemos null en vez de sumar todas las bodegas (que sería
-    // un dato semánticamente incorrecto — un código puede estar disponible en
-    // una sede y agotado en otra al mismo tiempo). Consumidores agregados
-    // deben leer `totalStock` explícitamente.
-    const warehouseStock =
-      warehouse_id
-        ? (stockRows.find((r: any) => r.warehouse_id === warehouse_id)?.quantity ?? 0)
-        : null
-    return { ...p, totalStock, warehouseStock }
+  return withPosTiming("getProductsWithStock", async () => {
+    const supabase = await createServerSupabaseClient()
+    const useInner = Boolean(warehouse_id) && Boolean(opts?.onlyRelevant)
+    const stockSelect = useInner
+      ? "product_stock!inner ( warehouse_id, quantity, min_quantity, max_quantity )"
+      : "product_stock ( warehouse_id, quantity, min_quantity, max_quantity )"
+    let query = supabase
+      .from("products")
+      .select(`*, categories ( category_id, name ), ${stockSelect}`)
+      .eq("is_active", true)
+      .order("name", { ascending: true })
+    if (useInner) {
+      query = query.eq("product_stock.warehouse_id", warehouse_id!)
+    }
+    const { data, error } = await query
+    if (error) {
+      console.error("Error fetching products with stock:", error)
+      return []
+    }
+    return (data || []).map((p: any) => {
+      const stockRows = p.product_stock || []
+      const totalStock = stockRows.reduce((s: number, r: any) => s + (r.quantity || 0), 0)
+      const warehouseStock =
+        warehouse_id
+          ? (stockRows.find((r: any) => r.warehouse_id === warehouse_id)?.quantity ?? 0)
+          : null
+      return { ...p, totalStock, warehouseStock }
+    })
   })
 }
 
@@ -220,20 +218,22 @@ export async function getPriceLists() {
 }
 
 export async function getPriceListsForPOS() {
-  const supabase = await createServerSupabaseClient()
-  const [{ data: lists }, { data: prices }] = await Promise.all([
-    supabase.from("price_lists").select("price_list_id, name, is_default").order("name"),
-    supabase.from("product_prices").select("product_id, price_list_id, price"),
-  ])
-  const priceMap: Record<string, Record<string, number>> = {}
-  for (const pp of prices || []) {
-    if (!priceMap[pp.price_list_id]) priceMap[pp.price_list_id] = {}
-    priceMap[pp.price_list_id][pp.product_id] = Number(pp.price)
-  }
-  return {
-    lists: lists || [],
-    priceMap,
-  }
+  return withPosTiming("getPriceListsForPOS", async () => {
+    const supabase = await createServerSupabaseClient()
+    const [{ data: lists }, { data: prices }] = await Promise.all([
+      supabase.from("price_lists").select("price_list_id, name, is_default").order("name"),
+      supabase.from("product_prices").select("product_id, price_list_id, price"),
+    ])
+    const priceMap: Record<string, Record<string, number>> = {}
+    for (const pp of prices || []) {
+      if (!priceMap[pp.price_list_id]) priceMap[pp.price_list_id] = {}
+      priceMap[pp.price_list_id][pp.product_id] = Number(pp.price)
+    }
+    return {
+      lists: lists || [],
+      priceMap,
+    }
+  })
 }
 
 export async function getPriceListWithProducts(price_list_id: string) {
@@ -293,39 +293,41 @@ export async function getPromotions() {
 }
 
 export async function getActivePromotionsForPOS(siteId: string | null) {
-  const supabase = await createServerSupabaseClient()
-  const today = new Date().toISOString().split("T")[0]
+  return withPosTiming("getActivePromotionsForPOS", async () => {
+    const supabase = await createServerSupabaseClient()
+    const today = new Date().toISOString().split("T")[0]
 
-  let query = supabase
-    .from("promotions")
-    .select("promotion_id, name, discount_percent, site_id, promotion_products ( product_id )")
-    .eq("is_active", true)
-    .or(`start_date.is.null,start_date.lte.${today}`)
-    .or(`end_date.is.null,end_date.gte.${today}`)
+    let query = supabase
+      .from("promotions")
+      .select("promotion_id, name, discount_percent, site_id, promotion_products ( product_id )")
+      .eq("is_active", true)
+      .or(`start_date.is.null,start_date.lte.${today}`)
+      .or(`end_date.is.null,end_date.gte.${today}`)
 
-  if (siteId) {
-    query = query.or(`site_id.is.null,site_id.eq.${siteId}`)
-  }
+    if (siteId) {
+      query = query.or(`site_id.is.null,site_id.eq.${siteId}`)
+    }
 
-  const { data, error } = await query
-  if (error) {
-    console.error("Error fetching active promotions:", error)
-    return { promotions: [], promoMap: {} as Record<string, { name: string; discount: number }> }
-  }
+    const { data, error } = await query
+    if (error) {
+      console.error("Error fetching active promotions:", error)
+      return { promotions: [], promoMap: {} as Record<string, { name: string; discount: number }> }
+    }
 
-  const promoMap: Record<string, { name: string; discount: number }> = {}
-  for (const promo of data || []) {
-    const linked = (promo.promotion_products as any[]) || []
-    if (linked.length === 0) continue
-    for (const link of linked) {
-      const existing = promoMap[link.product_id]
-      if (!existing || promo.discount_percent > existing.discount) {
-        promoMap[link.product_id] = { name: promo.name, discount: Number(promo.discount_percent) }
+    const promoMap: Record<string, { name: string; discount: number }> = {}
+    for (const promo of data || []) {
+      const linked = (promo.promotion_products as any[]) || []
+      if (linked.length === 0) continue
+      for (const link of linked) {
+        const existing = promoMap[link.product_id]
+        if (!existing || promo.discount_percent > existing.discount) {
+          promoMap[link.product_id] = { name: promo.name, discount: Number(promo.discount_percent) }
+        }
       }
     }
-  }
 
-  return { promotions: data || [], promoMap }
+    return { promotions: data || [], promoMap }
+  })
 }
 
 export async function savePromotion(input: {

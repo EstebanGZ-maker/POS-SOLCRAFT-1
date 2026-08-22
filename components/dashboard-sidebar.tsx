@@ -120,12 +120,22 @@ function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
 
   const isActive = (href: string) => pathname === href || pathname.startsWith(href + "/")
 
+  // Cuando estamos en /pos (ruta crítica para el vendedor, sensible a
+  // cold-start), desactivamos el prefetch de Next.js del sidebar para no
+  // competir por lambda/bandwidth durante el bootstrap. En el resto de
+  // rutas mantenemos el prefetch por default. Trade-off aceptado: la
+  // primera navegación desde /pos a otra ruta tarda ~200-500ms más, pero
+  // el arranque del POS libera contención de ~9 RSC prefetches paralelos.
+  const posActive = pathname === "/pos" || pathname.startsWith("/pos/")
+  const linkPrefetch: false | undefined = posActive ? false : undefined
+
   return (
     <nav className="flex-1 space-y-1 px-3 py-4">
       {singleLinks.filter((item) => canSee(item.permission)).map((item) => (
         <Link
           key={item.href}
           href={item.href}
+          prefetch={linkPrefetch}
           onClick={onNavigate}
           className={cn(
             "flex items-center rounded-md px-3 py-2 text-sm font-medium transition-colors",
@@ -162,6 +172,7 @@ function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
                   <Link
                     key={item.href}
                     href={item.href}
+                    prefetch={linkPrefetch}
                     onClick={onNavigate}
                     className={cn(
                       "flex items-center rounded-md py-2 pl-9 pr-3 text-sm font-medium transition-colors",
