@@ -42,6 +42,7 @@ import {
 import { getCustomers, getCategories, createSale } from "@/lib/actions"
 import { getProductsWithStock, getPriceListsForPOS, getActivePromotionsForPOS } from "@/lib/inventory-actions"
 import { getWarehouseForSite } from "@/lib/site-actions"
+import { getPOSBootstrap } from "@/lib/pos-bootstrap"
 import { useSite } from "@/lib/site-context"
 import { toast } from "@/components/ui/use-toast"
 import { cn, formatCurrency } from "@/lib/utils"
@@ -120,6 +121,9 @@ export default function POSPage() {
   const [activeCategories, setActiveCategories] = useState<string[]>([])
   const [loading, setLoading] = useState(true)
   const [warehouseError, setWarehouseError] = useState<string | null>(null)
+  const [productsError, setProductsError] = useState<string | null>(null)
+  const [shiftError, setShiftError] = useState<string | null>(null)
+  const [bootstrapReloadKey, setBootstrapReloadKey] = useState(0)
   const [processingSale, setProcessingSale] = useState(false)
   const [priceLists, setPriceLists] = useState<PriceListOption[]>([])
   const [priceMap, setPriceMap] = useState<Record<string, Record<string, number>>>({})
@@ -204,7 +208,7 @@ export default function POSPage() {
 
   async function refreshData(whId: string | null) {
     const [productsData, customersData, categoriesData] = await Promise.all([
-      getProductsWithStock(whId),
+      getProductsWithStock(whId, { onlyRelevant: true }),
       getCustomers(),
       getCategories(),
     ])
@@ -228,44 +232,60 @@ export default function POSPage() {
     async function init() {
       setLoading(true)
       setWarehouseError(null)
-      const whId = await getWarehouseForSite(sid)
+      setProductsError(null)
+      setShiftError(null)
+
+      // 1 sola llamada HTTP consolidada: elimina el waterfall de 7 Server
+      // Actions secuenciales que Next.js serializa cuando usan cookies.
+      // Ver lib/pos-bootstrap.ts + lib/pos-bootstrap-queries.ts.
+      const boot = await getPOSBootstrap(sid)
       if (cancelled) return
-      if (!whId) {
-        // Vector latente: la sede no tiene warehouse is_primary=true.
-        // No caemos en un fallback numérico — bloqueamos el POS con mensaje.
+
+      // Bloqueante duro #1: sin bodega no se puede vender.
+      if (!boot.warehouse_id) {
         setWarehouseError(
-          "Esta sede no tiene bodega asignada. Contacta al administrador para asignar una bodega principal antes de vender.",
+          boot.errors.warehouse ||
+            "Esta sede no tiene bodega asignada. Contacta al administrador para asignar una bodega principal antes de vender.",
         )
         setWarehouseId(null)
         setLoading(false)
         return
       }
-      setWarehouseId(whId)
-      // Una sola tanda paralela: solo getWarehouseForSite tenía dependencia real
-      // (whId → getProductsWithStock). El resto no dependía de nada más que
-      // siteId, que ya está resuelto. Colapsa la cascada 3-tandas previa a 2.
-      const [shiftData, productsData, customersData, categoriesData, plData, promoData] =
-        await Promise.all([
-          getCurrentShift(sid),
-          getProductsWithStock(whId),
-          getCustomers(),
-          getCategories(),
-          getPriceListsForPOS(),
-          getActivePromotionsForPOS(sid),
-        ])
-      if (cancelled) return
+      setWarehouseId(boot.warehouse_id)
 
-      setShift(shiftData)
+      // Bloqueante duro #2: sin catálogo de productos no se puede vender.
+      // Estado de error explícito con botón de reintentar en el render.
+      if (boot.errors.products) {
+        setProductsError(boot.errors.products)
+        setLoading(false)
+        return
+      }
+
+      // Shift: distinguir null-por-ausencia (turno cerrado) vs null-por-error
+      // (no pudimos verificar). El segundo caso es riesgoso porque el vendedor
+      // podría abrir un turno duplicado creyendo que no hay ninguno.
+      setShift(boot.shift)
+      if (boot.errors.shift) {
+        setShiftError(boot.errors.shift)
+      }
+
+      const productsData = boot.products
+      const customersData = boot.customers
+
       const mapped = (productsData as any[]).map((p) => ({
         ...p,
         stock_quantity: p.is_service ? 9999 : (p.warehouseStock ?? 0),
       }))
       setProducts(mapped as Product[])
       setCustomers(customersData)
-      setCategories(categoriesData)
-      setPriceLists(plData.lists)
-      setPriceMap(plData.priceMap)
-      setPromoMap(promoData.promoMap)
+      setCategories(boot.categories)
+      setPriceLists(boot.priceLists.lists)
+      setPriceMap(boot.priceLists.priceMap)
+      setPromoMap(boot.promotions.promoMap)
+
+      // Customers puede haber degradado a []: fallback "Consumidor final".
+      // Si no está en la lista (por error), tab arranca sin cliente por
+      // default y el vendedor tiene que elegir uno explícito.
       const defaultCustomer =
         customersData.find((c: any) => c.name === "Consumidor final") ||
         customersData.find((c: any) => c.name === "Walk-in Customer")
@@ -276,9 +296,23 @@ export default function POSPage() {
       setActiveTabId(firstTab.id)
       setLoading(false)
 
+      // Toast informativo por piezas secundarias que degradaron.
+      const softErrors: string[] = []
+      if (boot.errors.customers) softErrors.push(`clientes (${boot.errors.customers})`)
+      if (boot.errors.categories) softErrors.push(`categorías (${boot.errors.categories})`)
+      if (boot.errors.priceLists) softErrors.push(`listas de precios (${boot.errors.priceLists})`)
+      if (boot.errors.promotions) softErrors.push(`promociones (${boot.errors.promotions})`)
+      if (softErrors.length > 0) {
+        toast({
+          variant: "destructive",
+          title: "Algunos datos no cargaron",
+          description: softErrors.join("; ") + ". El POS funciona pero refrescá si algo falla.",
+        })
+      }
+
       // Piggyback fiados abiertos del turno (no bloquea render del POS).
-      if (shiftData?.shift_id) {
-        getShiftReceivables(shiftData.shift_id)
+      if (boot.shift?.shift_id) {
+        getShiftReceivables(boot.shift.shift_id)
           .then((r) => {
             if (!cancelled) setShiftReceivablesCount(r.success ? r.sales.length : 0)
           })
@@ -297,7 +331,7 @@ export default function POSPage() {
       cancelled = true
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [siteId])
+  }, [siteId, bootstrapReloadKey])
 
   // --- Tab management ---
   const addTab = () => {
@@ -580,8 +614,31 @@ export default function POSPage() {
     )
   }
 
+  if (productsError) {
+    return (
+      <div className="flex h-64 flex-col items-center justify-center gap-3 px-6 text-center">
+        <p className="text-lg font-semibold text-destructive">
+          No se pudo cargar el catálogo
+        </p>
+        <p className="max-w-md text-sm text-muted-foreground">{productsError}</p>
+        <Button onClick={() => setBootstrapReloadKey((k) => k + 1)}>
+          Reintentar
+        </Button>
+      </div>
+    )
+  }
+
   return (
     <div className="flex flex-col gap-4">
+      {shiftError && (
+        <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/5 px-4 py-2 text-sm">
+          <span className="text-amber-800 dark:text-amber-200">
+            <b>No pudimos verificar tu turno.</b> {shiftError}. Refrescá antes
+            de abrir un turno nuevo (podría haber uno abierto que no vimos).
+          </span>
+        </div>
+      )}
+
       {/* Barra de turno de caja */}
       <div className="flex flex-wrap items-center gap-3 rounded-lg border bg-card px-4 py-3">
         <div className="flex items-center gap-2">

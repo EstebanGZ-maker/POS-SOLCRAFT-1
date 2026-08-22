@@ -5,6 +5,8 @@ import { revalidatePath } from "next/cache"
 import { createServerSupabaseClient } from "@/lib/supabase/server"
 import { requireRole } from "@/lib/role-guard"
 import { getAccessibleSiteIds, getUserProfile } from "@/lib/auth-helpers"
+import { withPosTiming } from "@/lib/pos-timing"
+import { fetchWarehouseForSiteRaw } from "@/lib/pos-bootstrap-queries"
 
 const SITE_COOKIE = "current_site_id"
 
@@ -24,26 +26,28 @@ export type Warehouse = {
 }
 
 export async function getSites(): Promise<Site[]> {
-  const supabase = await createServerSupabaseClient()
-  const { data, error } = await supabase
-    .from("sites")
-    .select("*")
-    .order("is_central", { ascending: false })
-    .order("name", { ascending: true })
-  if (error) {
-    console.error("Error fetching sites:", error)
-    return []
-  }
-  const all = data || []
+  return withPosTiming("getSites", async () => {
+    const supabase = await createServerSupabaseClient()
+    const { data, error } = await supabase
+      .from("sites")
+      .select("*")
+      .order("is_central", { ascending: false })
+      .order("name", { ascending: true })
+    if (error) {
+      console.error("Error fetching sites:", error)
+      return []
+    }
+    const all = data || []
 
-  // Filtrar por acceso del usuario. Admin/contador ven todas.
-  // Bodega central se muestra siempre (para vistas cross-site como recibir mercancía)
-  // solo si el usuario tiene acceso a alguna sede del sistema.
-  const accessible = await getAccessibleSiteIds()
-  if (accessible === "all") return all
-  if (accessible.length === 0) return []
-  const allowed = new Set(accessible)
-  return all.filter((s) => allowed.has(s.site_id))
+    // Filtrar por acceso del usuario. Admin/contador ven todas.
+    // Bodega central se muestra siempre (para vistas cross-site como recibir mercancía)
+    // solo si el usuario tiene acceso a alguna sede del sistema.
+    const accessible = await getAccessibleSiteIds()
+    if (accessible === "all") return all
+    if (accessible.length === 0) return []
+    const allowed = new Set(accessible)
+    return all.filter((s) => allowed.has(s.site_id))
+  })
 }
 
 export async function getSitesWithWarehouses() {
@@ -72,19 +76,10 @@ export async function getWarehouses(): Promise<Warehouse[]> {
 
 // Returns the primary warehouse id for a given site
 export async function getWarehouseForSite(site_id: string): Promise<string | null> {
-  const supabase = await createServerSupabaseClient()
-  const { data, error } = await supabase
-    .from("warehouses")
-    .select("warehouse_id")
-    .eq("site_id", site_id)
-    .eq("is_primary", true)
-    .limit(1)
-    .maybeSingle()
-  if (error || !data) {
-    console.error("Error fetching warehouse for site:", error)
-    return null
-  }
-  return data.warehouse_id
+  return withPosTiming("getWarehouseForSite", async () => {
+    const supabase = await createServerSupabaseClient()
+    return fetchWarehouseForSiteRaw(supabase, site_id)
+  })
 }
 
 export async function getCentralWarehouse(): Promise<{ site: Site; warehouse_id: string } | null> {
