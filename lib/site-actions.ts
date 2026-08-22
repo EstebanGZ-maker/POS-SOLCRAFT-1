@@ -6,6 +6,7 @@ import { createServerSupabaseClient } from "@/lib/supabase/server"
 import { requireRole } from "@/lib/role-guard"
 import { getAccessibleSiteIds, getUserProfile } from "@/lib/auth-helpers"
 import { withPosTiming } from "@/lib/pos-timing"
+import { fetchWarehouseForSiteRaw } from "@/lib/pos-bootstrap-queries"
 
 const SITE_COOKIE = "current_site_id"
 
@@ -77,18 +78,7 @@ export async function getWarehouses(): Promise<Warehouse[]> {
 export async function getWarehouseForSite(site_id: string): Promise<string | null> {
   return withPosTiming("getWarehouseForSite", async () => {
     const supabase = await createServerSupabaseClient()
-    const { data, error } = await supabase
-      .from("warehouses")
-      .select("warehouse_id")
-      .eq("site_id", site_id)
-      .eq("is_primary", true)
-      .limit(1)
-      .maybeSingle()
-    if (error || !data) {
-      console.error("Error fetching warehouse for site:", error)
-      return null
-    }
-    return data.warehouse_id
+    return fetchWarehouseForSiteRaw(supabase, site_id)
   })
 }
 

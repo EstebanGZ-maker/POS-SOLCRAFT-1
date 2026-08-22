@@ -6,17 +6,18 @@ import { getUserProfile } from "@/lib/auth-helpers"
 import { requireRole } from "@/lib/role-guard"
 import { phoneCORequired, PHONE_CO_ERROR } from "@/lib/validators/customer"
 import { withPosTiming } from "@/lib/pos-timing"
+import { fetchCustomersRaw, fetchCategoriesRaw } from "@/lib/pos-bootstrap-queries"
 
 // --- Customer Actions ---
 export async function getCustomers() {
   return withPosTiming("getCustomers", async () => {
     const supabase = await createServerSupabaseClient()
-    const { data, error } = await supabase.from("customers").select("*").order("name", { ascending: true })
-    if (error) {
-      console.error("Error fetching customers:", error)
+    try {
+      return await fetchCustomersRaw(supabase)
+    } catch (e: any) {
+      console.error("Error fetching customers:", e?.message ?? e)
       return []
     }
-    return data || []
   })
 }
 
@@ -113,12 +114,12 @@ export async function deleteCustomer(customer_id: string) {
 export async function getCategories() {
   return withPosTiming("getCategories", async () => {
     const supabase = await createServerSupabaseClient()
-    const { data, error } = await supabase.from("categories").select("*").order("name", { ascending: true })
-    if (error) {
-      console.error("Error fetching categories:", error)
+    try {
+      return await fetchCategoriesRaw(supabase)
+    } catch (e: any) {
+      console.error("Error fetching categories:", e?.message ?? e)
       return []
     }
-    return data || []
   })
 }
 
