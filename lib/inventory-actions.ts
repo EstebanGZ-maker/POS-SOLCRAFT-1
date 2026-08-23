@@ -615,6 +615,16 @@ export async function updateWholesalePrices(updates: { product_id: string; whole
 // opts.as_pending=true guarda un traslado en estado "pendiente" SIN mover
 // stock (sin RPC send_transfer_via_transit, sin stock_movements). Sirve para
 // preparar traslados que se despachan más tarde con dispatchPendingTransfer.
+// Crea uno o varios traslados. Después de la migración dispatch_transfer_
+// atomic (20260822), este flujo se unificó: SIEMPRE se crea el transfer
+// en 'pendiente' primero (INSERT transfer + INSERT transfer_items). Si
+// asPending=false, se despacha inmediatamente vía el RPC atómico como
+// segundo paso.
+//
+// Ventaja: si el despacho falla (stock insuficiente, race, etc.), el
+// transfer queda en 'pendiente' — estado válido, sin fantasma posible,
+// visible en /central/transfers para reintento manual. Ya no hace falta
+// el DELETE compensatorio que teníamos como mitigación TS pre-atómica.
 export async function createBulkTransfer(
   input: {
     from_warehouse_id: string
@@ -628,8 +638,8 @@ export async function createBulkTransfer(
   const profile = await requireRole("admin", "encargado")
   const supabase = await createServerSupabaseClient()
 
-  // El encargado solo puede despachar desde bodegas de SUS sedes.
-  // Sin esto, podría enviar stock desde central o desde otra sede.
+  // Guard de sede origen (encargado solo sus sedes). El RPC lo re-valida
+  // adentro, pero cortamos acá para no tocar DB si no aplica.
   const { data: originWh } = await supabase
     .from("warehouses")
     .select("warehouse_id, site_id")
@@ -648,12 +658,11 @@ export async function createBulkTransfer(
     }
   }
 
-  // No tiene sentido enviarse a sí mismo
   if (input.to_warehouse_ids.includes(input.from_warehouse_id)) {
     return { success: false, message: "El origen y el destino no pueden ser la misma bodega." }
   }
 
-  // La bodega de Tránsito la maneja el sistema: no puede elegirse como destino
+  // Bodega Tránsito: la maneja el sistema, no puede ser destino elegido.
   const { data: destWhs } = await supabase
     .from("warehouses")
     .select("warehouse_id, is_system")
@@ -666,36 +675,24 @@ export async function createBulkTransfer(
     return { success: false, message: "No se puede enviar a una bodega del sistema." }
   }
 
-  // Bodega tránsito: solo hace falta cuando vamos a mover stock ya (despacho
-  // directo). Un pendiente NO toca stock, así que puede prepararse aunque la
-  // tránsito no esté configurada.
-  let transitWhId: string | null = null
-  if (!asPending) {
-    const { data: transitWh } = await supabase
-      .from("warehouses")
-      .select("warehouse_id")
-      .eq("is_system", true)
-      .single()
-    if (!transitWh) return { success: false, message: "No se encontró la bodega de tránsito." }
-    transitWhId = transitWh.warehouse_id
-  }
-
-  const results: { ok: boolean; msg: string }[] = []
+  const results: { ok: boolean; msg: string; transfer_id?: string }[] = []
 
   for (const to_warehouse_id of input.to_warehouse_ids) {
-    const { data: tr, error } = await supabase
+    // Paso 1: crear siempre en 'pendiente'. Si falla, no se creó nada
+    // para este destino — pasamos al siguiente sin residuo.
+    const { data: tr, error: insErr } = await supabase
       .from("transfers")
       .insert({
         from_warehouse_id: input.from_warehouse_id,
         to_warehouse_id,
         notes: input.notes || null,
-        status: asPending ? "pendiente" : "en_transito",
+        status: "pendiente",
         sent_by: profile.id,
       })
       .select("transfer_id")
       .single()
-    if (error) {
-      results.push({ ok: false, msg: error.message })
+    if (insErr || !tr) {
+      results.push({ ok: false, msg: insErr?.message ?? "Error creando traslado" })
       continue
     }
 
@@ -704,49 +701,66 @@ export async function createBulkTransfer(
       product_id: it.product_id,
       quantity: it.quantity,
     }))
-    await supabase.from("transfer_items").insert(itemsToInsert)
-
-    if (asPending) {
-      results.push({ ok: true, msg: "Pendiente guardado" })
+    const { error: itemsErr } = await supabase.from("transfer_items").insert(itemsToInsert)
+    if (itemsErr) {
+      // Limpieza barata: sin items, el transfer pendiente no sirve. No es
+      // tema de atomicidad — es evitar registros huérfanos por bug de INSERT.
+      await supabase.from("transfers").delete().eq("transfer_id", tr.transfer_id)
+      results.push({ ok: false, msg: `Error creando items: ${itemsErr.message}` })
       continue
     }
 
-    // Move stock: source → transit (not directly to destination)
-    const moves = await Promise.all(
-      input.items.map((it) =>
-        supabase.rpc("send_transfer_via_transit", {
-          p_product_id: it.product_id,
-          p_from_warehouse_id: input.from_warehouse_id,
-          p_transit_warehouse_id: transitWhId!,
-          p_quantity: it.quantity,
-          p_reference_id: tr.transfer_id,
-          p_user_id: profile.id,
-        }),
-      ),
-    )
-    const moveErrors = moves.map((m) => m.error).filter(Boolean) as { message: string }[]
+    if (asPending) {
+      results.push({ ok: true, msg: "Pendiente guardado", transfer_id: tr.transfer_id })
+      continue
+    }
 
-    if (moveErrors.length > 0) {
-      // Mitigación TS (no atómica pero limpia el 99% de casos): si algún RPC
-      // falla, borramos el transfer + transfer_items recién insertados para
-      // no dejar un registro fantasma (transfer en_transito sin
-      // stock_movements). El fix definitivo requiere una RPC SQL atómica
-      // (create_bulk_transfer_atomic) — ver ESTADO-PENDIENTES.md.
-      await supabase.from("transfer_items").delete().eq("transfer_id", tr.transfer_id)
-      await supabase.from("transfers").delete().eq("transfer_id", tr.transfer_id)
+    // Paso 2: despachar atómicamente. Si falla, el transfer queda en
+    // 'pendiente' y aparece en /central/transfers para reintento manual.
+    const { data: rpcData, error: rpcErr } = await supabase.rpc("dispatch_transfer_atomic", {
+      p_transfer_id: tr.transfer_id,
+      p_user_id: profile.id,
+    })
+    if (rpcErr) {
       results.push({
         ok: false,
-        msg: `no se pudo despachar (${moveErrors.map((e) => e.message).join("; ")}), no se creó ningún registro`,
+        msg: `Traslado creado como pendiente (id ${tr.transfer_id.slice(0, 8)}), pero el despacho falló: ${rpcErr.message}`,
+        transfer_id: tr.transfer_id,
+      })
+      continue
+    }
+    const res = (rpcData ?? {}) as {
+      success?: boolean
+      error?: string
+      insufficient_stock?: Array<{
+        code: string | null
+        name: string
+        needed: number
+        available: number
+      }>
+    }
+    if (res.error) {
+      const detail = res.insufficient_stock?.length
+        ? " Faltantes: " +
+          res.insufficient_stock
+            .map((s) => `${s.code ? `${s.code} (${s.name})` : s.name}: necesita ${s.needed}, disponible ${s.available}`)
+            .join("; ")
+        : ""
+      results.push({
+        ok: false,
+        msg: `Traslado creado como pendiente (id ${tr.transfer_id.slice(0, 8)}), pero el despacho falló: ${res.error}${detail}`,
+        transfer_id: tr.transfer_id,
       })
       continue
     }
 
-    results.push({ ok: true, msg: "Envío registrado" })
+    results.push({ ok: true, msg: "Envío registrado", transfer_id: tr.transfer_id })
   }
 
   revalidatePath("/central")
   revalidatePath("/central/transfers")
   revalidatePath("/inventory/products")
+
   const failed = results.filter((r) => !r.ok)
   if (failed.length) {
     return { success: false, message: `Algunos envíos fallaron: ${failed.map((f) => f.msg).join("; ")}` }
