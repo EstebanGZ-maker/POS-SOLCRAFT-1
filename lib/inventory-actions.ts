@@ -798,134 +798,73 @@ export async function getTransferDetail(transfer_id: string) {
   return { ...(data as any), is_ghost }
 }
 
-// Despacha un traslado en estado "pendiente": valida stock ítem por ítem en
-// la bodega origen ANTES de mover nada, corre send_transfer_via_transit por
-// cada línea, y actualiza status a "en_transito". El pre-check evita despacho
-// parcial en el caso normal (stock cambió desde que se creó el pendiente);
-// si un RPC falla mid-way por race, se reporta cuál pasó y cuál no.
+// Despacha un traslado en estado "pendiente". Después de la migración
+// dispatch_transfer_atomic (20260822), este TS es un wrapper delgado: valida
+// rol + sede origen y delega la atomicidad real al RPC. El RPC repite el
+// guard adentro con is_admin_or_encargado + has_site_access, por si algún
+// caller futuro invoca directo (SECURITY DEFINER bypasea RLS).
 export async function dispatchPendingTransfer(transfer_id: string) {
   const profile = await requireRole("admin", "encargado")
   const supabase = await createServerSupabaseClient()
 
-  // Lee el traslado + items. maybeSingle porque puede no existir / RLS.
-  const { data: tr, error: trErr } = await supabase
-    .from("transfers")
-    .select(
-      `transfer_id, status, from_warehouse_id, to_warehouse_id,
-       from_wh:warehouses!transfers_from_warehouse_id_fkey ( site_id ),
-       transfer_items ( transfer_item_id, product_id, quantity,
-         products ( name, code ) )`,
-    )
-    .eq("transfer_id", transfer_id)
-    .maybeSingle()
-  if (trErr || !tr) {
-    return { success: false, message: "No se encontró el traslado o no tienes acceso." }
-  }
-  const t = tr as any
-  if (t.status !== "pendiente") {
-    return { success: false, message: `El traslado no está pendiente (estado actual: ${t.status}).` }
-  }
-
-  // Guard de sede: encargado solo despacha desde sus sedes (mismo patrón que
-  // createBulkTransfer).
+  // Guard de sede TS (encargado solo sus sedes). Corta antes de DB si no
+  // aplica; ahorra un round-trip al RPC en el caso denegado.
   if (profile.role === "encargado") {
+    const { data: tr } = await supabase
+      .from("transfers")
+      .select(
+        `transfer_id,
+         from_wh:warehouses!transfers_from_warehouse_id_fkey ( site_id )`,
+      )
+      .eq("transfer_id", transfer_id)
+      .maybeSingle()
+    if (!tr) {
+      return { success: false, message: "No se encontró el traslado o no tienes acceso." }
+    }
     const accessible = await getAccessibleSiteIds()
-    const originSiteId = t.from_wh?.site_id
+    const originSiteId = (tr as any).from_wh?.site_id
     const allowed = accessible === "all" || (originSiteId && accessible.includes(originSiteId))
     if (!allowed) {
       return { success: false, message: "No puedes despachar desde esta sede." }
     }
   }
 
-  const items = (t.transfer_items ?? []) as Array<{
-    transfer_item_id: string
-    product_id: string
-    quantity: number
-    products: { name: string; code: string | null } | null
-  }>
-  if (items.length === 0) {
-    return { success: false, message: "El traslado no tiene ítems." }
+  const { data, error } = await supabase.rpc("dispatch_transfer_atomic", {
+    p_transfer_id: transfer_id,
+    p_user_id: profile.id,
+  })
+
+  if (error) {
+    return { success: false, message: `Error del servidor: ${error.message}` }
   }
 
-  // Pre-check de stock agregado: para cada product_id, sumar todas las qty
-  // pedidas y comparar con el stock actual en la bodega origen. Reporta TODOS
-  // los faltantes juntos, no de a uno.
-  const neededByProduct = new Map<string, number>()
-  for (const it of items) {
-    neededByProduct.set(it.product_id, (neededByProduct.get(it.product_id) ?? 0) + Number(it.quantity))
+  const res = (data ?? {}) as {
+    success?: boolean
+    error?: string
+    insufficient_stock?: Array<{
+      product_id: string
+      code: string | null
+      name: string
+      needed: number
+      available: number
+    }>
+    moved_items?: number
   }
-  const productIds = Array.from(neededByProduct.keys())
-  const { data: stockRows, error: stErr } = await supabase
-    .from("product_stock")
-    .select("product_id, quantity")
-    .eq("warehouse_id", t.from_warehouse_id)
-    .in("product_id", productIds)
-  if (stErr) {
-    return { success: false, message: `No se pudo validar stock: ${stErr.message}` }
-  }
-  const stockByProduct = new Map<string, number>()
-  for (const r of stockRows ?? []) {
-    stockByProduct.set(r.product_id as string, Number((r as any).quantity) || 0)
-  }
-  const shortfalls: string[] = []
-  for (const it of items) {
-    const need = neededByProduct.get(it.product_id) ?? 0
-    const have = stockByProduct.get(it.product_id) ?? 0
-    if (have < need) {
-      const label = it.products?.code ? `${it.products.code} (${it.products.name})` : (it.products?.name ?? it.product_id)
-      shortfalls.push(`${label}: necesita ${need}, disponible ${have}`)
+
+  if (res.error) {
+    if (res.insufficient_stock && res.insufficient_stock.length > 0) {
+      const detail = res.insufficient_stock
+        .map((s) => {
+          const label = s.code ? `${s.code} (${s.name})` : s.name
+          return `${label}: necesita ${s.needed}, disponible ${s.available}`
+        })
+        .join("; ")
+      return {
+        success: false,
+        message: `Stock insuficiente en la bodega origen: ${detail}. No se despachó nada.`,
+      }
     }
-  }
-  // Deduplica (si un product_id se repite en varias líneas).
-  const uniqShortfalls = Array.from(new Set(shortfalls))
-  if (uniqShortfalls.length > 0) {
-    return {
-      success: false,
-      message: `Stock insuficiente en la bodega origen: ${uniqShortfalls.join("; ")}. No se despachó nada.`,
-    }
-  }
-
-  // Bodega tránsito.
-  const { data: transitWh } = await supabase
-    .from("warehouses")
-    .select("warehouse_id")
-    .eq("is_system", true)
-    .single()
-  if (!transitWh) return { success: false, message: "No se encontró la bodega de tránsito." }
-
-  // Dispara los RPCs uno a uno; si alguno falla mid-way (race con otra venta/
-  // ajuste), reporta cuáles alcanzaron a moverse — el traslado queda en
-  // estado inconsistente y requiere reconciliación manual (esto es aceptable
-  // porque el pre-check ya cubre el 99% de casos).
-  const dispatched: string[] = []
-  const failed: string[] = []
-  for (const it of items) {
-    const { error } = await supabase.rpc("send_transfer_via_transit", {
-      p_product_id: it.product_id,
-      p_from_warehouse_id: t.from_warehouse_id,
-      p_transit_warehouse_id: transitWh.warehouse_id,
-      p_quantity: it.quantity,
-      p_reference_id: transfer_id,
-      p_user_id: profile.id,
-    })
-    const label = it.products?.code ?? it.product_id.slice(0, 8)
-    if (error) failed.push(`${label}: ${error.message}`)
-    else dispatched.push(label)
-  }
-
-  if (failed.length > 0) {
-    return {
-      success: false,
-      message: `Despacho parcial por race condition. Movidos: ${dispatched.join(", ") || "ninguno"}. Fallaron: ${failed.join("; ")}. Traslado queda mixto — revisar manualmente.`,
-    }
-  }
-
-  const { error: updErr } = await supabase
-    .from("transfers")
-    .update({ status: "en_transito" })
-    .eq("transfer_id", transfer_id)
-  if (updErr) {
-    return { success: false, message: `Stock movido pero no se pudo actualizar el estado: ${updErr.message}` }
+    return { success: false, message: res.error }
   }
 
   revalidatePath("/central/transfers")
