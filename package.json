@@ -46,6 +46,7 @@
     "@react-three/postprocessing": "^3.0.4",
     "@supabase/ssr": "latest",
     "@supabase/supabase-js": "latest",
+    "@tanstack/react-virtual": "^3.14.10",
     "ai": "^7.0.28",
     "autoprefixer": "^10.4.20",
     "class-variance-authority": "^0.7.1",
