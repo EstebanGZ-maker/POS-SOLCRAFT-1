@@ -1,6 +1,6 @@
 # CONTEXT-POS.md
 
-Contexto denso de POS-SOLCRAFT para pasar a otra instancia de Claude sin acceso al repo. Estado al 2026-08-04.
+Contexto denso de POS-SOLCRAFT para pasar a otra instancia de Claude sin acceso al repo. Estado al 2026-08-24. Ver §7.17 (última sesión, s21 mergeado + s22 Commit A en rama abierta) y §7.16 para el bloque previo (s14-s20).
 
 ## 1. Stack y versiones
 
@@ -1701,6 +1701,195 @@ con URL pública del bucket, sin regresión en callers del server
 action que se conservó.
 
 ---
+
+## §7.17 — Sesión 2026-08-24 (s21 mergeado + s22 Commit A, `main` @ `234ecb4`, rama `s22-product-import` abierta)
+
+Dos bloques en la misma sesión: cierre completo de la deuda de atomicidad
+de traslados (mergeado a prod), y arranque del importador masivo de
+productos (backend + shared logic pusheados en rama, UI pendiente).
+
+**s21 — atomicidad de traslados (mergeada a `main` @ `234ecb4`)**
+
+Cierra la deuda documentada en §7.16 (fantasmas históricos c7b2cdf3 /
+e34a32c5 causados por loop TS no-atómico de send_transfer_via_transit +
+UPDATE de status en round-trips separados).
+
+Migración `20260822000000_add_dispatch_transfer_atomic.sql`:
+- RPC `dispatch_transfer_atomic(p_transfer_id uuid, p_user_id uuid)`.
+  SECURITY DEFINER, doble guard (`is_admin_or_encargado()` +
+  `has_site_access()` sobre sede origen).
+- Pre-check agregado dentro de la tx: `FOR UPDATE` sobre `product_stock`
+  con **`ORDER BY product_id`** para deadlock avoidance entre despachos
+  concurrentes. Colecta faltantes en un JSONB array y retorna
+  `{ error, insufficient_stock: [{code, name, needed, available}] }`
+  antes de mover nada.
+- Loop de despacho: `PERFORM send_transfer_via_transit` por línea +
+  UPDATE final de status a `en_transito`. Todo en la misma tx —
+  cualquier RAISE revierte los INSERT anteriores. Fantasmas son
+  arquitectónicamente imposibles desde este flujo porque el flip a
+  `en_transito` sólo commitea junto con los `stock_movements`.
+- Retorno OK: `{ success, moved_items, status }`.
+
+TS `dispatchPendingTransfer` colapsó a wrapper delgado
+(`lib/inventory-actions.ts:806`): mantiene guard de sede TS como
+fast-path (evita round-trip al RPC en caso denegado), delega atomicidad
+al RPC. Parsea `insufficient_stock` y arma mensaje con
+`{code (name): necesita N, disponible M}` (mismo UX que la versión TS
+previa pero sin race entre pre-check y moves).
+
+TS `createBulkTransfer` refactor: SIEMPRE crea el transfer en
+`pendiente` primero (INSERT products + items). Si `asPending=false`,
+llama al RPC atómico como segundo paso. Si el despacho falla → transfer
+queda en `pendiente` con `transfer_id` truncado en el mensaje (usuario
+reintenta desde `/central/transfers`). **DELETE compensatorio eliminado**
+— la mitigación TS pre-atómica se volvió obsoleta.
+
+Smoke tests:
+- **dispatchPendingTransfer** validado end-to-end en preview con
+  verificación DB directa: Caso A (58719a6b, despacho exitoso, 4
+  movimientos exactos), Caso B (4e10f49a, stock insuficiente por venta
+  legítima entre creación y despacho, cero movimientos, transfer
+  quedó pendiente).
+- **createBulkTransfer**: Casos C/D/E/F NO se corrieron end-to-end.
+  Merge se hizo con verificación estática (firma RPC vs. llamada TS +
+  chequeo de NOT NULL en INSERT), decisión explícita de Esteban.
+  Deploy prod (`234ecb4`) READY sin runtime errors en 15 min post-merge.
+  Query de diagnóstico corregida vive en `docs/ESTADO-PENDIENTES.md §0`
+  para correr en primer traslado real (rama `cancelado` agregada).
+
+Red de seguridad heredada (`is_ghost`, `adminCloseGhostTransfer`,
+alerta admin en `getTransferSummary`) se mantiene — el flujo nuevo no
+puede alimentarla pero otros modos de fallo desconocidos podrían.
+
+**s22 — importador masivo de productos (Commit A pusheado, Commit B pendiente)**
+
+Rama `s22-product-import` @ `7cdb251` — **NO mergeada**. Backend +
+shared logic listos, UI totalmente pendiente para próxima sesión.
+
+Migraciones aplicadas en prod (independientes del merge del branch):
+- `20260824000000_add_unique_barcode.sql`: agrega UNIQUE a
+  `products.barcode`. Sanity check previo bloquea la migración si hay
+  duplicados existentes (0 en prod al aplicar). Índice btree
+  `idx_products_barcode` **se mantiene** — decisión explícita, sin
+  urgencia de performance que justifique el DROP.
+- `20260824000001_add_import_products_bulk_rpc.sql`: RPC
+  `import_products_bulk_atomic(p_rows jsonb, p_warehouse_id uuid, p_user_id uuid)`.
+  SECURITY DEFINER, doble guard (rol + sede via `has_site_access`).
+  Loop de INSERT `products` + `adjust_warehouse_stock` con
+  `reference_type='product_import'` y `reference_id=v_product_id` para
+  trazabilidad. Handlers de EXCEPTION granulares:
+  - `unique_violation` → extrae `CONSTRAINT_NAME` (products_code_key /
+    products_barcode_key) y RE-RAISE con mensaje "Fila X: la referencia
+    "Y" ya existe...".
+  - `foreign_key_violation` → detecta constraint LIKE '%category%' y
+    reporta categoría inexistente por nombre.
+  - `check_violation` → reporta valor inválido en producto específico.
+  Re-raise propaga y aborta la tx entera — todo-o-nada garantizado.
+  Retorno OK: `{ success, inserted_count, warehouse_id }`.
+
+Shared logic:
+- `lib/product-schema.ts`: `productImportRowSchema` (Zod). Campos
+  snake_case que coinciden 1:1 con el AS del `jsonb_to_recordset` del
+  RPC (row_index, initial_stock, category_id, etc.). Coerción numérica
+  en price/cost/initial_stock, refinement no-negativos, normalización
+  de opcionales (whitespace → null).
+- `lib/product-import.ts` (puro, sin `"use server"`, importable desde
+  cliente):
+  - `IMPORT_MAX_ROWS=1000`, `IMPORT_MAX_FILE_BYTES=2MB`.
+  - `TEMPLATE_HEADERS`: los 11 headers exactos de la plantilla Alegra.
+    "Venta en negativo" se lee pero se **ignora** intencionalmente
+    (sin campo equivalente en `products`, documentado en el código).
+  - `IMPORT_FIELDS`: metadata por campo (label, required) para
+    dropdowns de la Pantalla 2 de mapping.
+  - `autoMapColumns(headers)`: heurística case-insensitive + sin
+    tildes que matchea headers del archivo con el mapa por defecto.
+  - `parseWorkbook(file)`: lee `.xlsx` con exceljs a
+    `{ headers, rows }`.
+  - `buildTemplateWorkbook()`: genera la plantilla descargable como
+    Uint8Array (headers + 1 fila de ejemplo, columnas ancho 28).
+  - `validateRows(rows, mapping, bootstrap)`: **Capa 1** completa.
+    Colecta TODOS los errores por fila (no corta en el primero):
+    requeridos faltantes, categoría inexistente, Zod, duplicados
+    intra-archivo (referencia a la fila del duplicado), choques con DB.
+  - `allValid(results)`: helper para gate del botón "Importar".
+- `lib/product-import-actions.ts` (con `"use server"`):
+  - `getImportBootstrap()`: `requireRole("admin", "encargado")` +
+    `Promise.all` de existingCodes, existingBarcodes, categories,
+    sites+warehouses. RLS filtra sites; filtra `is_system=true`
+    (Tránsito) fuera de la lista de destinos válidos.
+  - `runProductImport(rows, warehouse_id)`: wrapper delgado del RPC.
+    Propaga `error.message` tal cual (viene humano del RPC).
+
+Dependencia nueva: `exceljs ^4.4.0`. Code-split por ruta en Next.js
+(solo se carga en `/inventory/products/import`), no impacta bundle de
+`/pos`.
+
+Efecto colateral del `pnpm add exceljs`: patch/minor bumps en 3 deps
+con `"latest"` en package.json (input-otp 1.4.2→1.5.0, react-hook-form
+7.85.0→7.86.0, react-resizable-panels 4.12.2→4.12.3). Confirmado con
+Esteban: commiteados tal cual, sin riesgo real.
+
+**Decisiones de diseño s22 ya cerradas (no re-litigar):**
+
+1. `code` (Referencia) y `barcode` (CODIGO) validados como únicos.
+   Duplicado con producto existente = rechazo de fila. NO se actualiza
+   producto existente (importación upsert queda como modo separado
+   futuro si se pide).
+2. Categoría inexistente = rechazo de fila. NO se auto-crea.
+3. **Todo-o-nada**: cualquier error bloquea el import completo. El
+   usuario corrige el archivo y re-sube.
+4. Selector explícito de sede/bodega destino en Pantalla 1: hay 6
+   bodegas "Principal" en prod (una por sede), no se puede asumir un
+   `principalWarehouseId` singular.
+5. Columna "Venta en negativo" de la plantilla: se lee pero se ignora.
+6. Vista previa (Pantalla 3): **TODAS** las filas visibles con estado
+   por fila (diferencia deliberada vs. Alegra que trunca a 8).
+   Virtualización con `@tanstack/react-virtual` para tolerar 1000
+   filas fluidamente.
+7. Límites: 1000 filas / 2MB por archivo (elegido 1000 vs. los 3000
+   de Alegra por catálogo actual de 25 productos + colchón razonable
+   a 1-2 años).
+8. Parsing en cliente (exceljs), no en server — feedback instantáneo
+   en mapping/preview sin round-trips.
+
+**Pendiente para próxima sesión (Commit B — UI de s22):**
+
+Archivos a crear:
+- `app/inventory/products/import/page.tsx` (server component,
+  requireRole admin/encargado, llama `getImportBootstrap()`).
+- `components/inventory/product-import-wizard.tsx` (client, orquesta
+  las 3 pantallas con state local, sin URL state — sin razón para
+  persistir mid-flujo).
+- `components/inventory/product-import-step-upload.tsx` (Pantalla 1:
+  botón "Descargar plantilla" + dropzone `.xlsx` 2MB + selector de
+  bodega destino).
+- `components/inventory/product-import-step-mapping.tsx` (Pantalla 2:
+  dropdowns por columna con auto-map inicial).
+- `components/inventory/product-import-step-preview.tsx` (Pantalla 3:
+  tabla virtualizada + botón "Importar" gateado por `allValid`).
+- `components/dashboard-sidebar.tsx` (link "Importar productos" en
+  grupo inventario, icono `Upload`, permisos admin/encargado).
+
+Dependencia adicional: `@tanstack/react-virtual`.
+
+**Reglas nuevas documentadas esta sesión (aplican a futuro):**
+
+- **Handlers de EXCEPTION granulares en RPCs con INSERT batch**: usar
+  `BEGIN/EXCEPTION` con `GET STACKED DIAGNOSTICS CONSTRAINT_NAME` +
+  RE-RAISE con mensaje humano preserva atomicidad de la tx entera
+  y da UX de error específico por fila+campo+valor. Patrón usado en
+  `import_products_bulk_atomic`. Ver también `dispatch_transfer_atomic`
+  para el patrón de pre-check + `insufficient_stock` array (variante
+  cuando querés colectar múltiples errores sin abortar).
+- **`FOR UPDATE` con `ORDER BY` en pre-checks agregados**: cuando el
+  loop toca N filas de la misma tabla en múltiples txs concurrentes,
+  ordenar el lock por PK/UNIQUE evita deadlocks. Aplicado en
+  `dispatch_transfer_atomic` sobre `product_stock ORDER BY product_id`.
+- **Guards de rol/sede en RPC además del TS**: SECURITY DEFINER
+  bypasea RLS; un guard sólo en TS es frágil ante callers futuros del
+  RPC directo. Duplicar `is_admin_or_encargado()` +
+  `has_site_access(v_site_id)` adentro. Ambas usan `auth.uid()` del
+  JWT — funcionan desde SECURITY DEFINER anidado.
 
 ## §7.16 — Sesión 2026-08-22 (s14 → s20 en prod, `main` @ `aae73b1`)
 
