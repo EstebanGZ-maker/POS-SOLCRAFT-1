@@ -42,19 +42,31 @@ export const productImportRowSchema = z.object({
   // Opcionales: string vacío o whitespace se normaliza a null para no
   // enviar '' a la DB (evita confundir '' con "sin descripción").
   description: z
-    .union([z.string(), z.null(), z.undefined()])
+    .union(
+      [z.string(), z.null(), z.undefined()],
+      { message: "El valor debe ser texto o estar vacío." },
+    )
     .transform((v) => (v && v.trim() !== "" ? v.trim() : null)),
 
   size: z
-    .union([z.string(), z.null(), z.undefined()])
+    .union(
+      [z.string(), z.null(), z.undefined()],
+      { message: "El valor debe ser texto o estar vacío." },
+    )
     .transform((v) => (v && v.trim() !== "" ? v.trim() : null)),
 
   code: z
-    .union([z.string(), z.null(), z.undefined()])
+    .union(
+      [z.string(), z.null(), z.undefined()],
+      { message: "El valor debe ser texto o estar vacío." },
+    )
     .transform((v) => (v && v.trim() !== "" ? v.trim() : null)),
 
   barcode: z
-    .union([z.string(), z.null(), z.undefined()])
+    .union(
+      [z.string(), z.null(), z.undefined()],
+      { message: "El valor debe ser texto o estar vacío." },
+    )
     .transform((v) => (v && v.trim() !== "" ? v.trim() : null)),
 })
 

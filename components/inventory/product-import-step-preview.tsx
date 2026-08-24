@@ -97,8 +97,11 @@ export function ProductImportStepPreview({
               return (
                 <div
                   key={vItem.key}
+                  data-row-status={hasErrors ? "error" : "ok"}
                   className={`grid grid-cols-[60px_80px_1fr_120px_140px_2fr] gap-2 border-b px-3 text-sm items-center ${
-                    hasErrors ? "bg-destructive/5 border-l-4 border-l-destructive" : ""
+                    hasErrors
+                      ? "bg-red-50 dark:bg-red-950/30 border-l-4 border-l-destructive"
+                      : "bg-green-50/50 dark:bg-green-950/10 border-l-4 border-l-green-500/70"
                   }`}
                   style={{
                     position: "absolute",
@@ -112,12 +115,12 @@ export function ProductImportStepPreview({
                   <div className="text-muted-foreground">{row.row_index}</div>
                   <div>
                     {hasErrors ? (
-                      <span className="inline-flex items-center gap-1 text-destructive">
+                      <span className="inline-flex items-center gap-1 font-semibold text-destructive">
                         <AlertCircle className="h-3.5 w-3.5" />
                         <span className="text-xs">Error</span>
                       </span>
                     ) : (
-                      <span className="inline-flex items-center gap-1 text-green-600">
+                      <span className="inline-flex items-center gap-1 font-semibold text-green-700 dark:text-green-400">
                         <CheckCircle2 className="h-3.5 w-3.5" />
                         <span className="text-xs">OK</span>
                       </span>

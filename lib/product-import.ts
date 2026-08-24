@@ -134,6 +134,43 @@ export type RawSheet = {
  * Solo se usa desde el cliente (recibe un File). exceljs corre en
  * browser sin problemas.
  */
+/**
+ * exceljs a veces devuelve la celda como un objeto tipado (richText,
+ * hyperlink, formula, error, mergeCell) en vez de una primitiva. Si
+ * dejamos pasar el objeto tal cual, Zod lo rechaza con "Invalid input"
+ * genérico. Esta función lo colapsa a string/number/boolean/null/Date
+ * antes de que llegue a la validación.
+ */
+function normalizeCellValue(v: unknown): unknown {
+  if (v === null || v === undefined) return null
+  if (typeof v === "string") {
+    const t = v.trim()
+    return t === "" ? null : t
+  }
+  if (typeof v === "number" || typeof v === "boolean") return v
+  if (v instanceof Date) return v
+  if (typeof v === "object") {
+    const o = v as Record<string, unknown>
+    // Formula: usar el .result computado por Excel.
+    if ("result" in o && "formula" in o) return normalizeCellValue(o.result)
+    // Rich text: concatenar los fragmentos .text.
+    if (Array.isArray(o.richText)) {
+      const s = (o.richText as Array<{ text?: unknown }>)
+        .map((f) => String(f?.text ?? ""))
+        .join("")
+        .trim()
+      return s === "" ? null : s
+    }
+    // Hyperlink: usar el .text visible.
+    if ("hyperlink" in o && "text" in o) return normalizeCellValue(o.text)
+    // Error cell (#REF!, #VALUE!, etc.).
+    if ("error" in o) return String(o.error)
+    // SharedString u otro: fallback razonable.
+    if ("text" in o) return normalizeCellValue(o.text)
+  }
+  return v
+}
+
 export async function parseWorkbook(file: File): Promise<RawSheet> {
   const buffer = await file.arrayBuffer()
   const wb = new ExcelJS.Workbook()
@@ -148,7 +185,7 @@ export async function parseWorkbook(file: File): Promise<RawSheet> {
 
   ws.eachRow({ includeEmpty: false }, (row, rowNumber) => {
     // ExcelJS incluye el índice 0 vacío por convención; slice(1) lo saca.
-    const values = (row.values as unknown[]).slice(1)
+    const values = (row.values as unknown[]).slice(1).map(normalizeCellValue)
     if (rowNumber === 1) {
       headers = values.map((v) => String(v ?? "").trim())
     } else {
@@ -271,7 +308,7 @@ export function validateRows(
     // Armar el candidato y correr Zod.
     let product: ProductImportRow | null = null
     if (errors.length === 0) {
-      const parsed = productImportRowSchema.safeParse({
+      const candidate = {
         row_index,
         name: cellAt("name"),
         price: cellAt("price"),
@@ -283,12 +320,43 @@ export function validateRows(
         size: cellAt("size"),
         code: cellAt("code"),
         barcode: cellAt("barcode"),
-      })
+      }
+      // TEMP s22: logging fila-a-fila pre-Zod para diagnosticar el bug de
+      // "14/14 con error" del archivo real. Remover en commit de limpieza
+      // una vez validado el fix de normalización de celdas exceljs.
+      if (typeof window !== "undefined") {
+        // eslint-disable-next-line no-console
+        console.log("[product-import] row", row_index, {
+          candidate,
+          types: Object.fromEntries(
+            Object.entries(candidate).map(([k, v]) => [
+              k,
+              v === null ? "null" : Array.isArray(v) ? "array" : typeof v,
+            ]),
+          ),
+        })
+      }
+      const parsed = productImportRowSchema.safeParse(candidate)
       if (parsed.success) {
         product = parsed.data
       } else {
+        // TEMP s22: log detallado de issues Zod (path + message + code)
+        // para diagnosticar mensajes genéricos "Invalid input".
+        if (typeof window !== "undefined") {
+          // eslint-disable-next-line no-console
+          console.log("[product-import] row", row_index, "zod-issues",
+            parsed.error.issues.map((i) => ({
+              path: i.path.join("."),
+              code: i.code,
+              message: i.message,
+            })),
+          )
+        }
         for (const issue of parsed.error.issues) {
-          errors.push(issue.message)
+          const fieldLabel = issue.path[0]
+            ? ` (campo "${String(issue.path[0])}")`
+            : ""
+          errors.push(`${issue.message}${fieldLabel}`)
         }
       }
     }
