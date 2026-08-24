@@ -64,10 +64,22 @@ export const productImportRowSchema = z.object({
 
   barcode: z
     .union(
-      [z.string(), z.null(), z.undefined()],
+      [z.string(), z.number(), z.null(), z.undefined()],
       { message: "El valor debe ser texto o estar vacío." },
     )
-    .transform((v) => (v && v.trim() !== "" ? v.trim() : null)),
+    .transform((v) => {
+      if (v === null || v === undefined) return null
+      // Excel a veces coerce barcodes numéricos a number; siempre lo
+      // guardamos como string.
+      let s = typeof v === "number" ? String(v) : v.trim()
+      // Fórmulas de plantillas tipo ="*"&Referencia&"*" (Code39) traen
+      // los asteriscos delimitadores en el .result. Los asteriscos NO
+      // son parte del código real — son marcadores de start/stop del
+      // formato Code39 — así que los quitamos para que barcode quede
+      // consistente con code.
+      s = s.replace(/^\*+/, "").replace(/\*+$/, "").trim()
+      return s === "" ? null : s
+    }),
 })
 
 export type ProductImportRow = z.infer<typeof productImportRowSchema>

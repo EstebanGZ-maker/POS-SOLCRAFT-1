@@ -151,8 +151,10 @@ function normalizeCellValue(v: unknown): unknown {
   if (v instanceof Date) return v
   if (typeof v === "object") {
     const o = v as Record<string, unknown>
-    // Formula: usar el .result computado por Excel.
-    if ("result" in o && "formula" in o) return normalizeCellValue(o.result)
+    // Formula computada por Excel — cubre formula, sharedFormula y
+    // arrayFormula. exceljs siempre expone el valor calculado como
+    // .result, así que basta con la presencia de esa key.
+    if ("result" in o) return normalizeCellValue(o.result)
     // Rich text: concatenar los fragmentos .text.
     if (Array.isArray(o.richText)) {
       const s = (o.richText as Array<{ text?: unknown }>)
