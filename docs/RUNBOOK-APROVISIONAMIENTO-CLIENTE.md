@@ -132,21 +132,37 @@ Verificar al final:
   products, product_stock, sales, transfers, business_settings, etc.).
 - `list_migrations` refleja las 5 migraciones aplicadas.
 
-### 2.3 Aplicar scripts sueltos que NO están en la baseline
+### 2.3 Scripts sueltos: NO aplicar ninguno
 
-**TODO**: consolidar lista definitiva antes de la primera ejecución.
-Sospechosos por nombre (candidatos a NO aplicar porque ya están en la
-baseline o son solo dev):
-- `scripts/00_schema.sql`, `01_functions.sql`, `02_rls.sql`,
-  `03_storage.sql` — probablemente ya en baseline.
-- `scripts/13a_seed_local.sql`, `13b_drift_wompi_local.sql` — solo local.
-- `scripts/17rollback_*` — solo rollback, no aplicar.
+**Respuesta**: **saltearse todo `scripts/*.sql`** en el aprovisionamiento
+de un cliente nuevo.
 
-Candidatos a SÍ aplicar si no están en baseline (revisar): `05_merge_features.sql`
-(⚠️ contiene un bloque que asigna admin a `admin@solcraft.dev` — hay que
-borrar ese bloque o adaptarlo al email del admin del cliente antes de
-correr), `06`, `08`, `09`, `10`, `11`, `12`, `13`, `14`, `15`, `16`,
-`17*` (varias fases de credit sales + adjustments + COGS), `18`.
+Racional:
+
+- El baseline `20260812000000_baseline_canonical_from_prod.sql` es un dump
+  canónico del esquema de PROD a fecha 2026-08-12 (SOURCE OF TRUTH del
+  release status en ese momento). Verificado: contiene los 8 RPCs de
+  muestra (`apply_wompi_transaction`, `log_payment_event`, `create_sale`,
+  `close_shift`, `open_shift`, `verify_kardex_integrity`, `dispatch_transfer_atomic`
+  y `import_products_bulk_atomic` no — los últimos dos llegaron
+  post-baseline).
+- Todos los `scripts/00-18*.sql` que estuvieron en prod antes del 12-08
+  están dentro de la baseline por definición.
+- Los que quedaron sueltos en el repo son:
+  - Históricos/documentales (pipeline de features que ya fusionaron a
+    prod → ya en baseline).
+  - Local-only explícitos: `13a_seed_local.sql`, `13b_drift_wompi_local.sql`.
+  - Rollbacks: `17rollback_*.sql` (solo emergencia).
+  - Peligrosos si se aplican: `05_merge_features.sql` asigna rol admin a
+    `admin@solcraft.dev` — email de dev, no del cliente. Y `04_seed.sql`
+    ahora es stub (vaciado en commit `17aa2cb`).
+
+Deltas post-baseline aplicados vía migrations (§2.2), no via scripts:
+- s21 (`20260822...`) — `dispatch_transfer_atomic`.
+- s22/s23 (`20260824*000000-2`) — importador masivo + permiso.
+
+**Regla operativa**: para clientes nuevos, aplicar SOLO
+`supabase/migrations/*.sql` en orden. Ignorar `scripts/`.
 
 ### 2.4 Verificar integridad post-schema
 
@@ -189,9 +205,30 @@ En `Project Settings → Environment Variables`, agregar (todas para
 | `WOMPI_EVENTS_SECRET` | del cliente | |
 | `NEXT_PUBLIC_WOMPI_PUBLIC_KEY` | del cliente (opcional, también se puede meter en business_settings vía UI) | |
 
-**TODO**: verificar si hay otras env vars requeridas revisando
-`process.env.*` en el código. Grep sugerido:
-`grep -r "process.env" --include="*.ts" --include="*.tsx" | grep -v node_modules`.
+**Env vars opcionales** (defaults sirven, incluir solo si hay razón):
+- `NEXT_PUBLIC_SITE_URL` — fallback secundario de `NEXT_PUBLIC_APP_URL`
+  para el redirect Wompi. Redundante si `NEXT_PUBLIC_APP_URL` está bien
+  seteado.
+- `WOMPI_API_BASE`, `WOMPI_CHECKOUT_URL` — solo si Wompi cambia sus URLs
+  oficiales (defaults en `lib/wompi.ts` apuntan a las URLs actuales).
+
+**Env vars NO requeridas por el runtime** (solo tests y scripts locales):
+- `SUPABASE_URL`, `E2E_*`, `TEST_PASSWORD`, `BASE_URL`, `PERF_BUDGET_MS` —
+  usados por `e2e/*.spec.ts`, `scripts/measure-perf.mjs`, `scripts/smoke-core.mjs`.
+  El cliente no corre estos, se saltean.
+
+**Consideración especial — AI Gateway (Vercel) para `/api/analyze-product`**:
+
+El panel IA de ingreso usa `generateObject` del SDK `ai` v7 con modelo
+`google/gemini-2.5-flash`. Cuando la app corre en Vercel, la
+autenticación del AI Gateway es automática vía OIDC del proyecto — no
+requiere env var explícita, **PERO el consumo se factura al team
+propietario del proyecto Vercel**. Si el proyecto Vercel del cliente
+está bajo la misma cuenta de Esteban (recomendado para modelo
+administrado), los créditos AI Gateway salen del billing de Esteban. Si
+en algún cliente futuro se decide separar cuentas, hay que crear una API
+key de AI Gateway en el team del cliente y setearla como
+`AI_GATEWAY_API_KEY`.
 
 ### 3.3 Primer deploy
 
@@ -413,11 +450,11 @@ Con los datos iniciales cargados, ejecutar en el navegador contra
 
 1. ~~**§1.1**: plan Supabase.~~ Resuelto: **Pro**.
 2. ~~**§1.3**: política "Confirm email".~~ Resuelto: **OFF**.
-3. **§2.3**: consolidar lista definitiva de scripts sueltos a aplicar
-   post-migraciones (auditar `scripts/` contra la baseline). **Pendiente
-   de auditoría técnica de Claude**.
-4. **§3.2**: verificar si hay env vars extra requeridas por el código
-   (grep de `process.env.*`). **Pendiente de auditoría técnica de Claude**.
+3. ~~**§2.3**: scripts sueltos vs baseline.~~ Resuelto: aplicar SOLO
+   `supabase/migrations/*.sql`, ignorar `scripts/` completo para
+   clientes nuevos.
+4. ~~**§3.2**: env vars extra.~~ Resuelto: tabla de §3.2 completa +
+   opcionales documentadas + nota sobre AI Gateway.
 5. ~~**§5.4**: rubro de Taiwysport.~~ Resuelto: ropa/calzado, categorías
    default aplican.
 
