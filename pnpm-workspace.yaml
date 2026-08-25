@@ -1,12 +1,11 @@
 packages:
   - .
 
+# pnpm 10 bloquea install scripts de paquetes con binarios nativos salvo
+# whitelisting explícito. Los dos que este repo necesita:
+#   - sharp: image optimization de Next.js (build + runtime).
+#   - unrs-resolver: resolver nativo usado por eslint/next.
+# Sin esta lista el build de Vercel falla con ERR_PNPM_IGNORED_BUILDS.
 onlyBuiltDependencies:
-  - unrs-resolver
-
-ignoredBuiltDependencies:
   - sharp
-
-allowBuilds:
-  sharp: set this to true or false
-  unrs-resolver: set this to true or false
+  - unrs-resolver
