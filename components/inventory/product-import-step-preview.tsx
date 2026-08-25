@@ -2,7 +2,7 @@
 
 import { useMemo, useRef } from "react"
 import { useVirtualizer } from "@tanstack/react-virtual"
-import { AlertCircle, CheckCircle2, Loader2 } from "lucide-react"
+import { AlertCircle, CheckCircle2, Loader2, RefreshCw } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Alert, AlertDescription } from "@/components/ui/alert"
@@ -12,11 +12,13 @@ type Props = {
   validation: ValidatedRow[]
   warehouseName: string
   submitting: boolean
+  refreshing: boolean
   serverError: string | null
   canSubmit: boolean
   onBack: () => void
   onReset: () => void
   onSubmit: () => void
+  onRefresh: () => void
 }
 
 const ROW_HEIGHT = 56
@@ -25,11 +27,13 @@ export function ProductImportStepPreview({
   validation,
   warehouseName,
   submitting,
+  refreshing,
   serverError,
   canSubmit,
   onBack,
   onReset,
   onSubmit,
+  onRefresh,
 }: Props) {
   const total = validation.length
   const validCount = useMemo(
@@ -69,8 +73,25 @@ export function ProductImportStepPreview({
               <AlertCircle className="h-4 w-4" />
               <span>Con errores: {errorCount}</span>
             </div>
-            <div className="ml-auto text-muted-foreground">
-              Bodega destino: <strong>{warehouseName}</strong>
+            <div className="ml-auto flex items-center gap-3">
+              <span className="text-muted-foreground">
+                Bodega destino: <strong>{warehouseName}</strong>
+              </span>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={onRefresh}
+                disabled={refreshing || submitting}
+                title="Vuelve a consultar la DB para códigos, códigos de barras y categorías existentes"
+              >
+                {refreshing ? (
+                  <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <RefreshCw className="mr-2 h-3.5 w-3.5" />
+                )}
+                Refrescar disponibilidad
+              </Button>
             </div>
           </div>
         </CardContent>

@@ -15,7 +15,7 @@ import {
   type ImportBootstrapData,
 } from "@/lib/product-import"
 import type { ImportBootstrap } from "@/lib/product-import-actions"
-import { runProductImport } from "@/lib/product-import-actions"
+import { getImportBootstrap, runProductImport } from "@/lib/product-import-actions"
 import { ProductImportStepUpload } from "./product-import-step-upload"
 import { ProductImportStepMapping } from "./product-import-step-mapping"
 import { ProductImportStepPreview } from "./product-import-step-preview"
@@ -42,9 +42,11 @@ const INITIAL_STATE: WizardState = {
   successCount: null,
 }
 
-export function ProductImportWizard({ bootstrap }: { bootstrap: ImportBootstrap }) {
+export function ProductImportWizard({ bootstrap: initialBootstrap }: { bootstrap: ImportBootstrap }) {
   const [state, setState] = useState<WizardState>(INITIAL_STATE)
+  const [bootstrap, setBootstrap] = useState<ImportBootstrap>(initialBootstrap)
   const [isPending, startTransition] = useTransition()
+  const [isRefreshing, startRefreshTransition] = useTransition()
 
   const validationBootstrap: ImportBootstrapData = useMemo(
     () => ({
@@ -54,6 +56,18 @@ export function ProductImportWizard({ bootstrap }: { bootstrap: ImportBootstrap 
     }),
     [bootstrap],
   )
+
+  const handleRefreshBootstrap = () => {
+    startRefreshTransition(async () => {
+      try {
+        const fresh = await getImportBootstrap()
+        setBootstrap(fresh)
+      } catch {
+        // Silencioso: si falla, el user simplemente sigue viendo el snapshot
+        // anterior. No queremos bloquear el flujo por un refetch.
+      }
+    })
+  }
 
   const validation: ValidatedRow[] | null = useMemo(() => {
     if (!state.sheet) return null
@@ -160,11 +174,13 @@ export function ProductImportWizard({ bootstrap }: { bootstrap: ImportBootstrap 
           validation={validation}
           warehouseName={warehouseName}
           submitting={isPending}
+          refreshing={isRefreshing}
           serverError={state.serverError}
           canSubmit={allValid(validation)}
           onBack={() => setState((s) => ({ ...s, step: "mapping", serverError: null }))}
           onReset={reset}
           onSubmit={handleSubmit}
+          onRefresh={handleRefreshBootstrap}
         />
       )}
     </div>
