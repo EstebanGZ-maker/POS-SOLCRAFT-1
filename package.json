@@ -75,6 +75,7 @@
     "vaul": "latest",
     "zod": "^3.25.76"
   },
+  "packageManager": "pnpm@9.15.9",
   "devDependencies": {
     "@playwright/test": "^1.61.1",
     "@types/node": "^22",
