@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache"
 import { createServerSupabaseClient } from "@/lib/supabase/server"
-import { requireRole } from "@/lib/role-guard"
+import { requirePermission } from "@/lib/role-guard"
 import type { ProductImportRow } from "@/lib/product-schema"
 
 // =====================================================================
@@ -40,7 +40,7 @@ export type ImportBootstrap = {
 }
 
 export async function getImportBootstrap(): Promise<ImportBootstrap> {
-  await requireRole("admin", "encargado")
+  await requirePermission("product_import")
   const supabase = await createServerSupabaseClient()
 
   // Todas las queries en paralelo. RLS filtra sites por rol/sede, así
@@ -100,7 +100,7 @@ export async function runProductImport(
   rows: ProductImportRow[],
   warehouse_id: string,
 ): Promise<{ success: boolean; message: string; inserted_count?: number }> {
-  const profile = await requireRole("admin", "encargado")
+  const profile = await requirePermission("product_import")
   const supabase = await createServerSupabaseClient()
 
   if (!rows.length) {

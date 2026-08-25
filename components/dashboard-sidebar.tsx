@@ -72,7 +72,7 @@ function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
       icon: Boxes,
       items: [
         { name: "Productos y servicios", href: "/inventory/products", icon: Package, permission: "inventory" },
-        { name: "Importar productos", href: "/inventory/products/import", icon: Upload, permission: "inventory" },
+        { name: "Importar productos", href: "/inventory/products/import", icon: Upload, permission: "product_import" },
         { name: "Códigos de barra", href: "/inventory/barcodes", icon: Barcode, permission: "inventory" },
         { name: "Valor de inventario", href: "/inventory/value", icon: BarChart3, permission: "inventory" },
         { name: "Ajustes de inventario", href: "/inventory/adjustments", icon: ClipboardList, permission: "adjustments" },
