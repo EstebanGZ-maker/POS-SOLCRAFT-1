@@ -32,6 +32,7 @@ import {
   ClipboardCheck,
   HandCoins,
   Truck,
+  Upload,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
@@ -71,6 +72,7 @@ function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
       icon: Boxes,
       items: [
         { name: "Productos y servicios", href: "/inventory/products", icon: Package, permission: "inventory" },
+        { name: "Importar productos", href: "/inventory/products/import", icon: Upload, permission: "inventory" },
         { name: "Códigos de barra", href: "/inventory/barcodes", icon: Barcode, permission: "inventory" },
         { name: "Valor de inventario", href: "/inventory/value", icon: BarChart3, permission: "inventory" },
         { name: "Ajustes de inventario", href: "/inventory/adjustments", icon: ClipboardList, permission: "adjustments" },
