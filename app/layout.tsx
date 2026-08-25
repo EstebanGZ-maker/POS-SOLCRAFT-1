@@ -12,6 +12,8 @@ import { SWRProvider } from "@/components/swr-provider";
 const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
+  title: "Solcraft POS",
+  description: "Punto de venta y gestión de inventario multisede.",
   generator: "v0.dev",
   other: {
     // Opt-out formal de Google Translate. Junto con lang="es" + translate="no"

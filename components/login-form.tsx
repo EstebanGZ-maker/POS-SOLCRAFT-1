@@ -49,7 +49,7 @@ export function LoginForm() {
               <Shield className="h-8 w-8 text-primary" />
             </div>
           </div>
-          <CardTitle className="text-2xl font-bold">Taiwy POS</CardTitle>
+          <CardTitle className="text-2xl font-bold">Solcraft POS</CardTitle>
           <CardDescription>
             Ingresa tus credenciales para acceder al sistema
           </CardDescription>

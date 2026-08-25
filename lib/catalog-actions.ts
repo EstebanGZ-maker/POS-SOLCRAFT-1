@@ -185,7 +185,7 @@ export async function getPublicCommerceConfig(): Promise<PublicCommerceConfig> {
   const supabase = await createServerSupabaseClient()
   const { data } = await supabase.rpc("public_commerce_config")
   return (data as PublicCommerceConfig) || {
-    business_name: "Taiwy",
+    business_name: "Mi negocio",
     phone: null, email: null, address: null, logo_url: null,
     whatsapp_number: null,
     whatsapp_enabled: true, cod_enabled: true, wompi_enabled: false, wompi_public_key: null,

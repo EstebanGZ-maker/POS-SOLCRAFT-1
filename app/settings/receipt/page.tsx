@@ -40,14 +40,14 @@ function ReceiptPreview({ s }: { s: BusinessSettings }) {
       </div>
       <div className="border-t border-dashed my-2" />
       <div className="text-center font-bold">Factura de venta de papel</div>
-      <div className="text-center">N° 832065</div>
-      <div className="flex justify-between"><span>Fecha:</span><b>28/07/2026 1:06 pm</b></div>
+      <div className="text-center">N° 000001</div>
+      <div className="flex justify-between"><span>Fecha:</span><b>01/01/2026 12:00 pm</b></div>
       <div className="flex justify-between"><span>Forma de pago:</span><b>Crédito</b></div>
-      <div className="flex justify-between"><span>Vendedor:</span><b>Fran Du-Plessis</b></div>
+      <div className="flex justify-between"><span>Vendedor:</span><b>Vendedor Ejemplo</b></div>
       <div className="border-t border-dashed my-2" />
-      <div className="font-bold">Shanti Ma</div>
-      <div><b>Teléfono:</b> +57 324 857 8574</div>
-      {s.show_customer_id && <div>CC 1785261979358</div>}
+      <div className="font-bold">Cliente Ejemplo</div>
+      <div><b>Teléfono:</b> +57 300 000 0000</div>
+      {s.show_customer_id && <div>CC 12345678</div>}
       <div className="border-t border-dashed my-2" />
       <div className="space-y-1">
         {[

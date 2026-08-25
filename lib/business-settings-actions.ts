@@ -48,7 +48,7 @@ export async function getBusinessSettings(): Promise<BusinessSettings> {
   if (!data) {
     return {
       id: 1,
-      business_name: "Taiwy",
+      business_name: "Mi negocio",
       legal_name: null,
       tax_id: null,
       phone: null,

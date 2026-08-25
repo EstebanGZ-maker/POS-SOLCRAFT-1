@@ -20,13 +20,19 @@ const nextConfig = {
   images: {
     // sharp ya está instalado: Next optimiza y reescala automáticamente.
     // Además de la compresión al subir, cada tamaño se sirve al vuelo.
-    remotePatterns: [
-      {
-        protocol: "https",
-        hostname: "nxszaxwsrtlofqimbfig.supabase.co",
-        pathname: "/storage/v1/object/public/**",
-      },
-    ],
+    // Hostname derivado de NEXT_PUBLIC_SUPABASE_URL para que al aprovisionar
+    // un cliente nuevo no haya que editar este archivo.
+    remotePatterns: (() => {
+      const url = process.env.NEXT_PUBLIC_SUPABASE_URL
+      const host = url ? new URL(url).hostname : "localhost"
+      return [
+        {
+          protocol: "https",
+          hostname: host,
+          pathname: "/storage/v1/object/public/**",
+        },
+      ]
+    })(),
     formats: ["image/avif", "image/webp"],
     minimumCacheTTL: 60 * 60 * 24, // 24 h en el CDN
   },
