@@ -14,6 +14,7 @@ export type ModuleKey =
   | "promotions"
   | "kardex"
   | "inventory_management"
+  | "product_import"
   | "transfers_send"
   | "transfers_receive"
   | "transfers_reconcile"
@@ -40,6 +41,7 @@ export const MODULES: ModuleDef[] = [
 
   { key: "inventory", label: "Productos", description: "Ver productos, códigos de barra, valor de inventario.", group: "inventario" },
   { key: "inventory_management", label: "Gestión de inventario", description: "Operaciones masivas sobre catálogo.", group: "inventario" },
+  { key: "product_import", label: "Importar productos", description: "Cargar productos masivamente desde archivo .xlsx.", group: "inventario" },
   { key: "adjustments", label: "Ajustes de inventario", description: "Registrar ajustes de stock.", group: "inventario" },
   { key: "warehouses", label: "Bodegas", description: "Crear y editar bodegas.", group: "inventario" },
   { key: "price_lists", label: "Listas de precios", description: "Definir listas de precios.", group: "inventario" },
