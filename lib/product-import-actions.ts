@@ -18,9 +18,18 @@ import type { ProductImportRow } from "@/lib/product-schema"
 //   RPC — este TS solo hace auth y propaga el mensaje.
 // =====================================================================
 
+// Mapa code/barcode → is_active. Necesitamos el estado para distinguir
+// dos escenarios de conflicto en el mensaje de error:
+//   - Choque con producto activo: "ya existe en el sistema".
+//   - Choque con producto inactivo (soft-deleted): "pertenece a un producto
+//     inactivo, reactivalo o usá otro código".
+// Los constraints UNIQUE de products.code y products.barcode aplican a
+// TODAS las filas sin importar is_active (decisión explícita — evita
+// resolución ambigua de lookups por barcode en el POS entre activos e
+// inactivos), así que ambos casos son un conflicto real.
 export type ImportBootstrap = {
-  existingCodes: string[]
-  existingBarcodes: string[]
+  existingCodes: Record<string, boolean>
+  existingBarcodes: Record<string, boolean>
   categories: Array<{ category_id: string; name: string }>
   warehouses: Array<{
     warehouse_id: string
@@ -37,8 +46,8 @@ export async function getImportBootstrap(): Promise<ImportBootstrap> {
   // Todas las queries en paralelo. RLS filtra sites por rol/sede, así
   // que la lista de warehouses ya viene acotada al scope del user.
   const [codesRes, barcodesRes, catsRes, sitesRes] = await Promise.all([
-    supabase.from("products").select("code").not("code", "is", null),
-    supabase.from("products").select("barcode").not("barcode", "is", null),
+    supabase.from("products").select("code, is_active").not("code", "is", null),
+    supabase.from("products").select("barcode, is_active").not("barcode", "is", null),
     supabase.from("categories").select("category_id, name").order("name"),
     supabase
       .from("sites")
@@ -47,15 +56,21 @@ export async function getImportBootstrap(): Promise<ImportBootstrap> {
       .order("name"),
   ])
 
-  const existingCodes = ((codesRes.data ?? []) as Array<{ code: string | null }>)
-    .map((r) => r.code)
-    .filter((v): v is string => !!v)
+  const existingCodes: Record<string, boolean> = {}
+  for (const r of (codesRes.data ?? []) as Array<{
+    code: string | null
+    is_active: boolean | null
+  }>) {
+    if (r.code) existingCodes[r.code] = r.is_active ?? true
+  }
 
-  const existingBarcodes = (
-    (barcodesRes.data ?? []) as Array<{ barcode: string | null }>
-  )
-    .map((r) => r.barcode)
-    .filter((v): v is string => !!v)
+  const existingBarcodes: Record<string, boolean> = {}
+  for (const r of (barcodesRes.data ?? []) as Array<{
+    barcode: string | null
+    is_active: boolean | null
+  }>) {
+    if (r.barcode) existingBarcodes[r.barcode] = r.is_active ?? true
+  }
 
   const categories =
     (catsRes.data ?? []) as Array<{ category_id: string; name: string }>

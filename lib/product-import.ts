@@ -232,8 +232,11 @@ export async function buildTemplateWorkbook(): Promise<Uint8Array> {
 // ----- Validación de todas las filas (Capa 1) -----
 
 export type ImportBootstrapData = {
-  existingCodes: string[]
-  existingBarcodes: string[]
+  // Mapa code → is_active. Ver comentario en product-import-actions.ts:
+  // el estado importa para distinguir el mensaje de conflicto entre un
+  // producto ACTIVO ("ya existe") y uno INACTIVO ("reactivalo o usá otro").
+  existingCodes: Record<string, boolean>
+  existingBarcodes: Record<string, boolean>
   categories: Array<{ category_id: string; name: string }>
 }
 
@@ -255,8 +258,9 @@ export function validateRows(
   mapping: Record<number, ImportFieldKey | undefined>,
   bootstrap: ImportBootstrapData,
 ): ValidatedRow[] {
-  const existingCodes = new Set(bootstrap.existingCodes)
-  const existingBarcodes = new Set(bootstrap.existingBarcodes)
+  // Los mapas del bootstrap ya llegan como Record<code, is_active>.
+  const codeStatus = bootstrap.existingCodes
+  const barcodeStatus = bootstrap.existingBarcodes
   const categoryByName = new Map(
     bootstrap.categories.map((c) => [normalizeHeader(c.name), c.category_id]),
   )
@@ -386,16 +390,31 @@ export function validateRows(
         }
       }
 
-      // Choque con DB.
-      if (product.code && existingCodes.has(product.code)) {
-        errors.push(
-          `La referencia "${product.code}" ya existe en el sistema.`,
-        )
+      // Choque con DB — el mensaje distingue entre producto activo e
+      // inactivo. Los constraints UNIQUE aplican a los dos casos por
+      // igual (evita que dos filas activa/inactiva compartan código y
+      // rompan lookups por barcode en el POS).
+      if (product.code && product.code in codeStatus) {
+        if (codeStatus[product.code]) {
+          errors.push(
+            `La referencia "${product.code}" ya existe en el sistema.`,
+          )
+        } else {
+          errors.push(
+            `La referencia "${product.code}" pertenece a un producto inactivo. Reactivalo desde /inventory/products (mostrar inactivos) o usá otro código en el archivo.`,
+          )
+        }
       }
-      if (product.barcode && existingBarcodes.has(product.barcode)) {
-        errors.push(
-          `El código de barras "${product.barcode}" ya existe en el sistema.`,
-        )
+      if (product.barcode && product.barcode in barcodeStatus) {
+        if (barcodeStatus[product.barcode]) {
+          errors.push(
+            `El código de barras "${product.barcode}" ya existe en el sistema.`,
+          )
+        } else {
+          errors.push(
+            `El código de barras "${product.barcode}" pertenece a un producto inactivo. Reactivalo desde /inventory/products (mostrar inactivos) o usá otro código en el archivo.`,
+          )
+        }
       }
     }
 
