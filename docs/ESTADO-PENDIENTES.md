@@ -2,145 +2,141 @@
 
 > **Propósito**: dump de estado para que una instancia nueva de Claude sin
 > memoria pueda retomar sin perder nada. Última actualización: **2026-08-24**
-> (cierre de sesión s21 + s22 parcial: atomicidad de traslados cerrada en
-> main + backend del importador masivo de productos en rama abierta).
-> `main` en `234ecb4`, rama activa `s22-product-import` @ `7cdb251`.
+> (cierre de sesión larga: s21 atomicidad de traslados + s22 importador
+> masivo end-to-end + s23 permiso configurable del importador — TODO mergeado
+> a main). `main` en `449207d`. Sin ramas abiertas.
 
 ---
 
-## 0. LEE ESTO PRIMERO — estado tras sesión 2026-08-24 (s21 mergeado + s22 Commit A)
+## 0. LEE ESTO PRIMERO — estado tras sesión 2026-08-24 (s21 + s22 + s23 cerrados en prod)
 
-**Estado de ramas**:
-- `main` en `234ecb4` (merge s21-transfer-atomicity).
-- `s22-product-import` en `7cdb251` — **RAMA ABIERTA**, Commit A pusheado,
-  Commit B (UI) pendiente. NO mergear hasta terminar s22.
+**Estado de ramas**: `main` @ `449207d`. Sin ramas abiertas. Todo lo trabajado
+esta sesión está en prod.
 
-**Cerrado y en prod esta sesión (s21 — atomicidad de traslados):**
+**Cerrado y en prod esta sesión (3 bloques encadenados)**:
 
-- **RPC `dispatch_transfer_atomic`** (migración `20260822000000`):
-  SECURITY DEFINER con doble guard (`is_admin_or_encargado()` +
-  `has_site_access()`). FOR UPDATE en `transfers` y `product_stock` con
-  `ORDER BY product_id` para eliminar riesgo de deadlock entre despachos
-  concurrentes. Pre-check agregado devuelve `insufficient_stock: [...]`
-  con detalle por producto. Loop de `send_transfer_via_transit` +
-  UPDATE de status en la misma tx — cualquier RAISE revierte todo,
-  fantasmas arquitectónicamente imposibles desde este flujo.
-- **`dispatchPendingTransfer` TS**: wrapper delgado (mantiene guard de
-  sede TS como fast-path, delega atomicidad al RPC). Elimina pre-check
-  TS, lookup de tránsito, loop de RPCs, manejo de "despacho parcial por
-  race". Smoke test end-to-end validado en preview con verificación de
-  DB directa: **Caso A (58719a6b)** despacho exitoso, stock verificado
-  exacto en ambos lados (4 movimientos, reference_id correcto);
-  **Caso B (4e10f49a)** stock insuficiente por venta legítima en el
-  medio, cero filas en `stock_movements` para ese id, traslado quedó
-  pendiente.
-- **`createBulkTransfer` TS refactor**: SIEMPRE crea el transfer en
-  `pendiente` primero (INSERT products + items). Si `asPending=false`
-  llama a `dispatch_transfer_atomic` como segundo paso. Si el despacho
-  falla, el transfer queda en `pendiente` con `transfer_id` truncado en
-  el mensaje para reintento manual — ya no hay DELETE compensatorio
-  (obsoleto). **NO se corrieron los smoke tests C/D/E/F end-to-end** —
-  merge se hizo con verificación estática (firma RPC vs. llamada TS +
-  chequeo de NOT NULL en INSERT), decisión explícita de Esteban. Deploy
-  prod (`234ecb4`) READY sin runtime errors en los primeros 15 min.
+- **s21 — atomicidad de traslados** (merge en `234ecb4`, ver detalle §7.17
+  de CONTEXT-POS.md):
+  - RPC `dispatch_transfer_atomic` (migración `20260822000000`),
+    SECURITY DEFINER con doble guard + `FOR UPDATE ORDER BY product_id`
+    para anti-deadlock. Fantasmas arquitectónicamente imposibles desde
+    este flujo.
+  - `dispatchPendingTransfer` TS colapsado a wrapper delgado que delega
+    atomicidad al RPC.
+  - `createBulkTransfer` refactor: SIEMPRE crea en `pendiente` primero,
+    luego dispatch como segundo paso. DELETE compensatorio eliminado.
+  - Smoke test end-to-end del despacho validado (Caso A/B con verificación
+    DB directa). Casos C/D/E/F del refactor de `createBulkTransfer` no se
+    corrieron — merge con verificación estática, decisión de Esteban.
 
-**Red de seguridad heredada**: `is_ghost` en `getTransferDetail`,
-`adminCloseGhostTransfer` y alerta admin en `getTransferSummary` se
-mantienen — el flujo nuevo no puede alimentarla pero otros modos de
-fallo desconocidos (SQL manual, migraciones futuras) todavía podrían.
+- **s22 — importador masivo de productos** (merge en `8b30aac`, ver detalle
+  §7.17 de CONTEXT-POS.md):
+  - Migraciones aplicadas en prod: `products.barcode UNIQUE` + RPC
+    `import_products_bulk_atomic` (SECURITY DEFINER + handlers de EXCEPTION
+    granulares + mensaje diferenciado activo/inactivo).
+  - Backend: `lib/product-schema.ts` (Zod), `lib/product-import.ts` (parsing
+    exceljs con `normalizeCellValue` que unwrap formula/sharedFormula/
+    richText/hyperlink; strip Code39 asteriscos en barcode; number→string
+    coerce en size/code/barcode), `lib/product-import-actions.ts`
+    (bootstrap + RPC wrapper).
+  - UI wizard 3 pantallas: `/inventory/products/import` (server component)
+    + `product-import-wizard.tsx` + steps upload/mapping/preview. Tabla
+    virtualizada con `@tanstack/react-virtual` (todas las filas, no muestra
+    parcial). Botón "Refrescar disponibilidad" en preview para revalidar
+    contra DB sin re-subir el archivo.
+  - Deps nuevas: `exceljs ^4.4.0`, `@tanstack/react-virtual ^3.14.10`.
+  - **Decisión de negocio clave**: código/barcode de producto inactivo
+    (soft-deleted vía `deleteProductSafe` → `is_active=false`) queda
+    RESERVADO permanentemente. NO se relajan los UNIQUE de products.code
+    y products.barcode (evita lookups ambiguos en el POS). En su lugar,
+    mensaje diferenciado en ambas capas (TS + RPC) explica al usuario que
+    puede reactivar el producto o usar otro código.
+  - Verificado end-to-end en preview con archivo real de 14 filas
+    (camisas alfanuméricas + tenis con talla numérica + barcode Code39
+    via fórmula compartida): 14/14 productos creados, 1 stock_movement
+    con `reference_type='product_import'` por producto, quantity correcta
+    en bodega destino, sin duplicados.
 
-**Monitoreo pendiente post-merge s21**: query de diagnóstico corregida
-(rama `cancelado` agregada, ver §Query de monitoreo post-s21 abajo).
-El único traslado post-merge hasta el cierre es `4e10f49a` (cancelado,
-del Caso B). **Correr la query en el primer traslado real en uso
-normal** para validar Caso C real; si diagnóstico marca `FANTASMA`,
-rollback inmediato al commit `e8da874` (paso 1 solo, sí validado).
+- **s23 — permiso configurable "product_import"** (merge en `449207d`):
+  - Nuevo `ModuleKey "product_import"` en `lib/permissions.ts` (grupo
+    "inventario"). Admin lo hereda vía `MODULES.map(m=>m.key)` de la
+    línea 76 y el bypass hardcodeado de admin en `hasPermission`/
+    `requirePermission` cubre a admins existentes.
+  - Gates en 4 capas: sidebar (`permission: "product_import"`), 2 server
+    actions (`requireRole` → `requirePermission("product_import")`),
+    RPC sin cambios (`is_admin_or_encargado()` como red de seguridad
+    final — doble capa TS positivo por permiso + SQL negativo por rol
+    como piso mínimo).
+  - **Primer módulo del repo con enforcement server-side vía
+    `requirePermission`**. Desviación consciente del patrón dominante
+    (`requireRole` en todos lados). NO se propaga como refactor general
+    del resto del código.
+  - **Sin migración de usuarios existentes** — decisión explícita: los
+    encargados actuales arrancan sin el permiso, admin lo activa
+    manualmente por usuario desde `/users`.
 
-**En progreso esta sesión (s22 — importador masivo de productos, Commit A):**
+**Nuevo hilo abierto — productización del sistema (SIN EMPEZAR)**:
 
-- **Rama `s22-product-import` @ `7cdb251`** — pusheada, NO mergeada a main.
-- **Migraciones aplicadas en prod** (independientes del merge del branch):
-  - `20260824000000_add_unique_barcode.sql`: UNIQUE en `products.barcode`
-    con sanity check previo (0 duplicados en prod al momento de aplicar).
-    Índice btree `idx_products_barcode` se mantiene (decisión explícita).
-  - `20260824000001_add_import_products_bulk_rpc.sql`: RPC
-    `import_products_bulk_atomic(p_rows jsonb, p_warehouse_id uuid, p_user_id uuid)`.
-    SECURITY DEFINER + doble guard. Handlers de EXCEPTION para
-    `unique_violation`, `foreign_key_violation` y `check_violation`
-    extraen `CONSTRAINT_NAME` via `GET STACKED DIAGNOSTICS` y RE-RAISE
-    con mensajes que identifican fila + campo + valor específicos —
-    mismo estándar de UX que `dispatch_transfer_atomic`.
-- **Shared logic**:
-  - `lib/product-schema.ts`: Zod schema `productImportRowSchema`,
-    snake_case ↔ RPC 1:1. Coerción numérica, refinement no-negativos.
-  - `lib/product-import.ts` (puro, sin `"use server"`):
-    `IMPORT_MAX_ROWS=1000`, `IMPORT_MAX_FILE_BYTES=2MB`,
-    `TEMPLATE_HEADERS` (11 headers oficiales), `IMPORT_FIELDS`,
-    `autoMapColumns()`, `parseWorkbook()`, `buildTemplateWorkbook()`,
-    `validateRows()`, `allValid()`. Todo con exceljs client-side.
-  - `lib/product-import-actions.ts` (con `"use server"`):
-    `getImportBootstrap()` retorna existingCodes/Barcodes + categories
-    + warehouses (RLS filtra por rol/sede, `is_system=true` filtrado
-    fuera). `runProductImport(rows, warehouse_id)` wrapper delgado del
-    RPC, propaga `error.message` tal cual.
-- **Dep nueva**: `exceljs ^4.4.0` (code-split por ruta, no impacta /pos).
-  Efecto colateral del install: patch/minor bumps en 3 deps con
-  `"latest"` en package.json (`input-otp` 1.4.2→1.5.0,
-  `react-hook-form` 7.85.0→7.86.0, `react-resizable-panels`
-  4.12.2→4.12.3). Sin riesgo, confirmado con Esteban.
-- **PENDIENTE Commit B (próxima sesión)**: UI completa — todavía NO
-  hay ningún archivo de UI creado. Plan de archivos:
-  - `app/inventory/products/import/page.tsx` (server component +
-    `requireRole` + `getImportBootstrap()`).
-  - `components/inventory/product-import-wizard.tsx` (client,
-    orquesta las 3 pantallas con state local, sin URL state).
-  - `components/inventory/product-import-step-upload.tsx` (Pantalla 1:
-    "Descargar plantilla" + dropzone `.xlsx` + **selector de bodega
-    destino** — hay 6 bodegas "Principal", una por sede, se elige
-    explícitamente).
-  - `components/inventory/product-import-step-mapping.tsx` (Pantalla 2:
-    dropdowns por columna con auto-map inicial).
-  - `components/inventory/product-import-step-preview.tsx` (Pantalla 3:
-    tabla virtualizada con `@tanstack/react-virtual` mostrando TODAS
-    las filas + botón "Importar" gateado por `allValid`).
-  - `components/dashboard-sidebar.tsx` (link "Importar productos" en
-    grupo inventario, admin/encargado).
-  - Dep adicional: `@tanstack/react-virtual`.
+Esteban planteó una iniciativa grande que arranca la próxima sesión.
+Distinguir 2 horizontes:
 
-**Decisiones de diseño ya cerradas para s22 (no re-preguntar):**
+- **Visión de largo plazo (modelo Alegra, NO se construye ahora pero es
+  la dirección declarada)**: landing page pública con self-service signup,
+  período de prueba gratis, suscripción paga para seguir usando. Multi-
+  tenant real (aislamiento de datos por cliente en base compartida,
+  facturación en vivo, señalización de trial expirado). Es el "Camino B"
+  grande que se descartó para AHORA pero es el objetivo final.
 
-1. `code` (Referencia) y `barcode` (CODIGO) validados como únicos.
-   Duplicado → rechazo de fila. NO se actualiza producto existente.
-2. Categoría inexistente → rechazo de fila. NO se auto-crea.
-3. Todo-o-nada: cualquier error bloquea el import completo. El usuario
-   corrige y re-sube.
-4. Selector explícito de sede/bodega en Pantalla 1 (6 bodegas
-   "Principal" en DB, no hay una singular por default).
-5. Columna "Venta en negativo" de la plantilla: **se ignora**
-   intencionalmente (no hay campo equivalente en `products` ni
-   funcionalidad relacionada). Documentado en `lib/product-import.ts`.
-6. Vista previa (Pantalla 3) muestra **todas** las filas del archivo
-   (con estado por fila), no una muestra parcial — diferencia
-   deliberada vs. Alegra que trunca a 8 filas.
-7. Límites: 1000 filas / 2MB por archivo.
-8. Parsing en cliente (exceljs), no en server — feedback instantáneo
-   en mapping/preview sin round-trips.
+- **Objetivo cercano (SE EJECUTA PRIMERO)**: un cliente propio de Esteban,
+  una sola sede, necesita implementar el POS en su tienda YA. Solución
+  **Camino A**: instancia separada por cliente (Supabase + Vercel propios
+  para ese cliente), MISMO código que ya existe, el cliente simplemente
+  nunca crea una segunda sede. Esteban administra todas las cuentas
+  (modelo de servicio administrado, no que el cliente traiga su propia
+  cuenta).
 
-**Deuda técnica ABIERTA:**
+**Decisiones ya cerradas para el Camino A (no re-preguntar)**:
+1. Instancia separada por cliente, NO multi-tenant compartido.
+2. Camino A es escalón deliberado hacia el modelo Alegra futuro. Al
+   genericizar el código no hardcodear supuestos que compliquen la
+   migración futura a multi-tenant, pero TAMPOCO construir infraestructura
+   multi-tenant ahora (un solo cliente no lo justifica).
+3. Planes/funcionalidades por tier: decisión manual de Esteban al
+   aprovisionar cada cliente (activar/desactivar módulos vía el sistema
+   de permisos que ya existe). NO facturación en vivo dentro de la app
+   — eso pertenece al modelo Alegra futuro.
+4. Estrategia de ejecución: aprovisionar al primer cliente **A MANO**,
+   documentando el proceso real sobre la marcha. Automatizar/scriptear
+   recién después de haberlo hecho una vez.
+
+**Próximo paso — primera tarea de la próxima sesión**: **AUDITORÍA de
+código** para identificar todo lo que hoy asume que el sistema corre
+para el negocio específico de Esteban (nombres de marca hardcodeados,
+textos con referencias a Taiwy, valores default, claves de API, seed
+scripts con datos del negocio actual, referencias a la bodega central
+como concepto obligatorio, etc.) antes de escribir el checklist de
+aprovisionamiento del primer cliente. Esto determina qué hay que
+genericizar antes de poder desplegar una instancia limpia.
+
+**Deuda técnica ABIERTA arrastrada / nueva de esta sesión**:
 
 - **Smoke test funcional real de `createBulkTransfer` refactorizado
   (s21)**: no se ejercitó Caso C (crear-y-despachar directo con stock
   OK), Caso D (stock insuficiente → queda en pendiente), Caso E
   (`asPending=true`), Caso F (múltiples destinos). El primer traslado
   real post-merge es el smoke natural — usar la query de monitoreo
-  corregida abajo para validar.
-- **`getSitesWithWarehouses()` para el bootstrap de s22**: la
-  implementación asume que RLS filtra `sites` por rol/sede, así que
-  el warehouse selector solo muestra bodegas accesibles al user.
-  Confirmar comportamiento al implementar Pantalla 1 (si el encargado
-  ve bodegas de sedes ajenas, agregar filtro TS).
+  post-s21 abajo para validar.
+- **Logging temporal `[product-import]` (s22)**: agregado en
+  `lib/product-import.ts` durante el debug del archivo real (fila-a-fila
+  candidate pre-Zod + zod-issues). Solo corre en cliente. Mantener
+  activo ~1 semana de uso normal del importador; después, commit de
+  limpieza que remueva los `console.log` del `validateRows`.
+- **Red de seguridad heredada s21** (`is_ghost` en `getTransferDetail`,
+  `adminCloseGhostTransfer`, alerta admin en `getTransferSummary`) se
+  mantiene — el flujo nuevo no puede alimentarla pero otros modos de
+  fallo desconocidos (SQL manual, migraciones futuras) todavía podrían.
 
-**Query de monitoreo post-s21 (correr en primer traslado real):**
+**Query de monitoreo post-s21 (correr en primer traslado real)**:
 
 ```sql
 SELECT
@@ -170,7 +166,7 @@ WHERE t.transfer_date > '2026-08-23 00:00:00'::timestamp
 ORDER BY t.transfer_date DESC;
 ```
 
-**Pendiente sin tocar (sin urgencia, arrastre de sesiones anteriores):**
+**Pendiente sin tocar (arrastre de sesiones anteriores, sin cambios esta sesión)**:
 
 - **Promociones aplicadas en venta**: CRUD existe en
   `/inventory/promotions` y `getActivePromotionsForPOS` devuelve `promoMap`,
@@ -184,16 +180,17 @@ ORDER BY t.transfer_date DESC;
 - **`getShiftReceivables` post-bootstrap POS**: piggyback (no bloquea
   render), pero es un round-trip extra. Candidato a incluir en
   `getPOSBootstrap` como campo opcional.
-- **Logging temporal `[pos-timing]`**: mantener activo hasta completar
-  1 semana de monitoreo post-merge de s20 (venció ~2026-08-29). Al
-  cumplirse, remover en commit de limpieza aparte.
+- **Logging temporal `[pos-timing]`**: verificar si ya pasó la ventana
+  de 1 semana de monitoreo post-merge de s20 (venció ~2026-08-29). Si
+  sí, remover en commit de limpieza aparte.
 - **Gate del contador**: sobrante genuino sin factura (donación,
   hallazgo) vs "comprado no registrado" — decisión de negocio pendiente
   con el contador, no depende de código.
 
-**Próximo bloque**: Commit B de s22 (UI del importador). Después de
-mergear s22, candidatos: consolidación SiteProvider, promociones en
-POS, backlog paridad Alegra.
+**Próximo bloque**: auditoría de código para productización (Camino A) —
+identificar hardcodes de negocio antes de aprovisionar el primer cliente.
+Backlog secundario: consolidación SiteProvider, promociones en POS,
+paridad Alegra, limpieza del logging temporal.
 
 ---
 

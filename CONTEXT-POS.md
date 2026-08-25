@@ -1,6 +1,6 @@
 # CONTEXT-POS.md
 
-Contexto denso de POS-SOLCRAFT para pasar a otra instancia de Claude sin acceso al repo. Estado al 2026-08-24. Ver §7.17 (última sesión, s21 mergeado + s22 Commit A en rama abierta) y §7.16 para el bloque previo (s14-s20).
+Contexto denso de POS-SOLCRAFT para pasar a otra instancia de Claude sin acceso al repo. Estado al 2026-08-24. Ver §7.17 (última sesión larga: s21 atomicidad + s22 importador end-to-end + s23 permiso configurable, todo mergeado; nuevo hilo de productización abierto sin empezar) y §7.16 para el bloque previo (s14-s20).
 
 ## 1. Stack y versiones
 
@@ -1702,11 +1702,20 @@ action que se conservó.
 
 ---
 
-## §7.17 — Sesión 2026-08-24 (s21 mergeado + s22 Commit A, `main` @ `234ecb4`, rama `s22-product-import` abierta)
+## §7.17 — Sesión 2026-08-24 larga (s21 + s22 end-to-end + s23, `main` @ `449207d`)
 
-Dos bloques en la misma sesión: cierre completo de la deuda de atomicidad
-de traslados (mergeado a prod), y arranque del importador masivo de
-productos (backend + shared logic pusheados en rama, UI pendiente).
+Sesión de un día que encadenó 3 bloques y abrió un nuevo hilo de
+productización (sin empezar):
+1. s21 — atomicidad de traslados (merge en `234ecb4`).
+2. s22 — importador masivo de productos, cero-a-prod: backend + UI +
+   debug de archivo real + decisión de negocio sobre códigos de
+   producto inactivo (merge en `8b30aac`).
+3. s23 — permiso configurable `product_import` en 4 capas (merge en
+   `449207d`).
+4. Nuevo hilo abierto: productización del sistema (Camino A instancia
+   separada por cliente + visión de largo plazo modelo Alegra). Sin
+   código escrito todavía; primera tarea próxima sesión = auditoría de
+   hardcodes del negocio actual.
 
 **s21 — atomicidad de traslados (mergeada a `main` @ `234ecb4`)**
 
@@ -1890,6 +1899,304 @@ Dependencia adicional: `@tanstack/react-virtual`.
   RPC directo. Duplicar `is_admin_or_encargado()` +
   `has_site_access(v_site_id)` adentro. Ambas usan `auth.uid()` del
   JWT — funcionan desde SECURITY DEFINER anidado.
+
+**s22 — importador masivo de productos, ciclo COMPLETO (mergeado a `main` @ `8b30aac`)**
+
+Continuación de lo iniciado como "Commit A" de s22 (backend + shared logic
+ya pusheados). Este bloque agregó Commit B (UI) + 5 fix commits del debug
+del archivo real + Commit del refresh button + Commit del mensaje
+diferenciado activo/inactivo. Total en la rama: 8 commits, 8 archivos
+nuevos + 3 migraciones DB + 2 modificaciones.
+
+**Commit B — UI del wizard (`4565db3`)**:
+- `app/inventory/products/import/page.tsx`: server component, delega auth
+  a `getImportBootstrap()`. Sin `requireRole` propio (el bootstrap ya
+  lanza si falla). `dynamic = "force-dynamic"`. Renderiza
+  `<ProductImportWizard bootstrap={...} />`.
+- `components/inventory/product-import-wizard.tsx` (client): state maestro
+  `{step, warehouseId, fileMeta, sheet, mapping, serverError,
+  successCount}` en `useState`. `bootstrap` recibido como `initialBootstrap`
+  y guardado en `useState` propio (para poder refrescarlo desde el step
+  preview sin re-mount). `useMemo` computa `validation` cuando cambian
+  `sheet`/`mapping`/`bootstrap`. `useTransition` para submit; segundo
+  `useTransition` para refresh. Pantalla final inline (no separate route)
+  con `Se importaron N productos` + link `/inventory/products` +
+  `Importar otro archivo`.
+- `components/inventory/product-import-step-upload.tsx`: 3 cards
+  (descargar plantilla / bodega destino / dropzone). `buildTemplateWorkbook()`
+  → `Blob` con MIME `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`
+  + link temporal + click programático. Bodegas en un `Select` agrupado
+  por sede vía `SelectGroup`/`SelectLabel`. Dropzone valida extensión,
+  tamaño, luego cuenta de filas post-parse.
+- `components/inventory/product-import-step-mapping.tsx`: tabla 2 columnas
+  (header archivo | Select). Detecta `missingRequired` y
+  `duplicateFieldAssignments` (mismo field asignado a 2 columnas) antes
+  de habilitar Continuar. Opciones del Select: `(Sin asignar)` /
+  `(Ignorar esta columna)` / los `IMPORT_FIELDS` con `*` en los
+  requeridos.
+- `components/inventory/product-import-step-preview.tsx`: `useVirtualizer`
+  de `@tanstack/react-virtual`, contenedor scroll `h-[500px]`, rowHeight
+  56px, overscan 10. Grid CSS 6-cols. Fila válida: `bg-green-50/50` +
+  `border-l-green-500/70`. Error: `bg-red-50` + `border-l-destructive`.
+  `data-row-status="ok"|"error"` para queries desde DevTools.
+- Sidebar: nuevo link "Importar productos" (icono `Upload`) en grupo
+  Inventario.
+- Deps: `@tanstack/react-virtual ^3.14.10`.
+
+**Debug del archivo real — 3 rondas de fix con smoke test iterativo**:
+
+Esteban probó en preview con `.xlsx` real de 14 filas del catálogo del
+negocio (camisas alfanuméricas + tenis con talla numérica + barcode
+Code39 con fórmula). El wizard mostraba 14/14 como error. 3 causas
+descubiertas en cascada:
+
+- **Fix 1 (`667b256`)**: exceljs devuelve celdas como objetos tipados
+  (richText, formula, hyperlink, error) cuando no son primitivas puras.
+  Al pasar el objeto a Zod, `z.string()` y `z.union([string, null,
+  undefined])` fallaban con `"Invalid input"` genérico. Solución:
+  `normalizeCellValue` dentro de `parseWorkbook`, unwrap a primitiva
+  antes de retornar. Incluye logging temporal `[product-import]`
+  fila-a-fila con `candidate` + `types` pre-Zod + issues Zod post-fail
+  (marcado `TEMP s22`, remover en commit de limpieza). También mensajes
+  Zod ahora anexan `(campo X)` para no quedar huérfanos.
+
+- **Fix 2 (`f700c02`)**: log real reveló que barcode venía como
+  `{ result: '*CA-3XL-68-01*', sharedFormula: 'J2' }`. El check
+  anterior `"result" in o && "formula" in o` NO matcheaba
+  `sharedFormula`. Solución: broaden a `"result" in o` — exceljs
+  siempre expone el valor calculado en `.result` sin importar la key
+  de fórmula fuente (cubre `formula`, `sharedFormula`, `arrayFormula`).
+  Además: strip de asteriscos leading/trailing en el transform de
+  `barcode` — la plantilla del cliente usa `="*"&Referencia&"*"` para
+  poder imprimir con fuente Code39 directo desde Excel, y los
+  asteriscos son delimitadores start/stop del formato, no parte del
+  código real. Extra: `barcode` schema acepta `z.number()` (Excel
+  auto-coerce barcodes numéricos) y coerce a string.
+
+- **Fix 3 (`458a1d8`)**: 13/14 válidas — el único error restante eran
+  las 6 filas de tenis con talla numérica (44, 43, 39, 38, 37) que
+  llegaban como `number` puro y `z.union([string, null, undefined])`
+  las rechazaba. Solución: `size` acepta `z.number()` + coerce a string
+  en el transform. Aplicado también a `code` por simetría. Los 3
+  campos opcionales tipo texto (`code`, `size`, `barcode`) ahora manejan
+  `number` → `string` uniformemente.
+
+**Smoke test local sin browser**: script en scratchpad
+(`test-import-parse.mjs`) — replica `normalizeCellValue` idéntico al del
+lib, parsea un `.xlsx` local y muestra por fila `code`, `barcodeRaw`,
+`barcodeClean`, `sizeRaw`, `sizeType`, `sizeClean`. NO commiteado al
+repo, es diagnóstico personal.
+
+**Refresh button (`3d2258d`)** — feature de UX descubierta al probar:
+Esteban eliminó un producto conflictivo desde otra pestaña después de
+abrir el wizard, pero el preview seguía marcándolo como duplicado
+porque `getImportBootstrap()` se llamó una sola vez al mount de la
+página server. Solución: `bootstrap` pasa a state en el wizard;
+handler `handleRefreshBootstrap` con `useTransition` re-llama al
+server action y actualiza state; `validateRows` corre automático via
+`useMemo` sobre las MISMAS filas parseadas (no re-sube el archivo).
+Botón "Refrescar disponibilidad" en el summary bar del preview,
+icono `RefreshCw` (o `Loader2` spinning). Try/catch silencioso: si el
+refetch falla, el user sigue con el snapshot anterior. Cero riesgo:
+solo lectura, idempotente, no toca DB.
+
+**Decisión de negocio clave — código de producto inactivo (Opción B)
++ migración `20260824000002` (`93f0e73`)**:
+
+Escenario: `deleteProductSafe` (`lib/inventory-actions.ts:155`) hace
+soft-delete (`UPDATE is_active=false`) cuando el producto tiene
+`sale_items`. El importador seguía marcando el `code`/`barcode`
+soft-deleted como duplicado, con mensaje genérico "ya existe".
+
+Se descartó explícitamente la Opción A (partial unique index
+`WHERE is_active=true` + auto-relax de UNIQUE): permitir que 2 filas
+activa/inactiva compartan el mismo código genera lookups ambiguos en
+el POS al escanear el barcode (Postgres no garantiza cuál fila
+devuelve, riesgo operativo real en el mostrador). Decisión: **el
+código/barcode queda RESERVADO permanentemente** aunque el producto
+se desactive. Se mejora el mensaje en su lugar, en las 2 capas:
+
+- Capa 1 (cliente): `ImportBootstrap.existingCodes/Barcodes` pasa de
+  `string[]` a `Record<string, boolean>` (mapa `code → is_active`).
+  `getImportBootstrap` query trae `is_active`. `validateRows` emite
+  mensaje diferenciado según `is_active`: activo → "ya existe en el
+  sistema" | inactivo → "pertenece a un producto inactivo. Reactivalo
+  desde /inventory/products (mostrar inactivos) o usá otro código en
+  el archivo."
+- Capa 2 (RPC, migración `20260824000002`): mismo pattern en el handler
+  `WHEN unique_violation`. Nueva variable `v_conflict_active BOOLEAN`,
+  `SELECT is_active INTO v_conflict_active FROM products WHERE code =
+  v_row.code` (o barcode), `IF v_conflict_active IS FALSE THEN ...`.
+  Fallback NULL (fila borrada por SQL manual entre INSERT-fail y
+  handler): `NULL IS FALSE = false` en Postgres → cae al ELSE, emite
+  mensaje genérico, NO enmascara ERRCODE `23505`. Documentado inline
+  en el .sql. Resto de la función (auth, INSERT, FK/CHECK handlers)
+  idéntico al original.
+
+**Verificación end-to-end contra DB de prod (14 filas)**:
+- Los 14 productos existen en `products`, todos `is_active=true`.
+- Cada uno con exactamente 1 movimiento `reference_type='product_import'`
+  en `stock_movements`.
+- Stock en Principal (Bodega Central) correcto fila por fila.
+- Sin duplicados. `TE-44-195-089` (código corregido) se creó limpio sin
+  chocar con `TE-44-195-00` (producto inactivo original), confirmando
+  que la Opción B quedó bien implementada.
+
+**s23 — permiso configurable `product_import` en 4 capas (mergeado a `main` @ `449207d`)**
+
+Continuación del s22: Esteban pidió que el módulo de importación se
+pueda controlar desde `/users`, no derivar del rol fijo.
+
+Investigación previa (documentada como reporte antes de codear):
+- `ModuleKey` en `lib/permissions.ts` es enum de strings; 20 permisos
+  existentes.
+- `ROLE_DEFAULT_PERMISSIONS` es TEMPLATE para creación de usuarios (o
+  aplicar defaults desde UI). NO regla runtime.
+- `user_profiles.permissions` (array text) es la fuente de verdad.
+- **Relación defaults ↔ permissions es REEMPLAZO, no adición**:
+  `normalizePermissions` (`lib/user-actions.ts:65`) — admin siempre
+  `ROLE_DEFAULT_PERMISSIONS.admin`; resto usa el array tal cual si
+  viene no vacío. Al editar desde `/users` se guarda `Array.from(perms)`
+  exacto.
+- `hasPermission` (auth-context) y `requirePermission` (role-guard)
+  ambos bypasean admin al inicio (`if (profile.role === "admin")
+  return true/profile`) y después chequean
+  `permissions?.includes(module)`.
+- **`requirePermission` existía pero NADIE lo usaba** (grep=0 en lib/
+  y app/). El patrón dominante del repo es `requireRole(...)`
+  hardcodeado. El resultado neto es que "configurar un permiso" solo
+  esconde el link en el sidebar; el server enforcement es por rol.
+
+Decisión: **cerrar la brecha SOLO para product_import**, no como
+refactor generalizado del resto del repo.
+
+Cambios (3 archivos, 6 insertions/4 deletions):
+- `lib/permissions.ts`: nuevo `ModuleKey "product_import"` + entrada
+  en `MODULES[]` (grupo "inventario"). **NO se agrega a
+  `ROLE_DEFAULT_PERMISSIONS.encargado/vendedor/contador`** —
+  intención explícita "arranca en cero". Admin lo hereda vía
+  `MODULES.map(m => m.key)` en línea 76 (defaults dinámicos), y el
+  bypass hardcodeado cubre a admins existentes sin tocar la DB.
+- `components/dashboard-sidebar.tsx`: link "Importar productos" cambia
+  de `permission: "inventory"` (compartido con Productos/Códigos/Valor)
+  a `"product_import"` (específico).
+- `lib/product-import-actions.ts`:
+  `requireRole("admin","encargado")` → `requirePermission("product_import")`
+  en `getImportBootstrap` y `runProductImport`. Import de role-guard
+  actualizado.
+- **Server component sin cambios** — hereda el guard via la llamada
+  a `getImportBootstrap()`. Excepción se propaga a Next.js error
+  boundary. Comportamiento idéntico al patrón actual.
+- **RPC `import_products_bulk_atomic` sin cambios** —
+  `is_admin_or_encargado()` sigue como red de seguridad final. Doble
+  capa: TS positivo por permiso, SQL negativo por rol como piso
+  mínimo. Un vendedor al que un admin le active `product_import` por
+  error tendría el link + pasaría el guard TS + sería rechazado por
+  el RPC con 42501. Aceptable.
+- **Sin migración de usuarios existentes** — decisión explícita.
+  Encargados actuales arrancan sin el permiso; admin lo activa
+  manualmente desde `/users`.
+
+Smoke test verificado en preview:
+- Admin: sin regresión, ve el link y puede importar. Checkbox nuevo
+  "Importar productos" aparece en `/users` (disabled + marcado para
+  admin, como el resto).
+- Encargado sin permiso: no ve link + navegación directa a
+  `/inventory/products/import` rechazada por `requirePermission`.
+- Encargado con permiso activado: ve link, completa import real.
+
+**Reglas nuevas documentadas esta sesión (aplican a futuro)**:
+
+- **`normalizeCellValue` para cualquier parsing de exceljs**: si vas
+  a validar celdas con Zod (o pasarlas a una API que espera primitivas),
+  DEBÉS unwrap primero. exceljs devuelve `{result}` para fórmulas
+  (incluye `sharedFormula`, `arrayFormula`), `{richText:[{text}...]}`,
+  `{text, hyperlink}`, `{error}`. Un check `"formula" in o` sin
+  cubrir `sharedFormula` deja pasar el objeto y Zod tira "Invalid
+  input" genérico sin contexto de qué campo/fila falló.
+- **Coerción number→string en campos "text opcional" que vienen de
+  Excel**: Excel serializa celdas numéricas como `number` puro incluso
+  si querés tratarlas como string (barcode "7701234567890", talla 44,
+  código "12345"). Solución: `z.union([z.string(), z.number(),
+  z.null(), z.undefined()])` + transform con `typeof v === "number" ?
+  String(v) : v.trim()`. Aplicado a `code`, `size`, `barcode` en
+  `product-schema.ts`.
+- **Fallback NULL en `SELECT INTO` dentro de handlers `EXCEPTION`**:
+  cuando querés hacer un lookup extra desde un handler `WHEN
+  unique_violation` (o similar) para armar mensaje diferenciado,
+  documentar que si la fila conflictiva ya no existe, `SELECT INTO`
+  asigna NULL. Aprovechar 3-valued logic: `NULL IS FALSE = false` →
+  caés al ELSE con el mensaje genérico, sin enmascarar ERRCODE
+  original. Alternativa paranoica (wrap del SELECT en propio
+  `BEGIN/EXCEPTION WHEN OTHERS`) descartada por overkill.
+- **Un producto soft-deleted (`is_active=false`) MANTIENE reservado
+  su `code` y `barcode`** (decisión de negocio permanente).
+  Justificación: lookups por barcode en el POS no filtran
+  `is_active` explícitamente, y permitir 2 rows con el mismo código
+  daría resolución ambigua. Si en el futuro querés cambiar esta
+  regla, requiere migración de partial unique index Y auditoría de
+  TODOS los lookups por `code`/`barcode` en el sistema.
+- **Doble capa TS-positivo + SQL-negativo para permisos configurables
+  con RPC seguro**: cuando gateás una feature por permiso configurable
+  en TS (`requirePermission("x")`) pero el RPC subyacente tiene un
+  helper de rol más restrictivo (`is_admin_or_encargado()`), NO
+  cambies el RPC. TS enforcea la política granular; SQL enforcea el
+  piso mínimo. Un usuario con permiso mal seteado a un rol inadecuado
+  queda bloqueado por el RPC como red de seguridad — no es un bug,
+  es la disciplina.
+
+**Nuevo hilo abierto SIN EMPEZAR — productización del sistema**:
+
+Iniciativa grande que Esteban planteó al cierre. Dos horizontes distintos
+que se deben tener claros:
+
+- **Visión de largo plazo (modelo Alegra, NO se construye ahora pero es
+  la dirección declarada)**: landing pública, self-service signup, trial
+  gratis, suscripción paga. Multi-tenant real (aislamiento de datos por
+  cliente en base compartida, facturación en vivo, gate de trial
+  expirado). Es el "Camino B" que se descartó para AHORA pero es el
+  objetivo final. Cualquier decisión de arquitectura del Camino A debe
+  no bloquear esta migración futura.
+
+- **Objetivo cercano (SE EJECUTA PRIMERO)**: un cliente propio de
+  Esteban, una sola sede, POS a implementar YA. **Camino A** —
+  instancia separada por cliente (Supabase + Vercel propios), MISMO
+  código que ya existe, el cliente simplemente nunca crea una segunda
+  sede. Esteban administra todas las cuentas (modelo servicio
+  administrado).
+
+Decisiones ya cerradas para Camino A (no re-preguntar):
+1. Instancia separada por cliente, NO multi-tenant compartido.
+2. Camino A es escalón deliberado hacia el modelo Alegra futuro. Al
+   genericizar el código para el primer cliente NO hardcodear supuestos
+   que compliquen la migración futura, pero TAMPOCO construir
+   infraestructura multi-tenant ahora (un cliente no lo justifica).
+3. Planes/funcionalidades por tier: decisión manual de Esteban al
+   aprovisionar cada cliente vía el sistema de permisos que ya existe
+   (activar/desactivar `ModuleKey` por usuario). NO facturación en
+   vivo dentro de la app — eso pertenece al modelo Alegra futuro.
+4. Estrategia: aprovisionar al primer cliente A MANO, documentando el
+   proceso real sobre la marcha. Automatizar/scriptear recién después
+   de haberlo hecho una vez.
+
+**Primera tarea próxima sesión**: AUDITORÍA de código para identificar
+todo lo que hoy asume que el sistema corre para el negocio específico
+de Esteban (Taiwy):
+- Nombres de marca hardcodeados (`"POS Multisede"` en sidebar, cualquier
+  referencia a Taiwy en catálogo público, plantillas de recibo, etc.).
+- Textos con referencias al negocio actual.
+- Valores default en seed scripts (`scripts/04_seed.sql`, categorías,
+  bodegas iniciales, admin user).
+- Claves de API específicas del entorno actual (Vercel env vars,
+  Supabase project ref, etc.).
+- Referencias a la bodega central como concepto obligatorio (el cliente
+  de una sola sede quizás no necesita el flujo de traslados/tránsito).
+- URLs/dominios hardcodeados.
+
+Output esperado de la auditoría: lista concreta de archivos + líneas +
+qué genericizar antes de poder desplegar una instancia limpia para un
+cliente nuevo. Esto alimenta el checklist de aprovisionamiento del
+primer cliente.
 
 ## §7.16 — Sesión 2026-08-22 (s14 → s20 en prod, `main` @ `aae73b1`)
 
