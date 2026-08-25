@@ -48,19 +48,33 @@ export const productImportRowSchema = z.object({
     )
     .transform((v) => (v && v.trim() !== "" ? v.trim() : null)),
 
+  // Excel entrega tallas numéricas (44, 43, 38) como number puro y tallas
+  // alfabéticas (M, L, 2XL) como string. Aceptamos ambos y normalizamos
+  // a string para que el schema del RPC (siempre text) reciba un tipo
+  // consistente.
   size: z
     .union(
-      [z.string(), z.null(), z.undefined()],
-      { message: "El valor debe ser texto o estar vacío." },
+      [z.string(), z.number(), z.null(), z.undefined()],
+      { message: "El valor debe ser texto o número." },
     )
-    .transform((v) => (v && v.trim() !== "" ? v.trim() : null)),
+    .transform((v) => {
+      if (v === null || v === undefined) return null
+      const s = typeof v === "number" ? String(v) : v.trim()
+      return s === "" ? null : s
+    }),
 
+  // Mismo caso que barcode/size: Excel puede coerce una referencia
+  // numérica a number aunque nosotros la tratemos como string.
   code: z
     .union(
-      [z.string(), z.null(), z.undefined()],
-      { message: "El valor debe ser texto o estar vacío." },
+      [z.string(), z.number(), z.null(), z.undefined()],
+      { message: "El valor debe ser texto o número." },
     )
-    .transform((v) => (v && v.trim() !== "" ? v.trim() : null)),
+    .transform((v) => {
+      if (v === null || v === undefined) return null
+      const s = typeof v === "number" ? String(v) : v.trim()
+      return s === "" ? null : s
+    }),
 
   barcode: z
     .union(
