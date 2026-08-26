@@ -2388,4 +2388,33 @@ Al cumplir la semana, remover en commit de limpieza aparte.
 
 ---
 
+## §7.18 — Sesión 2026-08-25 (productización + aprovisionamiento Taiwy Sport, `main` @ `e27504b`)
+
+**Alcance**: primer pass de productización del sistema (Camino A —
+instancia separada por cliente) + ejecución end-to-end del primer
+aprovisionamiento real (Taiwy Sport, `taiwysport.app-solcraft.com`).
+
+**Todo el detalle técnico + registro histórico vive en dos lugares**:
+
+- `docs/RUNBOOK-APROVISIONAMIENTO-CLIENTE.md` — runbook completo de 7
+  fases (Supabase → schema → Vercel → subdominio → datos → smoke →
+  handoff) + registro real de la ejecución de Taiwy Sport + 8 sorpresas
+  con detalle + deuda técnica documentada. Fuente única de verdad para
+  clientes futuros.
+- `docs/ESTADO-PENDIENTES.md §0` (actualizado 2026-08-25) — resumen
+  ejecutivo de la sesión, commits ordenados, deuda técnica activa
+  incluida la nueva de AI Gateway rate limits.
+
+**No re-explicado acá** para no duplicar. Los cambios de código de
+productización (7 archivos genericizados, `next.config.mjs` con hostname
+dinámico, `scripts/04_seed.sql` a stub, `pnpm-workspace.yaml` +
+`packageManager` pineado a pnpm 9.15.9) están en los commits `17aa2cb`,
+`742165a`, `f45d638`.
+
+**Riesgo residual identificado**: `/api/analyze-product` con
+`GatewayRateLimitError` recurrente en la capa gratuita de AI Gateway
+compartido entre pos-solcraft-1-a1x2 (prod actual) y pos-taiwysport
+(cliente nuevo). Ambos comparten cuota. Elevar a créditos pagos si el
+panel IA se vuelve crítico para operación de cualquiera de los dos.
+
 Fin del contexto.

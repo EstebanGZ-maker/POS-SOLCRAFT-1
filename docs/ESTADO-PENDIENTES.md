@@ -1,14 +1,145 @@
 # ESTADO-PENDIENTES.md
 
 > **Propósito**: dump de estado para que una instancia nueva de Claude sin
-> memoria pueda retomar sin perder nada. Última actualización: **2026-08-24**
-> (cierre de sesión larga: s21 atomicidad de traslados + s22 importador
-> masivo end-to-end + s23 permiso configurable del importador — TODO mergeado
-> a main). `main` en `449207d`. Sin ramas abiertas.
+> memoria pueda retomar sin perder nada. Última actualización: **2026-08-25**
+> (cierre de sesión larga: productización + aprovisionamiento real del primer
+> cliente Taiwy Sport). `main` en `e27504b`. Sin ramas abiertas.
 
 ---
 
-## 0. LEE ESTO PRIMERO — estado tras sesión 2026-08-24 (s21 + s22 + s23 cerrados en prod)
+## 0. LEE ESTO PRIMERO — estado tras sesión 2026-08-25 (Taiwy Sport aprovisionado + runbook completo)
+
+**Estado de ramas**: `main` @ `e27504b`. Sin ramas abiertas. Todo lo trabajado
+esta sesión está en prod.
+
+**Cerrado y en prod esta sesión (2 bloques mayores)**:
+
+- **Productización — primer pass** (commits `17aa2cb` → `5910280`):
+  - Genericización de hardcodes de la instancia Taiwy: `login-form` +
+    metadata SEO a "Solcraft POS" (branding de plataforma), fallbacks de
+    `business_settings`/`catalog` a "Mi negocio", `next.config.mjs`
+    hostname dinámico desde `NEXT_PUBLIC_SUPABASE_URL`, preview del
+    recibo con datos dummy, `scripts/04_seed.sql` vaciado a stub.
+  - Runbook nuevo: `docs/RUNBOOK-APROVISIONAMIENTO-CLIENTE.md` (7 fases
+    + decisiones de diseño + deuda técnica documentada).
+  - Decisiones cerradas: instancia separada por cliente (Camino A),
+    plan Pro Supabase, Confirm email OFF, sedes virtuales
+    (central + venta) para cliente de sede única, subdominios
+    `<slug>.app-solcraft.com` con `NEXT_PUBLIC_APP_URL` por instancia,
+    cookies scoped al subdominio (aislamiento automático).
+
+- **Aprovisionamiento real Taiwy Sport** (ejecutado end-to-end):
+  - **Supabase**: proyecto `pos-taiwysport` (ref `aapchdjwpqhwsquffnxn`)
+    en sa-east-1 Pro. Auth configurada (Site URL + Redirect URLs +
+    Confirm email OFF).
+  - **Vercel**: proyecto `pos-taiwysport` (id `prj_x9tjLwW4RXltN4P2FfXRWeycNLTo`)
+    en team `team_NYfI1cmi7rmw2rG6BEP7Ws2p`. Subdominio activo
+    `https://taiwysport.app-solcraft.com` con SSL.
+  - **Schema aplicado**: baseline + s21/s22/s23 (migrations) + release
+    2C+2D completo (scripts 15→18 con 17c v2 en vez de v1, y 18 parcial
+    para no revertir COGS de 17e) + trigger `on_auth_user_created`.
+  - **Datos iniciales**: 2 sedes virtuales (`Bodega Central` central=TRUE
+    + `Taiwy Sport` central=FALSE), 3 warehouses (2 primary + 1 sistema
+    tránsito), 5 categorías ropa/calzado, "Consumidor final" con
+    is_walk_in=TRUE, business_settings con business_name="Taiwy Sport",
+    admin `esteban@solcraftsas.com` (UUID `fe6fb143-da2b-4aaa-9d56-7bb954d81738`)
+    con role='admin'.
+  - **Chequeos automáticos**: `verify_kardex_integrity()`,
+    `verify_credit_integrity()`, `verify_adjustment_accounting_integrity()`
+    → todos 0 filas.
+  - **Smoke A parcial**: ingreso IA + traslado central→venta verificados
+    end-to-end en kardex (5 movements). Venta POS y cierre de turno
+    quedaron para primera operación real del cliente (no bloqueante).
+
+**Commits ordenados**: `17aa2cb` (hardcodes) → `906f897` (runbook skeleton) →
+`5910280` (TODOs #3/#4 resueltos) → `742165a` (pnpm workspace fix) →
+`f45d638` (pnpm packageManager pin) → `8c3ba4a` (registro + 6 sorpresas) →
+`f1f09a8` (fix CRÍTICO §2 baseline incompleta) → `e27504b` (cierre honesto).
+
+**Sorpresas descubiertas y accionadas** (8 total, ver detalle en el runbook
+"Sorpresas y hallazgos durante la ejecución"):
+
+0. ⚠️ **CRÍTICA**: baseline canónica del 12-08 **NO** incluye release 2C+2D
+   (scripts 15-18). Un cliente aprovisionado con la versión inicial del
+   runbook ("aplicar solo migrations") habría roto en silencio al primer
+   ajuste de inventario / abono / cierre de turno. Fix: §2.3 reescrita
+   con lista definitiva y ordenada; §2.4 nueva con chequeos automáticos
+   post-schema (no depende de detección manual).
+1. **pnpm packageManager pin** obligatorio (fix en repo main, beneficia
+   prod actual también). Sin pin, Vercel usa pnpm 11.22 con ERR_PNPM_IGNORED_BUILDS.
+2. **MCP `create_git_project` de Vercel reutiliza proyecto ya linked al
+   repo**. Cliente actual: proyecto creado manual desde dashboard.
+   Futuro: fork del repo por cliente.
+3. **Orden de funciones SQL importa** en baseline por chunks (helpers auth
+   antes que `has_permission`/`has_site_access`).
+4. **Trigger `on_auth_user_created` faltante en baseline** (schema `auth`
+   no se introspecta). Se aplica como delta manual.
+5. **MCP Supabase no expone DB password ni service_role key** (se traen
+   a mano del dashboard).
+6. **`apply_migration` MCP tiene límite de tokens** — baseline se parte
+   en 5 chunks lógicos.
+7. **Vercel dashboard permite N proyectos apuntando al mismo repo**, MCP
+   no. Trade-off documentado.
+
+**Deuda técnica activa (arrastrada, no urgente)**:
+
+- **AI Gateway rate limits (prioridad MEDIA-ALTA)**: `/api/analyze-product`
+  tiene errores recurrentes por `GatewayRateLimitError` en la capa
+  gratuita del AI Gateway de Vercel para Gemini. Primera ocurrencia
+  detectada el 2026-08-19 (coincide con el TODO abierto "investigar
+  fallo puntual de analyze-product" que quedaba de sesiones previas —
+  el fallo NO era puntual, es rate limit recurrente). Última ocurrencia
+  2026-08-25 22:58 (probablemente durante el smoke test del ingreso IA
+  de Taiwy Sport). **Impacto**: afecta a AMBOS proyectos (pos-solcraft-1-a1x2
+  y pos-taiwysport) porque comparten team Vercel y por lo tanto cuota
+  de AI Gateway compartida. Ya no es "visto una vez, no confirmado" —
+  está confirmado y recurrente. **Acción**: evaluar upgrade a créditos
+  pagos del AI Gateway. Con dos negocios dependiendo del panel IA, la
+  probabilidad de que el cliente Taiwy Sport le pegue a rate limit en
+  horario pico es alta.
+
+- **Rotación anon key del proyecto viejo** (`nxszaxwsrtlofqimbfig`): la
+  key JWT está commiteada al historial de git. Checklist paso-a-paso
+  entregado en sesión anterior. No urgente (seguridad real depende de
+  RLS), sí conveniente. Ejecutar en ventana de baja actividad.
+
+- **Deuda técnica del código** (ver runbook "Deuda técnica documentada"):
+  sistema asume ≥2 sedes (parche futuro cuando aparezca 2do cliente de
+  sede única), panel IA hardcoded a rubro ropa, catálogo público con
+  branding "Taiwy" (decisión híbrida: cada cliente re-brand su
+  storefront al deploy), moneda COP hardcoded, pasarela Wompi Colombia only.
+
+- **Smoke test manual pendiente para Taiwy Sport**: venta POS + cierre
+  de turno. El cliente lo cubre en su primera operación real. Si algo
+  falla en operación, verificar shape esperado post-venta descrito en
+  el runbook (`sales` con `unit_cost` persistido, 2 asientos por venta
+  contado: income "Ventas POS" + expense "Costo de mercancía vendida").
+
+**Deuda ABIERTA anterior a esta sesión, sin cambios**:
+
+- **Smoke funcional real de `createBulkTransfer` refactorizado (s21)**:
+  Casos C/D/E/F sin ejercitar. Primer traslado real de Taiwy Sport ES
+  el smoke natural — ya se ejecutó uno (central→venta) durante esta
+  sesión, verificado en kardex. Casos edge C/D/E/F siguen sin cubrir.
+- **Logging temporal `[product-import]` en `lib/product-import.ts`**:
+  vence ~2026-08-31, se puede limpiar cuando se retome.
+- **Red de seguridad `is_ghost` en transfers** (s21): se mantiene.
+- **Promociones aplicadas en venta**, **consolidación SiteProvider**,
+  **`getShiftReceivables` post-bootstrap POS**, **gate del contador**:
+  sin cambios.
+
+**Referencias importantes**:
+
+- `docs/RUNBOOK-APROVISIONAMIENTO-CLIENTE.md` — runbook completo para
+  aprovisionar cliente nuevo. Contiene también el registro real de la
+  ejecución de Taiwy Sport (§ "Registro de la primera ejecución"), las
+  8 sorpresas con detalle, y la deuda técnica del código.
+- Detalle técnico del release 2C+D + productización: no re-explicado en
+  CONTEXT-POS.md — todo el detalle está en este bloque y en el runbook.
+
+---
+
+## HISTORIAL — sesión 2026-08-24 (s21 + s22 + s23 cerrados en prod)
 
 **Estado de ramas**: `main` @ `449207d`. Sin ramas abiertas. Todo lo trabajado
 esta sesión está en prod.
