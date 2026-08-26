@@ -532,7 +532,32 @@ Con los datos iniciales cargados, ejecutar en el navegador contra
 - **Vercel project id**: `prj_x9tjLwW4RXltN4P2FfXRWeycNLTo` (dashboard:
   `https://vercel.com/estebangz-makers-projects/pos-taiwysport`)
 - **Vercel team id**: `team_NYfI1cmi7rmw2rG6BEP7Ws2p`
-- **Admin inicial**: Estebangz070@gmail.com
+- **Admin inicial**: `esteban@solcraftsas.com` (UUID `fe6fb143-da2b-4aaa-9d56-7bb954d81738`)
+
+### Estado del smoke test al cierre de sesión
+
+Fases 1-5 verificadas en prod. Fase 6 (smoke) completada parcialmente:
+
+- ✅ Ingreso via panel IA `/central` (2 productos: gorras New Era).
+- ✅ Ajuste #1 con motivo='compra', kardex OK.
+- ✅ Traslado central → Taiwy Sport (4 movements en kardex — salida
+  central, entrada tránsito, salida tránsito, entrada venta).
+- ✅ Recepción confirmada (1 unidad disponible en sede Taiwy Sport).
+- ✅ Turno #1 abierto en sede Taiwy Sport (initial_cash=0).
+- ⏸️ **Pendiente al cierre**: venta al Consumidor final + cierre de
+  turno + verificación de asientos (income "Ventas POS" + expense
+  "Costo de mercancía vendida" + cuadre=0). No bloqueante — el cliente
+  puede ejecutar estos pasos en su primera venta real.
+- ✅ Chequeos automáticos post-schema: `verify_kardex_integrity`,
+  `verify_credit_integrity`, `verify_adjustment_accounting_integrity`
+  todas devuelven 0 filas.
+
+**Al retomar la sesión**: si el smoke de venta+cierre no se completó
+como parte de la operación real del cliente, ejecutar manualmente contra
+`https://taiwysport.app-solcraft.com` desde el POS con turno abierto y
+verificar el shape esperado de `sales` + `sale_items.unit_cost` +
+`accounting_entries` con 2 filas por venta contado (income + COGS
+expense).
 
 ### Sorpresas y hallazgos durante la ejecución (a re-integrar en el runbook)
 
