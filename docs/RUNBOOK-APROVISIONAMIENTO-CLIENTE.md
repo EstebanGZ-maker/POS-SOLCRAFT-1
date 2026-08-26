@@ -462,14 +462,96 @@ Con los datos iniciales cargados, ejecutar en el navegador contra
 
 ## Registro de la primera ejecución (a completar durante el aprovisionamiento)
 
-- **Cliente**: Taiwysport
-- **Fecha de aprovisionamiento**: <YYYY-MM-DD>
-- **Duración real**: <horas>
+- **Cliente**: Taiwy Sport
+- **Fecha de aprovisionamiento**: 2026-08-25 (en curso)
 - **Subdominio**: `taiwysport.app-solcraft.com`
-- **Supabase project ref**: `<REF>` (dashboard URL:
-  `https://supabase.com/dashboard/project/<REF>`)
-- **Vercel project id**: `<ID>` (dashboard URL:
-  `https://vercel.com/<team>/<project>`)
-- **Admin inicial**: `<email>`
-- **Notas y sorpresas durante la ejecución**: (llenar sobre la marcha —
-  esta sección alimenta la generalización del runbook para clientes futuros)
+- **Supabase project ref**: `aapchdjwpqhwsquffnxn` (dashboard:
+  `https://supabase.com/dashboard/project/aapchdjwpqhwsquffnxn`)
+- **Supabase region**: sa-east-1 (São Paulo)
+- **Vercel project id**: `prj_x9tjLwW4RXltN4P2FfXRWeycNLTo` (dashboard:
+  `https://vercel.com/estebangz-makers-projects/pos-taiwysport`)
+- **Vercel team id**: `team_NYfI1cmi7rmw2rG6BEP7Ws2p`
+- **Admin inicial**: Estebangz070@gmail.com
+
+### Sorpresas y hallazgos durante la ejecución (a re-integrar en el runbook)
+
+Cada una de estas cosas costó una iteración de debug real durante el
+primer aprovisionamiento. Todas están accionadas — el runbook actual ya
+las contempla — pero se listan acá como el registro histórico de qué
+falló y por qué las secciones respectivas quedaron como están.
+
+**1. pnpm packageManager pin obligatorio** (Fase 3, la más crítica).
+El repo no tenía `packageManager` en `package.json`. Vercel usó pnpm
+11.22 (la última que traía su build image ese día), que aplica una
+política estricta: `ERR_PNPM_IGNORED_BUILDS` si algún dep con install
+script no está en `onlyBuiltDependencies` (whitelist explícito). El
+prod actual (`pos-solcraft-1-a1x2`) venía funcionando solo por cache
+de builds viejos previos a pnpm 10 — cualquier "clear cache and
+redeploy" o instancia nueva pegaba el mismo error. Además la config
+que existía estaba en dos lugares equivocados (`pnpm.onlyBuiltDependencies`
+en `package.json`, ubicación deprecada + `pnpm-workspace.yaml` con keys
+inválidas `ignoredBuiltDependencies` y `allowBuilds`). Fix en dos
+commits: `742165a` (limpiar workspace file, dejar como fuente única de
+verdad con sharp+unrs-resolver en `onlyBuiltDependencies`) y `f45d638`
+(pinear `packageManager: pnpm@9.15.9`). Sin esos fixes en `main`,
+CUALQUIER cliente nuevo hubiera pegado el mismo error el día 1.
+**Regla para runbook**: revisar `packageManager` antes de aprovisionar;
+si Vercel bump a una versión mayor de pnpm en el futuro, re-validar
+que el build sigue funcionando o mantener el pin actualizado.
+
+**2. MCP `create_git_project` de Vercel reutiliza el proyecto ya
+linked al repo** (Fase 3). Al intentar crear el proyecto nuevo apuntando
+al mismo repo `EstebanGZ-maker/POS-SOLCRAFT-1`, el MCP reutilizó el
+`pos-solcraft-1-a1x2` existente (prod actual) en vez de crear uno
+nuevo — la relación es 1:1 por repo, no por nombre de proyecto. **NO
+se rompió nada** porque no se pushearon env vars nuevas (habría
+sobreescrito las de prod), pero el flag confirma que:
+- **Cliente actual**: se creó el proyecto Vercel a mano desde el
+  dashboard (permite múltiples proyectos apuntando al mismo repo, cosa
+  que el MCP no).
+- **Cliente futuro (2do en adelante)**: fork el repo por cliente. El
+  patrón "N proyectos Vercel apuntando al mismo main" genera N builds
+  por cada push, desperdicia recursos y arriesga config cruzada entre
+  clientes. Con fork por cliente cada uno tiene su rama `main` propia
+  y su ciclo de deploy independiente. Los fixes al código base se
+  propagan vía `git remote add upstream` + pull selectivo.
+
+**3. Orden de creación de funciones SQL importa** (Fase 2). Las
+funciones LANGUAGE sql como `has_permission` y `has_site_access` llaman
+a `is_admin()` / `is_global_role()`. Postgres valida referencias al
+parsear el body de funciones SQL — hay que declarar los helpers PRIMERO.
+En prod real la baseline se aplicó de una-vez en un solo transaction
+post-dump y el orden importó. Al pasar por MCP como chunks separados
+(por el límite de tokens del MCP), tuve que reordenar: `part2a`
+(helpers auth) → `part2b` (RPCs core) → `part2c` (web/catalog).
+**Regla para runbook**: si se aplica la baseline por chunks, `is_admin`
+/`is_admin_or_encargado`/`is_global_role`/`user_role`/`user_site_id`/
+`user_accessible_sites` van ANTES que cualquier función que las use.
+
+**4. Trigger `on_auth_user_created` faltante en baseline** (Fase 2).
+La baseline dumpeó solo el schema `public`; el trigger vive en
+`auth.users` (schema Supabase-managed) que no se introspecta. Sin este
+trigger, crear un user via Supabase Auth NO genera automáticamente el
+`user_profile` correspondiente. Se aplicó como migración delta
+`auth_trigger_on_new_user`:
+```sql
+CREATE TRIGGER on_auth_user_created
+  AFTER INSERT ON auth.users
+  FOR EACH ROW EXECUTE FUNCTION public.handle_new_user();
+```
+
+**5. `create_project` de Supabase MCP no expone DB password ni
+service_role key** (Fase 1). Supabase genera el password de DB al
+crear el proyecto y solo lo muestra una vez en el dashboard al crear
+vía UI — cuando se crea vía MCP, no se ve nunca. El service_role key
+tampoco está en `get_publishable_keys` (que solo devuelve anon y
+publishable). Ambos se traen manualmente del dashboard → Settings →
+API cuando se necesitan. El password no lo necesita la app (usa el
+JWT); el service_role sí lo necesita cualquier flow que bypasee RLS
+(webhook Wompi, importador de productos).
+
+**6. `apply_migration` del MCP Supabase tiene límite de tokens por
+call** (Fase 2). La baseline entera (3299 líneas) no cabe en un solo
+call. La partí en 5 chunks lógicos siguiendo los section markers del
+archivo (`-- ---- Extensions`, `-- ---- Tables`, etc.). Para clientes
+futuros, el mismo split funciona sin cambios.
