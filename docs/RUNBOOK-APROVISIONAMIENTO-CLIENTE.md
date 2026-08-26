@@ -132,44 +132,105 @@ Verificar al final:
   products, product_stock, sales, transfers, business_settings, etc.).
 - `list_migrations` refleja las 5 migraciones aplicadas.
 
-### 2.3 Scripts sueltos: NO aplicar ninguno
+### 2.3 ⚠️ CRÍTICO — aplicar scripts release 2C+2D después del baseline
 
-**Respuesta**: **saltearse todo `scripts/*.sql`** en el aprovisionamiento
-de un cliente nuevo.
+**La baseline canónica `20260812000000` está INCOMPLETA.** Falta el release
+2C+2D (scripts 15→18) que introdujo credit sales + inventory adjustments +
+COGS. Sin estos scripts el sistema arranca aparentemente OK pero SE ROMPE
+EN SILENCIO al primer intento de: crear un producto vía panel IA, hacer un
+ajuste de inventario, registrar un abono a crédito, redimir saldo a favor,
+o cerrar un turno.
 
-Racional:
+Historia: descubierto en la primera ejecución del runbook (Taiwy Sport,
+2026-08-25) cuando `/central` reportó `Could not find the function
+public.create_adjustment(...)` al intentar ingresar el primer producto.
+Los scripts 15-18 existían en `scripts/` pero la baseline dumpeada del
+12-08 no los introspectó (razón exacta desconocida — probablemente el
+dump generador tenía filtros o el estado de prod al 12-08 no los tenía
+todos consolidados).
 
-- El baseline `20260812000000_baseline_canonical_from_prod.sql` es un dump
-  canónico del esquema de PROD a fecha 2026-08-12 (SOURCE OF TRUTH del
-  release status en ese momento). Verificado: contiene los 8 RPCs de
-  muestra (`apply_wompi_transaction`, `log_payment_event`, `create_sale`,
-  `close_shift`, `open_shift`, `verify_kardex_integrity`, `dispatch_transfer_atomic`
-  y `import_products_bulk_atomic` no — los últimos dos llegaron
-  post-baseline).
-- Todos los `scripts/00-18*.sql` que estuvieron en prod antes del 12-08
-  están dentro de la baseline por definición.
-- Los que quedaron sueltos en el repo son:
-  - Históricos/documentales (pipeline de features que ya fusionaron a
-    prod → ya en baseline).
-  - Local-only explícitos: `13a_seed_local.sql`, `13b_drift_wompi_local.sql`.
-  - Rollbacks: `17rollback_*.sql` (solo emergencia).
-  - Peligrosos si se aplican: `05_merge_features.sql` asigna rol admin a
-    `admin@solcraft.dev` — email de dev, no del cliente. Y `04_seed.sql`
-    ahora es stub (vaciado en commit `17aa2cb`).
+**Aplicar EN ESTE ORDEN EXACTO** (todo vía Supabase MCP `apply_migration`
+o SQL editor del dashboard), después de las migraciones de §2.2:
 
-Deltas post-baseline aplicados vía migrations (§2.2), no via scripts:
+| Orden | Script | Qué aporta |
+|---|---|---|
+| 1 | `scripts/15_credit_sales_phase1.sql` | Columnas `sales.is_on_account/amount_paid/balance_due`, tablas `sale_payments` + `customer_credits`, RPC `create_sale` v2 (13 args), `close_shift` v2, `get_shift_balance`, `void_sale` v2, `verify_credit_integrity`. Bootstrapea "Consumidor final" como `is_walk_in=TRUE`. |
+| 2 | `scripts/16_inventory_adjustments_phase1.sql` | Columnas `inventory_adjustments.site_id/numero/status/motivo/created_by/updated_at`, RPC `create_adjustment` v1 (3 args), `void_adjustment`. |
+| 3 | `scripts/17a_adjustments_numeracion.sql` | Tabla `adjustment_counters`, `create_adjustment` v2a con numeración atómica. |
+| 4 | `scripts/17b_adjustments_wac.sql` | `create_adjustment` v2b con recálculo de WAC en incrementos. |
+| 5 | `scripts/17c_v2_adjustments_no_expense.sql` | **⚠️ NO usar `17c_adjustments_contabilidad.sql` v1 — está INVALIDADO por design.** v2 agrega `create_adjustment` v2c-2 (4 args con `p_motivo`), `void_adjustment` con compensación de asientos, `accounting_entries.adjustment_id` FK, `verify_adjustment_accounting_integrity`. Método aprobado 2026-08-17: capitalización + COGS al vender. |
+| 6 | `scripts/17e_cogs_in_sales.sql` | `sale_items.unit_cost`, `create_sale` v3 con persistencia de unit_cost + asiento COGS agregado, `void_sale` v3 con reversa COGS. |
+| 7 | `scripts/18_credit_phase3.sql` **PARCIAL** | Aplicar SOLO `register_payment` y `apply_customer_credit`. **El bloque `create_sale` de este script se DESCARTA** porque 17e ya lo dejó en su versión final con COGS + guard D9. Aplicar 18 completo revierte el COGS del bloque de create_sale. |
+
+Scripts que **NO** aplicar (bajo ninguna circunstancia):
+- `17c_adjustments_contabilidad.sql` (v1, INVALIDADO por 17c_v2).
+- `13a_seed_local.sql`, `13b_drift_wompi_local.sql` (marcados LOCAL-ONLY).
+- `17rollback_2c_v2_and_cogs.sql` (solo emergencia).
+- `05_merge_features.sql` completo (contiene bootstrap de admin con
+  `admin@solcraft.dev`, dev email). Si se necesita algo puntual de ese
+  script, extraer y adaptar antes de aplicar.
+- `04_seed.sql` — es stub intencionalmente vacío desde commit `17aa2cb`.
+- `00_schema.sql`, `01_functions.sql`, `02_rls.sql`, `03_storage.sql`,
+  `06`, `08-14` — ya cubiertos por la baseline.
+- Scripts `_validation` (`15_validation_phase1.sql`, `16_validation_phase1.sql`,
+  `17_validation_phase2.sql`) — solo verificaciones para test manual, no
+  cambian schema.
+
+Deltas post-baseline via `supabase/migrations/*.sql` (aplicar ANTES de
+los scripts 15-18, no después):
 - s21 (`20260822...`) — `dispatch_transfer_atomic`.
-- s22/s23 (`20260824*000000-2`) — importador masivo + permiso.
+- s22/s23 (`20260824*`) — importador masivo + permiso.
 
-**Regla operativa**: para clientes nuevos, aplicar SOLO
-`supabase/migrations/*.sql` en orden. Ignorar `scripts/`.
+Además, aplicar como delta manual el trigger `on_auth_user_created` sobre
+`auth.users` (no está en el baseline dump porque `auth` es schema
+Supabase-managed):
+```sql
+DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
+CREATE TRIGGER on_auth_user_created
+  AFTER INSERT ON auth.users
+  FOR EACH ROW EXECUTE FUNCTION public.handle_new_user();
+```
 
-### 2.4 Verificar integridad post-schema
+### 2.4 Chequeos automáticos post-schema — no negociables
+
+**No confiar en "smoke test manual detectará los gaps"** — los gaps del
+release 2C se manifestaron solo al hacer ajustes de inventario, que ni
+siquiera son parte del smoke básico del POS. Ejecutar SIEMPRE estos
+chequeos antes de pasar a Fase 3:
 
 ```sql
-SELECT * FROM verify_kardex_integrity();
--- Debe devolver 0 filas (invariante del kardex OK en DB vacía).
+-- Integridad del kardex: 0 filas = OK
+SELECT COUNT(*) AS kardex_violations FROM verify_kardex_integrity();
+
+-- Integridad contable de ajustes voided: 0 filas = OK
+SELECT COUNT(*) AS adj_accounting_violations FROM verify_adjustment_accounting_integrity();
+
+-- Verificar RPCs críticos del release 2C+D presentes con las firmas correctas
+SELECT proname, pg_get_function_identity_arguments(oid) AS args
+FROM pg_proc
+WHERE pronamespace = 'public'::regnamespace
+  AND proname IN ('create_adjustment','void_adjustment','create_sale','void_sale',
+                  'register_payment','apply_customer_credit','get_shift_balance',
+                  'close_shift','verify_credit_integrity','verify_adjustment_accounting_integrity',
+                  'dispatch_transfer_atomic','import_products_bulk_atomic',
+                  'handle_new_user','has_permission','has_site_access','is_admin',
+                  'is_admin_or_encargado','is_global_role','user_role','user_site_id',
+                  'user_accessible_sites','open_shift','add_cash_movement',
+                  'adjust_warehouse_stock','decrement_product_stock','next_product_code',
+                  'verify_kardex_integrity','fulfill_web_order','receive_transfer',
+                  'reconcile_transfer','send_transfer_via_transit','transfer_stock')
+ORDER BY proname;
 ```
+
+La query de RPCs debe listar 30 funciones. Contrastar contra este número.
+Firma esperada de las 3 críticas del release 2C+D:
+- `create_adjustment(p_warehouse_id uuid, p_notes text, p_items jsonb, p_motivo text)` — 4 args.
+- `create_sale(...13 args incluyendo p_is_on_account boolean, p_initial_payment numeric)`.
+- `register_payment(p_sale_id uuid, p_amount numeric, p_payment_method text, p_shift_id uuid, p_notes text)`.
+
+Si alguna falta o tiene firma distinta: alguno de los scripts 15-18 no se
+aplicó o se aplicó en orden incorrecto (típicamente 17c v1 en vez de v2, o
+18 completo pisando el COGS de 17e). Corregir antes de continuar.
 
 ---
 
@@ -480,7 +541,25 @@ primer aprovisionamiento. Todas están accionadas — el runbook actual ya
 las contempla — pero se listan acá como el registro histórico de qué
 falló y por qué las secciones respectivas quedaron como están.
 
-**1. pnpm packageManager pin obligatorio** (Fase 3, la más crítica).
+**0. ⚠️ MÁS CRÍTICO — Baseline canónica INCOMPLETA sin release 2C+2D**
+(Fase 2). La afirmación original del runbook "aplicar solo migrations/,
+ignorar scripts/" era FALSA. La baseline dumpeada el 12-08 no capturó ~10
+RPCs del release 2C+D (scripts 15-18: credit sales, inventory
+adjustments, COGS). Sin ellos el sistema arranca APARENTEMENTE OK pero
+rompe en silencio al primer intento de: ajuste de inventario, ingreso via
+panel IA (usa `create_adjustment`), abono a crédito, redención saldo a
+favor, cierre de turno con abonos. Descubierto solo porque Esteban
+tropezó con el error de `create_adjustment` al ingresar el primer
+producto. Un cliente futuro que no haya intentado ingresar via IA jamás
+lo habría notado hasta rot-en-producción real. Runbook §2.3 ahora tiene
+la lista definitiva y ordenada de scripts a aplicar; §2.4 agrega
+chequeos automáticos post-schema (verify_kardex_integrity +
+verify_adjustment_accounting_integrity + conteo de RPCs) que ejecutarse
+SIEMPRE antes de pasar a Fase 3. Estos chequeos hubieran detectado el
+gap sin depender de detección manual.
+
+**1. pnpm packageManager pin obligatorio** (Fase 3, la más crítica de
+build).
 El repo no tenía `packageManager` en `package.json`. Vercel usó pnpm
 11.22 (la última que traía su build image ese día), que aplica una
 política estricta: `ERR_PNPM_IGNORED_BUILDS` si algún dep con install
