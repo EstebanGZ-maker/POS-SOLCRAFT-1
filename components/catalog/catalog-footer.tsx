@@ -6,7 +6,8 @@ import { Phone, Mail, MapPin } from "lucide-react"
 
 export function CatalogFooter() {
   const { data: config } = useSWR("commerce-config", getPublicCommerceConfig)
-  const brand = config?.business_name || "Taiwy"
+  const brand = config?.business_name || "Tienda"
+  const tagline = config?.catalog_tagline || "Tienda en línea"
 
   return (
     <footer className="mt-16 border-t border-gold-soft">
@@ -17,7 +18,7 @@ export function CatalogFooter() {
               {brand.toUpperCase()}
             </div>
             <p className="mt-2 text-sm text-muted-foreground">
-              Piezas que brillan como el oro.
+              {tagline}
             </p>
           </div>
 

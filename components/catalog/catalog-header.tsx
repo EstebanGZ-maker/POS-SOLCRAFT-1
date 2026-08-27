@@ -11,7 +11,7 @@ import { ShoppingBag } from "lucide-react"
 export function CatalogHeader() {
   const { itemCount } = useCart()
   const { data: config } = useSWR("commerce-config", getPublicCommerceConfig)
-  const brand = config?.business_name || "Taiwy"
+  const brand = config?.business_name || "Tienda"
 
   return (
     <header className="sticky top-0 z-30 border-b border-gold-soft bg-[hsl(var(--background)/0.85)] backdrop-blur-md">

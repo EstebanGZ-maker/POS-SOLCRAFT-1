@@ -70,10 +70,10 @@ export default function CheckoutPage() {
     },
     {
       key: "whatsapp",
-      label: "Coordinar por WhatsApp",
-      hint: "Te escribimos para acordar el pago.",
+      label: "Enviar pedido por WhatsApp",
+      hint: "Abre WhatsApp con tu pedido cargado para confirmar y coordinar el pago.",
       icon: MessageCircle,
-      enabled: Boolean(config?.whatsapp_enabled),
+      enabled: Boolean(config?.whatsapp_enabled && (config?.whatsapp_number || "").trim()),
     },
     {
       key: "cod",
@@ -135,9 +135,49 @@ export default function CheckoutPage() {
       return
     }
 
+    const orderUrlPath = `/catalog/order/${encodeURIComponent(res.order_number)}?phone=${encodeURIComponent(form.customer_phone)}`
+
+    // Pedido por WhatsApp: abrir chat con el mensaje precargado y
+    // llevar al comprador a la pantalla de confirmación en paralelo.
+    // El pedido ya quedó guardado (placeWebOrder arriba).
+    if (payMethod === "whatsapp") {
+      const waNumber = (config?.whatsapp_number || "").replace(/\D/g, "")
+      if (waNumber) {
+        const origin = typeof window !== "undefined" ? window.location.origin : ""
+        const lines = [
+          "Hola! Acabo de hacer un pedido:",
+          "",
+          `Pedido: ${res.order_number}`,
+          "",
+          ...items.map(
+            (it) => `• ${it.quantity}× ${it.name} (${it.code}) — ${formatCurrency(it.price * it.quantity)}`,
+          ),
+          "",
+          `Subtotal: ${formatCurrency(subtotal)}`,
+          `Envío: ${shippingApplied === 0 ? "Gratis" : formatCurrency(shippingApplied)}`,
+          `Total: ${formatCurrency(total)}`,
+          "",
+          `Datos: ${form.customer_name} — ${form.customer_phone}`,
+          `Dirección: ${form.address}${form.city ? `, ${form.city}` : ""}`,
+          "",
+          `Detalle: ${origin}${orderUrlPath}`,
+        ]
+        const waUrl = `https://wa.me/${waNumber}?text=${encodeURIComponent(lines.join("\n"))}`
+        window.open(waUrl, "_blank", "noopener,noreferrer")
+      } else {
+        // Guard defensivo: el método no debería aparecer sin número (ver
+        // `enabled` en `methods`), pero si llegamos acá el pedido igual
+        // quedó persistido — el negocio lo verá en /central/orders.
+        toast({
+          title: "Pedido guardado",
+          description: "No pudimos abrir WhatsApp. El negocio se pondrá en contacto contigo.",
+        })
+      }
+    }
+
     clear()
     setPlacing(false)
-    router.push(`/catalog/order/${encodeURIComponent(res.order_number)}?phone=${encodeURIComponent(form.customer_phone)}`)
+    router.push(orderUrlPath)
   }
 
   return (
@@ -276,7 +316,7 @@ export default function CheckoutPage() {
                   ? "Serás redirigido a Wompi para completar el pago de forma segura."
                   : payMethod === "cod"
                   ? "Pagarás al recibir el pedido."
-                  : "Coordinaremos el pago por WhatsApp. No se realiza cobro en línea."}
+                  : "Se abrirá WhatsApp con tu pedido cargado para confirmar y coordinar el pago."}
               </p>
             </CardContent>
           </Card>

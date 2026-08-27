@@ -1,7 +1,7 @@
 import type { Metadata } from "next"
 import { CatalogGrid } from "@/components/catalog/catalog-grid"
 import {
-  getPublicSites, listPublicCatalog, getCatalogFacets,
+  getPublicSites, listPublicCatalog, getCatalogFacets, getPublicCommerceConfig,
 } from "@/lib/catalog-actions"
 
 // Server Component: precarga los tres datasets iniciales en paralelo y los
@@ -9,9 +9,12 @@ import {
 // pintado — SWR toma el relevo al cambiar filtros.
 export const revalidate = 60
 
-export const metadata: Metadata = {
-  title: "Catálogo — Taiwy",
-  description: "Piezas disponibles en nuestras sedes. Consulta y pide en línea.",
+export async function generateMetadata(): Promise<Metadata> {
+  const config = await getPublicCommerceConfig()
+  return {
+    title: `Catálogo — ${config.business_name}`,
+    description: "Piezas disponibles en nuestras sedes. Consulta y pide en línea.",
+  }
 }
 
 export default async function CatalogPage() {

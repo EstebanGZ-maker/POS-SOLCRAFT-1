@@ -40,6 +40,9 @@ export interface BusinessSettings {
   wompi_sandbox: boolean
   pickup_enabled: boolean
   delivery_enabled: boolean
+  // Catálogo público
+  catalog_tagline: string | null
+  catalog_hero_subtitle: string | null
 }
 
 export async function getBusinessSettings(): Promise<BusinessSettings> {
@@ -81,6 +84,8 @@ export async function getBusinessSettings(): Promise<BusinessSettings> {
       wompi_sandbox: true,
       pickup_enabled: true,
       delivery_enabled: true,
+      catalog_tagline: null,
+      catalog_hero_subtitle: null,
     }
   }
   return data as BusinessSettings

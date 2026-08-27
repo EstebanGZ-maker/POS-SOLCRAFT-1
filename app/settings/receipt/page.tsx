@@ -299,7 +299,33 @@ export default function ReceiptSettingsPage() {
                   placeholder="+57 300 000 0000"
                 />
                 <p className="text-xs text-muted-foreground mt-1">
-                  Los clientes te escribirán aquí para coordinar el pago. Si lo dejas vacío se usa el teléfono del negocio.
+                  Este número recibe los pedidos del catálogo web. Cuando el cliente elige pagar por WhatsApp,
+                  se abre un chat con el pedido cargado. Si lo dejas vacío, el método de pago por WhatsApp no aparece.
+                </p>
+              </div>
+              <div>
+                <Label>Frase de portada</Label>
+                <Input
+                  value={form.catalog_tagline || ""}
+                  onChange={(e) => update("catalog_tagline", e.target.value)}
+                  placeholder="Tienda en línea"
+                  maxLength={120}
+                />
+                <p className="text-xs text-muted-foreground mt-1">
+                  Aparece bajo el título en la landing y en el pie del catálogo. Ejemplo: “Piezas que brillan como el oro”.
+                </p>
+              </div>
+              <div>
+                <Label>Subtítulo del hero</Label>
+                <Textarea
+                  value={form.catalog_hero_subtitle || ""}
+                  onChange={(e) => update("catalog_hero_subtitle", e.target.value)}
+                  rows={2}
+                  maxLength={160}
+                  placeholder="La casa de la exclusividad"
+                />
+                <p className="text-xs text-muted-foreground mt-1">
+                  Frase corta bajo el nombre de la tienda en la portada. Déjalo vacío si no quieres mostrarlo.
                 </p>
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
