@@ -47,6 +47,7 @@ export default async function LandingPage() {
   const brand = config.business_name || "Tienda"
   const tagline = config.catalog_tagline || "Tienda en línea"
   const heroSubtitle = (config.catalog_hero_subtitle || "").trim()
+  const storeTitle = (config.catalog_store_title || "").trim() || `${brand.toUpperCase()} STORE`
 
   return (
     <div className="relative">
@@ -61,7 +62,7 @@ export default async function LandingPage() {
             Colección · Temporada
           </p>
 
-          <HeroTitle text={`${brand.toUpperCase()} STORE`} />
+          <HeroTitle text={storeTitle} />
 
           {heroSubtitle && (
             <p className="mt-5 max-w-[46ch] text-base uppercase tracking-[0.18em] leading-relaxed text-muted-foreground">

@@ -43,6 +43,7 @@ export interface BusinessSettings {
   // Catálogo público
   catalog_tagline: string | null
   catalog_hero_subtitle: string | null
+  catalog_store_title: string | null
 }
 
 export async function getBusinessSettings(): Promise<BusinessSettings> {
@@ -86,6 +87,7 @@ export async function getBusinessSettings(): Promise<BusinessSettings> {
       delivery_enabled: true,
       catalog_tagline: null,
       catalog_hero_subtitle: null,
+      catalog_store_title: null,
     }
   }
   return data as BusinessSettings

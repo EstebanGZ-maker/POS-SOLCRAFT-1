@@ -1,18 +1,21 @@
 -- s24 — Textos configurables del catálogo público
 --
--- Agrega dos campos editables desde /settings/receipt que reemplazan los
--- literales hardcodeados de la landing y el pie del catálogo:
+-- Agrega tres campos editables desde /settings/receipt que reemplazan los
+-- literales hardcodeados de la landing y el header del catálogo:
 --   · catalog_tagline       — frase de portada (landing + footer)
 --   · catalog_hero_subtitle — subtítulo bajo el título del hero
+--   · catalog_store_title   — título grande del hero + texto del header
 --
--- Ambos son nullable. Los fallbacks se resuelven en TS (mismo patrón que
--- el default "Mi negocio" para business_name):
+-- Todos nullable. Los fallbacks se resuelven en TS (mismo patrón que el
+-- default "Mi negocio" para business_name):
 --   · catalog_tagline null → "Tienda en línea"
 --   · catalog_hero_subtitle null/"" → no se renderiza el <p>
+--   · catalog_store_title null/"" → "${business_name.toUpperCase()} STORE"
 
 ALTER TABLE business_settings
   ADD COLUMN IF NOT EXISTS catalog_tagline text,
-  ADD COLUMN IF NOT EXISTS catalog_hero_subtitle text;
+  ADD COLUMN IF NOT EXISTS catalog_hero_subtitle text,
+  ADD COLUMN IF NOT EXISTS catalog_store_title text;
 
 -- El RPC público expone ambos al catálogo (que no lee business_settings
 -- directo por RLS). Mismo shape que antes + 2 keys nuevas.
@@ -38,7 +41,8 @@ AS $function$
     'shipping_cost', COALESCE(shipping_cost, 0),
     'free_shipping_over', free_shipping_over,
     'catalog_tagline', catalog_tagline,
-    'catalog_hero_subtitle', catalog_hero_subtitle
+    'catalog_hero_subtitle', catalog_hero_subtitle,
+    'catalog_store_title', catalog_store_title
   )
   FROM business_settings WHERE id = 1;
 $function$;

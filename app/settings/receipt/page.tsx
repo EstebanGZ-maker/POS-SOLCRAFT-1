@@ -304,6 +304,19 @@ export default function ReceiptSettingsPage() {
                 </p>
               </div>
               <div>
+                <Label>Título de la tienda</Label>
+                <Input
+                  value={form.catalog_store_title || ""}
+                  onChange={(e) => update("catalog_store_title", e.target.value)}
+                  placeholder={`${(form.business_name || "MI NEGOCIO").toUpperCase()} STORE`}
+                  maxLength={60}
+                />
+                <p className="text-xs text-muted-foreground mt-1">
+                  Aparece grande en la portada y en el header del catálogo. Si lo dejas vacío se usa
+                  “<span className="font-mono">{(form.business_name || "MI NEGOCIO").toUpperCase()} STORE</span>” como respaldo.
+                </p>
+              </div>
+              <div>
                 <Label>Frase de portada</Label>
                 <Input
                   value={form.catalog_tagline || ""}
