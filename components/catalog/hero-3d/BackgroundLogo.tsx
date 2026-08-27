@@ -5,8 +5,6 @@ import { useFrame } from "@react-three/fiber"
 import { useGLTF } from "@react-three/drei"
 import * as THREE from "three"
 
-const GLB_PATH = "/hero-logo.glb"
-
 /**
  * Copia decorativa del logo GLB usada como capa de fondo de la escena.
  * Va detrás del diamante principal (z lejano + fog + material oscuro y mate),
@@ -14,9 +12,12 @@ const GLB_PATH = "/hero-logo.glb"
  *
  * Se clona la escena cacheada por useGLTF para no colisionar con las
  * mutaciones de material que hace DiamondGLB sobre la misma referencia.
+ *
+ * Solo se monta cuando hay `modelUrl` — el hero procedural (sin GLB)
+ * omite este componente para no cargar nada extra.
  */
-export function BackgroundLogo() {
-  const { scene } = useGLTF(GLB_PATH)
+export function BackgroundLogo({ modelUrl }: { modelUrl: string }) {
+  const { scene } = useGLTF(modelUrl)
   const groupRef = useRef<THREE.Group>(null)
 
   const cloned = useMemo(() => {
@@ -57,5 +58,3 @@ export function BackgroundLogo() {
     </group>
   )
 }
-
-useGLTF.preload(GLB_PATH)

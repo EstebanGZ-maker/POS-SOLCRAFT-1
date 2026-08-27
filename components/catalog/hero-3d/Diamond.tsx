@@ -7,8 +7,6 @@ import * as THREE from "three"
 import { useMouseFollow } from "@/hooks/useMouseFollow"
 import { useClickPulse } from "@/hooks/useClickPulse"
 
-const GLB_PATH = "/hero-logo.glb"
-
 /**
  * Perfil de una talla brillante. LatheGeometry con MÁS segmentos
  * (48) para que la silueta sea suave, sin las facetas planas evidentes
@@ -121,15 +119,22 @@ export function Diamond({
   )
 }
 
-/** Variante con GLB cargado (se activa cuando exista public/hero-logo.glb) */
+/**
+ * Variante con GLB cargado. Recibe la URL vía prop (business_settings
+ * .catalog_model_url) para que cada instancia sirva su propio modelo
+ * desde Storage. Sin URL, HeroScene renderiza `Diamond` procedural y
+ * no monta este componente.
+ */
 export function DiamondGLB({
+  modelUrl,
   onClickPulse,
   pulse,
 }: {
+  modelUrl: string
   onClickPulse: () => void
   pulse: { tick: (dt: number) => number }
 }) {
-  const { scene } = useGLTF(GLB_PATH)
+  const { scene } = useGLTF(modelUrl)
   const groupRef = useRef<THREE.Group>(null)
   const material = useGoldMaterial()
   const mouseRef = useMouseFollow()
@@ -170,5 +175,3 @@ export function DiamondGLB({
     </group>
   )
 }
-
-useGLTF.preload(GLB_PATH)

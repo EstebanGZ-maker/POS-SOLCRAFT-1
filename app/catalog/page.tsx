@@ -53,7 +53,7 @@ export default async function LandingPage() {
     <div className="relative">
       {/* Escena 3D como fondo fijo de TODA la página.
           Va detrás (z-0), el contenido flota encima (z-10). */}
-      <HeroPremium />
+      <HeroPremium modelUrl={config.catalog_model_url} />
 
       {/* ─────────────── HERO ─────────────── */}
       <section className="relative z-10 overflow-hidden">

@@ -182,6 +182,7 @@ export interface PublicCommerceConfig {
   catalog_tagline: string | null
   catalog_hero_subtitle: string | null
   catalog_store_title: string | null
+  catalog_model_url: string | null
 }
 
 export async function getPublicCommerceConfig(): Promise<PublicCommerceConfig> {
@@ -195,5 +196,6 @@ export async function getPublicCommerceConfig(): Promise<PublicCommerceConfig> {
     pickup_enabled: true, delivery_enabled: true,
     shipping_cost: 0, free_shipping_over: null,
     catalog_tagline: null, catalog_hero_subtitle: null, catalog_store_title: null,
+    catalog_model_url: null,
   }
 }

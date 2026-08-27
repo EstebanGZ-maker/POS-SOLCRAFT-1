@@ -18,8 +18,12 @@ import { useToast } from "@/hooks/use-toast"
 import {
   getBusinessSettings, updateBusinessSettings, type BusinessSettings,
 } from "@/lib/business-settings-actions"
+import { uploadCatalogModelClient } from "@/lib/storage-client"
 import { WompiSettingsCard } from "@/components/settings/wompi-settings-card"
-import { Settings, Save, AlignLeft, AlignCenter, AlignRight } from "lucide-react"
+import {
+  Settings, Save, AlignLeft, AlignCenter, AlignRight,
+  Upload, Loader2, X, Box,
+} from "lucide-react"
 
 // Preview minimalista (una versión reducida del recibo real)
 function ReceiptPreview({ s }: { s: BusinessSettings }) {
@@ -122,6 +126,7 @@ export default function ReceiptSettingsPage() {
   const { data, mutate } = useSWR("business-settings", getBusinessSettings)
   const [form, setForm] = useState<BusinessSettings | null>(null)
   const [saving, setSaving] = useState(false)
+  const [uploadingModel, setUploadingModel] = useState(false)
 
   useEffect(() => {
     if (data && !form) setForm(data)
@@ -133,6 +138,27 @@ export default function ReceiptSettingsPage() {
 
   const update = <K extends keyof BusinessSettings>(k: K, v: BusinessSettings[K]) => {
     setForm({ ...form, [k]: v })
+  }
+
+  async function handleModelUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    // Limpiar el input para permitir volver a subir el mismo archivo si se quita y se reintenta.
+    e.target.value = ""
+    if (!file || !form) return
+    setUploadingModel(true)
+    const res = await uploadCatalogModelClient(file)
+    setUploadingModel(false)
+    if (!res.success) {
+      toast({ title: "No pudimos subir el modelo", description: res.message, variant: "destructive" })
+      return
+    }
+    setForm({ ...form, catalog_model_url: res.url })
+    toast({
+      title: "Modelo cargado",
+      description: res.warning
+        ? `${res.warning} Guarda los cambios para aplicar.`
+        : "Guarda los cambios para aplicar.",
+    })
   }
 
   async function handleSave() {
@@ -339,6 +365,47 @@ export default function ReceiptSettingsPage() {
                 />
                 <p className="text-xs text-muted-foreground mt-1">
                   Frase corta bajo el nombre de la tienda en la portada. Déjalo vacío si no quieres mostrarlo.
+                </p>
+              </div>
+              <div>
+                <Label>Modelo 3D del hero (opcional)</Label>
+                {form.catalog_model_url ? (
+                  <div className="mt-1 flex flex-wrap items-center gap-2 rounded-md border p-2">
+                    <Box className="h-4 w-4 text-muted-foreground shrink-0" />
+                    <span className="text-xs font-mono truncate min-w-0 flex-1" title={form.catalog_model_url}>
+                      {form.catalog_model_url.split("/").pop() || form.catalog_model_url}
+                    </span>
+                    <Button asChild size="sm" variant="outline" disabled={uploadingModel}>
+                      <label className="cursor-pointer gap-2">
+                        {uploadingModel ? <Loader2 className="h-3 w-3 animate-spin" /> : <Upload className="h-3 w-3" />}
+                        Reemplazar
+                        <input type="file" accept=".glb" className="hidden" onChange={handleModelUpload} disabled={uploadingModel} />
+                      </label>
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      disabled={uploadingModel}
+                      onClick={() => update("catalog_model_url", null)}
+                    >
+                      <X className="h-3 w-3 mr-1" /> Quitar
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="mt-1">
+                    <Button asChild variant="outline" disabled={uploadingModel}>
+                      <label className="cursor-pointer gap-2">
+                        {uploadingModel ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+                        {uploadingModel ? "Subiendo..." : "Subir modelo (.glb)"}
+                        <input type="file" accept=".glb" className="hidden" onChange={handleModelUpload} disabled={uploadingModel} />
+                      </label>
+                    </Button>
+                  </div>
+                )}
+                <p className="text-xs text-muted-foreground mt-1">
+                  Se muestra en la portada del catálogo. Formato .glb (glTF Binary). Si lo dejas vacío se usa un
+                  diamante procedural. Recomendado: comprimir con Draco o Meshopt (idealmente &lt;10 MB) para acelerar
+                  la carga del catálogo.
                 </p>
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
