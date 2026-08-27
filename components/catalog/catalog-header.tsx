@@ -11,7 +11,8 @@ import { ShoppingBag } from "lucide-react"
 export function CatalogHeader() {
   const { itemCount } = useCart()
   const { data: config } = useSWR("commerce-config", getPublicCommerceConfig)
-  const brand = config?.business_name || "Taiwy"
+  const brand = config?.business_name || "Tienda"
+  const storeTitle = (config?.catalog_store_title || "").trim() || `${brand.toUpperCase()} STORE`
 
   return (
     <header className="sticky top-0 z-30 border-b border-gold-soft bg-[hsl(var(--background)/0.85)] backdrop-blur-md">
@@ -30,7 +31,7 @@ export function CatalogHeader() {
             />
           )}
           <span className="font-display text-lg tracking-[0.18em] text-gold-gradient">
-            {`${brand.toUpperCase()} STORE`}
+            {storeTitle}
           </span>
         </Link>
 

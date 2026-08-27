@@ -1,10 +1,10 @@
 "use client"
 
 /**
- * Diamante 3D con Three.js — versión Taiwy.
+ * Diamante 3D con Three.js — hero del catálogo.
  *
- * Portado del motor original (talla brillante Lathe + PMREM env map +
- * shader de destellos) quitando el logo TAIWY hardcodeado.
+ * Motor genérico (talla brillante Lathe + PMREM env map + shader de
+ * destellos), sin logo de marca hardcodeado.
  * Se carga solo cuando el hero está visible y se congela con
  * `prefers-reduced-motion`. El fallback SVG cubre móvil y GPU débil.
  */

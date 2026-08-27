@@ -14,7 +14,8 @@ import { useClickPulse } from "@/hooks/useClickPulse"
 
 interface Props {
   scrollContainer?: HTMLElement | null
-  useGLB?: boolean
+  /** URL del .glb (Storage o remota). Sin URL → diamante procedural, sin BackgroundLogo. */
+  modelUrl?: string | null
 }
 
 /**
@@ -24,7 +25,8 @@ interface Props {
  *  · pointer-events: none excepto para el clic global que dispara el pulse
  *  · frameloop se pausa cuando el documento deja de ser visible
  */
-export function HeroScene({ scrollContainer, useGLB = false }: Props) {
+export function HeroScene({ scrollContainer, modelUrl = null }: Props) {
+  const useGLB = Boolean(modelUrl)
   const [visible, setVisible] = useState(true)
   const [reduced, setReduced] = useState(false)
   const pulse = useClickPulse(0.9)
@@ -90,10 +92,10 @@ export function HeroScene({ scrollContainer, useGLB = false }: Props) {
         <Suspense fallback={null}>
           <HeroEnvironment />
           <Lights />
-          <BackgroundLogo />
+          {useGLB && modelUrl && <BackgroundLogo modelUrl={modelUrl} />}
           <Particles />
-          {useGLB ? (
-            <DiamondGLB onClickPulse={pulse.trigger} pulse={pulse} />
+          {useGLB && modelUrl ? (
+            <DiamondGLB modelUrl={modelUrl} onClickPulse={pulse.trigger} pulse={pulse} />
           ) : (
             <Diamond onClickPulse={pulse.trigger} pulse={pulse} />
           )}

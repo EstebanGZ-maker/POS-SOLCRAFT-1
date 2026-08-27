@@ -57,3 +57,61 @@ export async function uploadProductImageClient(file: File): Promise<UploadResult
   const { data } = supabase.storage.from("product-media").getPublicUrl(path)
   return { success: true, url: data.publicUrl, path }
 }
+
+// ─────────────── Modelos 3D del hero (bucket catalog-assets) ───────────────
+//
+// Los .glb son órdenes de magnitud más grandes que las fotos de producto
+// (nuestro ejemplo original pesaba ~62 MB antes de comprimir con Draco).
+// El bucket es distinto de product-media (imagen-only, límite 5 MB).
+//
+// El upload es admin-only por policy — el bucket es branding, no contenido
+// operativo. Auth via cookie de sesión del user logueado; RLS lo verifica.
+
+const MAX_MODEL_BYTES = 100 * 1024 * 1024 // 100 MB
+const MODEL_WARN_BYTES = 20 * 1024 * 1024 // 20 MB — avisa que conviene comprimir
+
+export type ModelUploadResult =
+  | { success: true; url: string; path: string; sizeBytes: number; warning?: string }
+  | { success: false; message: string }
+
+export async function uploadCatalogModelClient(file: File): Promise<ModelUploadResult> {
+  // Muchos OS entregan el .glb como application/octet-stream porque no
+  // tienen el MIME registrado. La extensión es el chequeo confiable.
+  const name = file.name.toLowerCase()
+  if (!name.endsWith(".glb")) {
+    return { success: false, message: "El archivo debe tener extensión .glb (glTF Binary)." }
+  }
+  if (file.size === 0) {
+    return { success: false, message: "El archivo está vacío." }
+  }
+  if (file.size > MAX_MODEL_BYTES) {
+    const mb = (file.size / 1024 / 1024).toFixed(1)
+    return { success: false, message: `El modelo pesa ${mb} MB. El máximo es 100 MB.` }
+  }
+
+  const supabase = createClient()
+  const path = `models/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.glb`
+  const { error } = await supabase.storage.from("catalog-assets").upload(path, file, {
+    contentType: "model/gltf-binary",
+    upsert: false,
+  })
+  if (error) {
+    return { success: false, message: error.message }
+  }
+
+  const { data } = supabase.storage.from("catalog-assets").getPublicUrl(path)
+  const result: ModelUploadResult = {
+    success: true,
+    url: data.publicUrl,
+    path,
+    sizeBytes: file.size,
+  }
+  if (file.size > MODEL_WARN_BYTES) {
+    const mb = (file.size / 1024 / 1024).toFixed(1)
+    result.warning =
+      `El modelo pesa ${mb} MB. Considera comprimirlo con Draco o Meshopt ` +
+      `(gltf-transform draco input.glb output.glb) para acelerar la carga del catálogo.`
+  }
+  return result
+}
+

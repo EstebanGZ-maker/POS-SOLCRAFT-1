@@ -26,10 +26,10 @@ export async function generateMetadata(): Promise<Metadata> {
   return {
     title: `${config.business_name} — Tienda en línea`,
     description:
-      "Piezas que brillan como el oro. Consulta disponibilidad en nuestras sedes y pide en línea.",
+      `${config.catalog_tagline || "Tienda en línea"}. Consulta disponibilidad en nuestras sedes y pide en línea.`,
     openGraph: {
       title: config.business_name,
-      description: "Piezas que brillan como el oro.",
+      description: config.catalog_tagline || "Tienda en línea",
       type: "website",
     },
   }
@@ -44,13 +44,16 @@ export default async function LandingPage() {
   ])
 
   const storeSites = sites.filter((s) => !s.is_central)
-  const brand = config.business_name || "Taiwy"
+  const brand = config.business_name || "Tienda"
+  const tagline = config.catalog_tagline || "Tienda en línea"
+  const heroSubtitle = (config.catalog_hero_subtitle || "").trim()
+  const storeTitle = (config.catalog_store_title || "").trim() || `${brand.toUpperCase()} STORE`
 
   return (
     <div className="relative">
       {/* Escena 3D como fondo fijo de TODA la página.
           Va detrás (z-0), el contenido flota encima (z-10). */}
-      <HeroPremium />
+      <HeroPremium modelUrl={config.catalog_model_url} />
 
       {/* ─────────────── HERO ─────────────── */}
       <section className="relative z-10 overflow-hidden">
@@ -59,11 +62,13 @@ export default async function LandingPage() {
             Colección · Temporada
           </p>
 
-          <HeroTitle text={`${brand.toUpperCase()} STORE`} />
+          <HeroTitle text={storeTitle} />
 
-          <p className="mt-5 max-w-[46ch] text-base uppercase tracking-[0.18em] leading-relaxed text-muted-foreground">
-            La casa de la exclusividad
-          </p>
+          {heroSubtitle && (
+            <p className="mt-5 max-w-[46ch] text-base uppercase tracking-[0.18em] leading-relaxed text-muted-foreground">
+              {heroSubtitle}
+            </p>
+          )}
 
           <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
             <Button asChild size="lg" className="gap-2 glow-gold">
