@@ -23,7 +23,7 @@ import { useToast } from "@/hooks/use-toast"
 import { formatCurrency } from "@/lib/utils"
 import { getProductsWithStock, getCategories, createBulkTransfer, receiveMerchandise, updateWholesalePrices } from "@/lib/inventory-actions"
 import { getSitesWithWarehouses, getCentralWarehouse } from "@/lib/site-actions"
-import { Send, PackagePlus, Search, Filter, Plus, Trash2, Warehouse, Sparkles, BarChart3 } from "lucide-react"
+import { Send, PackagePlus, Search, Filter, Plus, Trash2, Warehouse, Sparkles, BarChart3, RefreshCw, ImageOff } from "lucide-react"
 import { ProductPicker } from "@/components/inventory/product-picker"
 import { AiIngressPanel } from "@/components/central/ai-ingress-panel"
 import { FinancialPanel } from "@/components/central/financial-panel"
@@ -97,8 +97,9 @@ type SelMode = "individual" | "category" | "price"
 
 function BulkSendPanel({ centralWarehouseId }: { centralWarehouseId: string }) {
   const { toast } = useToast()
-  const { data: products = [], isLoading } = useSWR(["central-products", centralWarehouseId], () =>
-    getProductsWithStock(centralWarehouseId),
+  const { data: products = [], isLoading, mutate: mutateProducts, isValidating } = useSWR(
+    ["central-products", centralWarehouseId],
+    () => getProductsWithStock(centralWarehouseId),
   )
   const { data: categories = [] } = useSWR("categories", getCategories)
   const { data: sites = [] } = useSWR("sites-wh", getSitesWithWarehouses)
@@ -225,6 +226,7 @@ function BulkSendPanel({ centralWarehouseId }: { centralWarehouseId: string }) {
       toast({ title: "Envío realizado", description: res.message })
       setSelected({})
       setNotes("")
+      mutateProducts()
     } else {
       toast({ title: "Error en el envío", description: res.message, variant: "destructive" })
     }
@@ -235,8 +237,18 @@ function BulkSendPanel({ centralWarehouseId }: { centralWarehouseId: string }) {
       {/* Left: selection */}
       <div className="lg:col-span-2 space-y-4">
         <Card>
-          <CardHeader className="pb-3">
+          <CardHeader className="pb-3 flex flex-row items-center justify-between space-y-0">
             <CardTitle className="text-base">Seleccionar productos</CardTitle>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => mutateProducts()}
+              disabled={isValidating}
+              title="Actualizar existencias"
+            >
+              <RefreshCw className={`h-4 w-4 mr-2 ${isValidating ? "animate-spin" : ""}`} />
+              {isValidating ? "Actualizando..." : "Refrescar"}
+            </Button>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="flex flex-wrap gap-2">
@@ -327,6 +339,7 @@ function BulkSendPanel({ centralWarehouseId }: { centralWarehouseId: string }) {
                   <thead className="bg-muted/50 sticky top-0">
                     <tr className="text-left">
                       <th className="p-2 w-10"></th>
+                      <th className="p-2 w-14">Foto</th>
                       <th className="p-2">Producto</th>
                       <th className="p-2 text-right">Costo</th>
                       <th className="p-2 text-right">P. Mayor</th>
@@ -346,6 +359,21 @@ function BulkSendPanel({ centralWarehouseId }: { centralWarehouseId: string }) {
                               checked={isSel}
                               onCheckedChange={(c) => toggleProduct(p.product_id, Boolean(c))}
                             />
+                          </td>
+                          <td className="p-2">
+                            {p.image_url ? (
+                              // eslint-disable-next-line @next/next/no-img-element
+                              <img
+                                src={p.image_url}
+                                alt={p.name}
+                                className="h-10 w-10 rounded object-cover border"
+                                loading="lazy"
+                              />
+                            ) : (
+                              <div className="h-10 w-10 rounded border bg-muted flex items-center justify-center text-muted-foreground">
+                                <ImageOff className="h-4 w-4" />
+                              </div>
+                            )}
                           </td>
                           <td className="p-2">
                             <div className="font-medium">{p.name}</div>

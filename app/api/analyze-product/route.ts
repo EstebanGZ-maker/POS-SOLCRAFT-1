@@ -13,7 +13,11 @@ const productSchema = z.object({
       "Prefijo de 2 letras del tipo de prenda EN ESPAÑOL. Ej: CA=Camisa, PA=Pantalón, CH=Chaqueta, VE=Vestido, FA=Falda, BL=Blusa, BU=Buzo, SU=Suéter, SH=Short, ZA=Zapato, AC=Accesorio",
     ),
   category: z.string().describe("Categoría general, ej: Camisas, Pantalones, Vestidos, Calzado, Accesorios"),
-  description: z.string().describe("Descripción detallada: material aparente, color, patrón, estilo y detalles visibles"),
+  description: z
+    .string()
+    .describe(
+      "Descripción corta y factual en el formato: '[tipo de prenda] [estilo/línea si es visible en la imagen] [color principal] [detalles visibles breves]'. Sin oraciones completas, sin adjetivos de marketing, sin adivinar material ni composición. Máximo ~12 palabras",
+    ),
   size: z
     .string()
     .describe("Talla visible o estimada: XS, S, M, L, XL, XXL, o numérica (28, 30, 38). Si no se ve, estimar 'M'"),
@@ -50,10 +54,19 @@ export async function POST(req: Request) {
       model: "google/gemini-2.5-flash",
       schema: productSchema,
       instructions:
-        "Eres un experto en catalogación de inventario para un almacén de ropa en Colombia. " +
-        "Analizas fotos o videos de prendas y extraes la información del producto para registrarlo. " +
-        "Los precios están en pesos colombianos (COP). Sé preciso con el tipo de prenda, color y talla. " +
-        "Si detectas una etiqueta de precio o talla en la imagen, úsala.",
+        "Eres un catalogador de inventario para un almacén de ropa en Colombia. " +
+        "Analizas fotos de prendas y extraes SOLO datos que puedas verificar visualmente de la imagen. " +
+        "Los precios están en pesos colombianos (COP).\n\n" +
+        "REGLA CRÍTICA — no inventes: si un atributo no es determinable con certeza a partir de la imagen " +
+        "(material, composición textil, marca no visible, país de origen, temporada), NO lo incluyas en la descripción " +
+        "y NO lo pongas en `color`/`name`. Es preferible una descripción más corta que una con datos falsos. " +
+        "Nunca infieras 'algodón', 'poliéster', 'lino' o cualquier otro material a menos que veas la etiqueta de composición en la foto.\n\n" +
+        "DESCRIPCIÓN — corta y directa, formato: '[tipo] [línea/estilo si es visible] [color principal] [detalles visibles breves]'. " +
+        "Ejemplos válidos: 'Camisa monastery roja con detalles blancos', 'Pantalón cargo negro con bolsillos laterales', " +
+        "'Buzo oversize gris con capucha'. NO uses oraciones completas, adjetivos vagos ('elegante', 'cómoda', 'moderna', 'versátil') " +
+        "ni descripciones sensoriales ('suave al tacto', 'de excelente calidad'). Máximo ~12 palabras.\n\n" +
+        "Si detectas una etiqueta de precio o talla en la imagen, úsala. La talla es obligatoria para generar el código del producto — " +
+        "si no es visible ni deducible, devuelve 'M' como fallback.",
       messages: [
         {
           role: "user",
