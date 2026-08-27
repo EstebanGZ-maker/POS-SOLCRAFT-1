@@ -1,6 +1,6 @@
 # CONTEXT-POS.md
 
-Contexto denso de POS-SOLCRAFT para pasar a otra instancia de Claude sin acceso al repo. Estado al 2026-08-24. Ver §7.17 (última sesión larga: s21 atomicidad + s22 importador end-to-end + s23 permiso configurable, todo mergeado; nuevo hilo de productización abierto sin empezar) y §7.16 para el bloque previo (s14-s20).
+Contexto denso de POS-SOLCRAFT para pasar a otra instancia de Claude sin acceso al repo. Estado al 2026-08-27. Ver §7.19 (última sesión: s24 catálogo público 100 % configurable por instancia — textos + flujo WhatsApp real + modelo 3D del hero — en prod), §7.18 (sesión 2026-08-25 productización + aprovisionamiento Taiwy Sport) y §7.17 (sesión 2026-08-24 s21/s22/s23). Detalle operativo actualizado siempre en `docs/ESTADO-PENDIENTES.md §0`.
 
 ## 1. Stack y versiones
 
@@ -2416,5 +2416,88 @@ dinámico, `scripts/04_seed.sql` a stub, `pnpm-workspace.yaml` +
 compartido entre pos-solcraft-1-a1x2 (prod actual) y pos-taiwysport
 (cliente nuevo). Ambos comparten cuota. Elevar a créditos pagos si el
 panel IA se vuelve crítico para operación de cualquiera de los dos.
+
+Fin del contexto de §7.18.
+
+## §7.19 — Sesión 2026-08-27 (s24 catálogo público por-instancia, `main` @ `cc8bcaa`)
+
+**Alcance**: pass completo para que el catálogo público sea 100 %
+configurable por instancia — sin hardcodes de marca en el código.
+Rama `s24-catalog-taiwysport` con 3 commits y merge `--no-ff` a main.
+
+**Detalle técnico y estado por instancia** viven en
+`docs/ESTADO-PENDIENTES.md §0` (actualizado 2026-08-27) — fuente única
+de verdad. Este bloque solo resume las decisiones estructurales que
+un futuro Claude debe recordar para no re-derivar.
+
+**Modelo mental del catálogo tras s24**:
+
+- **`business_settings` es la única fuente de config del catálogo por
+  instancia**. Campos por-instancia agregados en `20260826000000` y
+  `20260826000001`: `catalog_tagline`, `catalog_hero_subtitle`,
+  `catalog_store_title`, `catalog_model_url`. Todos `text` nullable.
+  Fallbacks en TS (nunca en la DB) mismo patrón que "Mi negocio" para
+  `business_name`: `"Tienda en línea"` para tagline, no-renderiza para
+  subtitle, `${business_name.toUpperCase()} STORE` para store_title,
+  diamante procedural para el modelo 3D.
+- **RPC público `public_commerce_config()`** expone los 4 campos al
+  storefront. Es el único punto de contacto entre catálogo y config.
+  Cualquier campo nuevo del catálogo hay que agregarlo también acá.
+- **Bucket nuevo `catalog-assets`** en Storage (público, 100 MB,
+  admin-only write via `public.is_admin()`). Alberga por ahora
+  `models/*.glb`; se puede reusar para `logos/*` en el futuro si se
+  migra el `logo_url` de campo-URL a upload (fuera de scope de s24).
+- **Uploader client-direct** en `lib/storage-client.ts`
+  (`uploadCatalogModelClient`) — mismo patrón que
+  `uploadProductImageClient` (sesión s12, bypasea Server Actions por
+  el nesting limit de RSC en archivos grandes). Validación por
+  **extensión**, no MIME (el `.glb` a menudo llega como
+  `application/octet-stream`).
+- **Componentes 3D del hero** reciben `modelUrl` vía prop desde el
+  server component (`app/catalog/page.tsx` pasa
+  `config.catalog_model_url`). Sin URL → `Diamond` procedural sin
+  `BackgroundLogo`. Con URL → `DiamondGLB(modelUrl)` + `BackgroundLogo
+  (modelUrl)` clonan el `.glb` con materiales distintos.
+  `useGLTF.preload` eliminado del top-level — no puede leer config
+  dinámica desde ahí; el `<Suspense>` del Canvas cubre el loading.
+- **Checkout WhatsApp real**: el método `whatsapp` con `whatsapp_enabled
+  && whatsapp_number` no vacío, después de `placeWebOrder` abre
+  `wa.me/<numero>?text=<encodeURIComponent(mensaje)>` en nueva pestaña
+  (`window.open`, no `window.location`) y hace `router.push` en la
+  actual a `/catalog/order/<numero>?phone=<numero>`. El mensaje lleva
+  order_number + items del carrito con `formatCurrency` + subtotal /
+  envío / total + datos + dirección + link absoluto al detalle
+  (`window.location.origin + orderUrlPath`).
+
+**Decisiones estructurales cerradas** (no re-preguntar en sesiones
+futuras a menos que el usuario las abra):
+
+- **Opción A para el fallback del `.glb`**: sin `catalog_model_url`
+  configurado → diamante procedural, no fallback estático. Coherente
+  con el criterio del tagline. `public/hero-logo.glb` eliminado del
+  repo.
+- **`logo_url` sigue como campo de texto** — no migrado al uploader
+  del bucket `catalog-assets`. Puede migrarse en un pass futuro si
+  aparece la fricción real.
+- **Bucket `catalog-assets` compartido para todos los assets grandes
+  del catálogo**, no `catalog-models` a secas. Se organiza por
+  prefijo (`models/`, `logos/` a futuro).
+- **Textos configurables se guardan tal cual el usuario los escribe**
+  — nada de auto-uppercase ni transformaciones. El fallback sí aplica
+  `.toUpperCase()` porque históricamente el sufijo "STORE" venía así.
+
+**Riesgo residual**:
+
+- **PostgREST schema cache stale post-`ALTER TABLE` via MCP** — visto
+  como hipótesis inicial en el debug del "campos vacíos tras
+  Guardar", descartado porque `updated_at` era antiguo (el UPDATE no
+  había llegado, no era descartada por cache). Vale como diagnóstico
+  a futuro: si aparece el síntoma "toast dice Guardado pero campo
+  nuevo queda null" y `updated_at` sí cambió al momento del save,
+  correr `NOTIFY pgrst, 'reload schema';` en la DB.
+- Los prod deploys de `pos-solcraft-1-a1x2` y `pos-taiwysport`
+  comparten repo → un push a main = 2 builds en paralelo. Ya
+  documentado en s18 y confirmado esta sesión. Mismo cuidado a
+  aplicar en cualquier fix futuro.
 
 Fin del contexto.

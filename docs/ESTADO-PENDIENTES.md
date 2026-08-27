@@ -1,13 +1,239 @@
 # ESTADO-PENDIENTES.md
 
 > **Propósito**: dump de estado para que una instancia nueva de Claude sin
-> memoria pueda retomar sin perder nada. Última actualización: **2026-08-25**
-> (cierre de sesión larga: productización + aprovisionamiento real del primer
-> cliente Taiwy Sport). `main` en `e27504b`. Sin ramas abiertas.
+> memoria pueda retomar sin perder nada. Última actualización: **2026-08-27**
+> (s24: catálogo público configurable por instancia + flujo WhatsApp real +
+> modelo 3D del hero por-instancia). `main` en `cc8bcaa`. Rama
+> `s24-catalog-taiwysport` en origin sin borrar aún.
 
 ---
 
-## 0. LEE ESTO PRIMERO — estado tras sesión 2026-08-25 (Taiwy Sport aprovisionado + runbook completo)
+## 0. LEE ESTO PRIMERO — estado tras sesión 2026-08-27 (s24 catálogo por-instancia en prod)
+
+**Estado de ramas**: `main` @ `cc8bcaa` (merge s24). Rama
+`s24-catalog-taiwysport` sigue en origin (sin decisión de borrado).
+
+**Cerrado y en prod esta sesión**: **s24 — catálogo público 100 %
+configurable por instancia** (3 commits + merge):
+
+- `8275bbc feat(catalog): textos configurables por instancia + flujo WhatsApp automático`
+  - Columnas nuevas en `business_settings`: `catalog_tagline` (frase de
+    portada) + `catalog_hero_subtitle` (subtítulo del hero). Ambas
+    nullable con fallback en TS ("Tienda en línea" / no renderiza el
+    `<p>` si vacío). Migración `20260826000000` + update de
+    `public_commerce_config()`.
+  - Genericización del catálogo: fallbacks de `business_name` de "Taiwy"
+    a "Tienda"; landing y footer leen `catalog_tagline`; hero renderiza
+    `catalog_hero_subtitle` solo si viene no vacío.
+  - `app/catalog/productos/page.tsx` convierte metadata estática a
+    `generateMetadata` dinámico.
+  - Checkout con **flujo WhatsApp real** — método "whatsapp" con guard
+    duro (`whatsapp_enabled && whatsapp_number` no vacío), después de
+    `placeWebOrder` abre `wa.me/<numero>?text=<mensaje precargado>` en
+    nueva pestaña (pedido + items + subtotal/envío/total + datos +
+    dirección + link absoluto al detalle) + `router.push` en la actual.
+    Copy del método pasa de "Coordinar por WhatsApp — te escribimos"
+    a "Enviar pedido por WhatsApp — se abre WhatsApp con tu pedido".
+  - Borrado de `components/catalog/hero-logo-3d.tsx` — código muerto
+    confirmado, sin importadores (reemplazado por `HeroPremium` de
+    `hero-3d/` hace varias sesiones).
+
+- `64159dc feat(catalog): campo catalog_store_title configurable`
+  - Columna `catalog_store_title` (text, nullable) + key en RPC. El
+    sufijo "STORE" hardcodeado del header y el hero grande pasa a
+    fallback `${business_name.toUpperCase()} STORE`; si se llena,
+    reemplaza el texto tal cual sin `.toUpperCase()` implícito. Detectado
+    tras el primer smoke ("TAIWY SPORT STORE" era redundante para
+    Taiwy Sport).
+
+- `cbd9f0b feat(catalog): modelo 3D configurable por instancia`
+  - Columna `catalog_model_url` (text, nullable) + key en RPC.
+  - Bucket nuevo `catalog-assets`: `public=true`, `file_size_limit=100 MB`,
+    MIMEs `model/gltf-binary` + `application/octet-stream` + imágenes
+    (por si más adelante migramos `logo_url` al mismo bucket). 4
+    policies: SELECT público, INSERT/UPDATE/DELETE gated por
+    `public.is_admin()`.
+  - `uploadCatalogModelClient` en `lib/storage-client.ts` — validación
+    por **extensión `.glb`** (muchos OS entregan MIME octet-stream),
+    guard 100 MB error + 20 MB warning con recomendación textual de
+    `gltf-transform draco input.glb output.glb`. Auth via cookie de
+    sesión + RLS del bucket.
+  - Uploader inline en `/settings/receipt` (card "Tienda web") con
+    estados vacío / cargado (chip con basename + Reemplazar / Quitar).
+  - Refactor de los 4 componentes hero-3d — reciben `modelUrl` vía prop
+    en vez de `GLB_PATH = "/hero-logo.glb"` hardcoded.
+    `HeroPremium(modelUrl?)` → `HeroScene(modelUrl?)` deriva
+    `useGLB = Boolean(modelUrl)` → si null monta `Diamond` procedural
+    y omite `BackgroundLogo` completamente. Sin `useGLTF.preload` de
+    top-level (imposible con URL dinámica; `<Suspense>` del Canvas
+    cubre loading).
+  - `app/catalog/page.tsx` pasa `config.catalog_model_url` al
+    `HeroPremium`.
+  - Borrado de `public/hero-logo.glb` (−61.9 MB del repo). Opción A
+    confirmada: sin `catalog_model_url` configurado → diamante
+    procedural, no fallback estático (coherente con el criterio del
+    tagline: fallback neutro, no marca de otro negocio).
+
+- `cc8bcaa Merge s24: catálogo por instancia — textos, WhatsApp automático, modelo 3D configurable`
+  - Merge `--no-ff` a `main`. Prod deploys READY en ambos proyectos
+    Vercel (`app-solcraft.com` y `taiwysport.app-solcraft.com`), landing
+    HTTP 200 y `/api/wompi/webhook` HTTP 200 en ambos.
+
+**Migraciones aplicadas**: `20260826000000` (3 columnas + RPC) y
+`20260826000001` (columna model_url + RPC + bucket + 4 policies).
+Aplicadas por MCP en **ambas** instancias (`nxszaxwsrtlofqimbfig` y
+`aapchdjwpqhwsquffnxn`), idempotentes (`ADD COLUMN IF NOT EXISTS` +
+`CREATE OR REPLACE FUNCTION` + `ON CONFLICT DO UPDATE` en bucket +
+`DROP POLICY IF EXISTS` antes de `CREATE POLICY`). Verificado
+post-apply: bucket con file_size_limit correcto + 4 policies presentes
+en cada instancia + RPC devuelve las 4 keys nuevas.
+
+### Estado actual de cada instancia (verificado por lectura directa a DB)
+
+**Taiwy prod** (`nxszaxwsrtlofqimbfig` → `app-solcraft.com`):
+
+- `catalog_tagline`, `catalog_hero_subtitle`, `catalog_store_title`,
+  `catalog_model_url` — **todos null**. Catálogo actualmente renderiza
+  fallbacks ("TAIWY STORE" + tagline "Tienda en línea", sin subtitle,
+  diamante procedural).
+- ⚠️ **PENDIENTE ACCIÓN DE ESTEBAN**: recuperar su `.glb` original y
+  subirlo por la UI nueva:
+  ```
+  git show 64159dc:public/hero-logo.glb > /c/Users/esteb/Downloads/hero-logo.glb
+  ```
+  Verificar tamaño ~62 MB. Entrar a
+  `https://app-solcraft.com/settings/receipt`, sección "Tienda web
+  (catálogo público)", subir el archivo (tarda 1-5 min por conexión;
+  esperar al toast "Modelo cargado"), Guardar cambios. Verificar
+  `catalog_model_url != null` en DB y catálogo con hero GLB dorado.
+
+**Taiwy Sport** (`aapchdjwpqhwsquffnxn` → `taiwysport.app-solcraft.com`):
+
+- `catalog_store_title="TAIWY SPORT"`, `catalog_tagline="Tienda online"`,
+  `catalog_hero_subtitle="La casa del deporte"` — configurados durante
+  el smoke en preview (Esteban entró por error a la preview de
+  Taiwy Sport pensando que era la suya; los textos quedaron guardados
+  como config real del cliente y no requieren revert). `updated_at =
+  2026-08-27 04:18:23`, `updated_by = fe6fb143-…`
+  (esteban@solcraftsas.com).
+- `catalog_model_url = null` — pendiente el modelo real del cliente.
+  Hero renderiza diamante procedural mientras tanto.
+- `whatsapp_number = "3104505577"` YA CARGADO, PERO
+  `whatsapp_enabled = false`.
+- 🚨 **BLOQUEANTE de OPERACIÓN**: con `whatsapp_enabled=false` +
+  `cod_enabled=false` + `wompi_enabled=false`, el checkout muestra
+  *"No hay métodos de pago habilitados. Contacta a la tienda."* y el
+  botón de comprar queda disabled. **Verificar al inicio de la próxima
+  sesión** si Esteban ya activó el switch WhatsApp en
+  `/settings/receipt` de Taiwy Sport. Si no, avisar antes de tocar
+  otras features del cliente.
+
+### Próxima sesión — 3 mejoras confirmadas por Esteban, arrancar por acá
+
+⚠️ **IMPORTANTE — scope**: son mejoras al **código base** (repo
+compartido), NO a una instancia puntual. Cualquier merge a `main`
+afecta a **ambos** deploys (`pos-solcraft-1-a1x2` y `pos-taiwysport`)
+porque comparten el mismo código fuente. Mismo cuidado que se aplicó
+en la sesión 2026-08-25 con el fix de pnpm. No tratar como trabajo
+exclusivo de `taiwysport.app-solcraft.com`.
+
+1. **`/central` (envío de mercancía) — mostrar foto del producto en
+   la lista/tabla de envío**. Hoy no se muestra ninguna imagen. La foto
+   ya está en `products.image_url` (y `product_images` tiene la
+   galería); el módulo de envío no la lee.
+2. **`/central` — botón de refrescar disponibilidades post-envío**.
+   Después de despachar/enviar mercancía, las cantidades disponibles
+   quedan stale hasta recargar la página manualmente. Agregar un botón
+   que dispare `revalidate` o refetch de las queries relevantes de
+   stock/warehouse.
+3. **Panel de ingreso de mercancía con IA — mejorar prompt de Gemini**.
+   Archivos: `components/central/ai-ingress-panel.tsx` +
+   `app/api/analyze-product/route.ts`. Esteban dijo "que sea más
+   puntual/específica" pero **no dio detalle de en qué sentido**.
+   Preguntarle al arrancar la sesión antes de tocar el prompt.
+   Contexto útil para la conversación: rubro sigue siendo ropa/calzado
+   (Taiwy y Taiwy Sport comparten rubro), `type_prefix` hardcoded a
+   CA/PA/VE/... — ver deuda técnica documentada.
+
+Al aplicar cualquiera de estas 3 mejoras: verificar que **ambos deploys
+prod queden sanos**, no solo el de Taiwy Sport. Un push a main dispara
+2 builds en paralelo (mismo repo linked a los 2 proyectos Vercel del
+mismo team).
+
+### Deuda arrastrada, sin cambios esta sesión
+
+- **AI Gateway rate limits** (prioridad MEDIA-ALTA, ahora más urgente):
+  `/api/analyze-product` con `GatewayRateLimitError` recurrente en la
+  capa gratuita de AI Gateway. Con dos negocios operativos dependiendo
+  del mismo panel IA (mi prod + Taiwy Sport), la probabilidad de que
+  el cliente le pegue a rate limit en horario pico crece. Acción:
+  evaluar upgrade a créditos pagos.
+- **Rotación anon key de `nxszaxwsrtlofqimbfig`**: checklist entregado,
+  no urgente.
+- **Rama `s24-catalog-taiwysport`** en origin sin borrar (ofrecido, sin
+  decisión de Esteban). En sesiones anteriores el patrón fue borrar
+  las ramas s21/s22/s23 tras merge; consultar antes de borrar.
+- **Fork del repo cuando aparezca el 2do cliente** (evita reuso de
+  proyecto Vercel — MCP `create_git_project` reutiliza el proyecto ya
+  linked al repo). Documentado en el runbook.
+- **Deuda técnica del código** (sin cambios): moneda COP hardcoded,
+  Wompi Colombia-only, panel IA rubro ropa (hoy sirve para ambos
+  clientes que son ropa/calzado), sistema asume ≥2 sedes.
+- **Promociones aplicadas en venta**, **consolidación SiteProvider**,
+  **`getShiftReceivables` post-bootstrap POS**, **gate del contador**
+  sobre sobrante sin factura, **smoke funcional real de
+  `createBulkTransfer` (s21) casos C/D/E/F**, **logging temporal
+  `[product-import]` en `lib/product-import.ts`** (vencía ~2026-08-31,
+  ya se puede limpiar), **red de seguridad `is_ghost` en transfers
+  (s21)**: sin cambios.
+
+### Sorpresas / hallazgos de la sesión (accionadas)
+
+1. **Instancia equivocada en el smoke test**. Esteban configuró
+   tagline / hero_subtitle / store_title en `taiwysport.app-solcraft.com`
+   (URL del preview de Taiwy Sport) pensando que era la suya, porque
+   ambas URLs `xxx-estebangz-makers-projects.vercel.app` son
+   visualmente muy parecidas. Los textos se guardaron correctamente
+   pero en la instancia del cliente. Diagnóstico rápido posible por
+   `SELECT updated_at FROM business_settings WHERE id = 1;` — si el
+   timestamp es reciente, el UPDATE llegó a esa instancia. Al final
+   los textos que Esteban cargó ("TAIWY SPORT" / "Tienda online" /
+   "La casa del deporte") tienen sentido para Taiwy Sport y quedaron
+   como config legítima; no se revirtieron.
+2. **El `.glb` no se subió durante el smoke — el uploader NUNCA
+   ejecutó**. Confirmado por `storage.objects WHERE bucket_id =
+   'catalog-assets'` con 0 filas en ambas instancias. Causa más
+   probable: Esteban saltó el paso de recuperar el `.glb` con
+   `git show 64159dc:public/hero-logo.glb > …` y contó el smoke como
+   completo tras probar los 3 campos de texto. Recordatorio explícito
+   añadido en el estado por instancia arriba.
+3. **PostgREST schema cache stale post-`ALTER TABLE`** era la
+   hipótesis inicial cuando aparecieron los campos null en mi
+   instancia; se descartó al ver `updated_at = 2026-07-28` (o sea,
+   el UPDATE ni llegó — no era campo descartado por cache). Vale
+   recordarlo como diagnóstico plausible cuando aparezca otra vez
+   ese síntoma pero `updated_at` sí cambió: `NOTIFY pgrst, 'reload
+   schema';` fuerza el reload.
+4. **`ADD COLUMN` + `CREATE OR REPLACE FUNCTION` + `ON CONFLICT` +
+   `DROP POLICY IF EXISTS` = migración 100 % idempotente**. Aplicada
+   varias veces (una vez por commit del branch) sin drama. Confirmar
+   el patrón para migraciones futuras que pasen por preview + prod
+   (el commit anterior podría haberse aplicado ya vía MCP; la próxima
+   pasada la aplica idempotentemente sin errores).
+
+### Referencias importantes
+
+- `docs/RUNBOOK-APROVISIONAMIENTO-CLIENTE.md` — runbook completo de
+  aprovisionamiento de cliente nuevo. Sin cambios esta sesión (el
+  bucket `catalog-assets` no está agregado al runbook — habría que
+  incluirlo cuando aparezca el 2do cliente que lo necesite, o
+  documentarlo como delta manual post-baseline).
+- Detalle técnico de s24 acá y en los mensajes de commit
+  (`git show 8275bbc 64159dc cbd9f0b cc8bcaa`).
+
+---
+
+## HISTORIAL — sesión 2026-08-25 (Taiwy Sport aprovisionado + runbook completo)
 
 **Estado de ramas**: `main` @ `e27504b`. Sin ramas abiertas. Todo lo trabajado
 esta sesión está en prod.
