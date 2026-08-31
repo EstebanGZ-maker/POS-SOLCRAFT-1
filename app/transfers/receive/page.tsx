@@ -23,6 +23,7 @@ import {
   AlertTriangle,
   CheckCircle2,
   Clock,
+  RefreshCw,
 } from "lucide-react"
 
 function TransferList({
@@ -384,6 +385,7 @@ export default function ReceiveTransfersPage() {
   const { role, assignedSiteId } = useAuth()
   const { currentSite } = useSite()
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [refreshing, setRefreshing] = useState(false)
 
   // Se recibe en la sede activa del selector, no en la sede primaria fija:
   // un encargado con varias sedes debe poder recibir en cualquiera de ellas.
@@ -393,12 +395,32 @@ export default function ReceiveTransfersPage() {
     () => getPendingTransfersForSite(effectiveSiteId!)
   )
 
+  async function handleRefresh() {
+    setRefreshing(true)
+    await mutate()
+    setRefreshing(false)
+  }
+
   return (
     <div className="p-6 max-w-4xl mx-auto space-y-6">
-      <PageHeader
-        title="Recibir mercancía"
-        description="Verifica y confirma la mercancía que llega a esta sede, venga de la bodega central o de otra sede."
-      />
+      <div className="flex items-start justify-between gap-4">
+        <PageHeader
+          title="Recibir mercancía"
+          description="Verifica y confirma la mercancía que llega a esta sede, venga de la bodega central o de otra sede."
+        />
+        {!selectedId && (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleRefresh}
+            disabled={refreshing || !effectiveSiteId}
+            className="gap-2 shrink-0"
+          >
+            <RefreshCw className={`h-4 w-4 ${refreshing ? "animate-spin" : ""}`} />
+            Refrescar
+          </Button>
+        )}
+      </div>
 
       {!selectedId ? (
         <TransferList
