@@ -14,13 +14,6 @@ import { ArrowRight, ImageOff, MapPin, Sparkles, Store, Truck } from "lucide-rea
 // Los productos y el stock cambian poco: revalidamos cada minuto
 export const revalidate = 60
 
-const LINE_NAMES: Record<string, string> = {
-  CA: "Camisas", PA: "Pantalones", VE: "Vestidos de baño",
-  SH: "Shorts", FA: "Faldas", JE: "Jeans", MO: "Monokinis",
-  TE: "Tops", VB: "Vestidos", BL: "Blusas", CH: "Chaquetas",
-}
-const lineLabel = (c: string) => LINE_NAMES[c] || c
-
 export async function generateMetadata(): Promise<Metadata> {
   const config = await getPublicCommerceConfig()
   return {
@@ -162,10 +155,7 @@ export default async function LandingPage() {
                 <GlowCard className="h-full">
                   <div className="flex items-center justify-between p-6">
                     <div>
-                      <div className="font-mono text-[10px] uppercase tracking-[0.2em] text-[hsl(var(--gold-lo))]">
-                        {l.code}
-                      </div>
-                      <h3 className="mt-1.5 font-display text-xl">{lineLabel(l.code)}</h3>
+                      <h3 className="font-display text-xl">{l.name}</h3>
                       <p className="mt-1 text-xs text-muted-foreground">
                         {l.count} {l.count === 1 ? "pieza" : "piezas"}
                       </p>

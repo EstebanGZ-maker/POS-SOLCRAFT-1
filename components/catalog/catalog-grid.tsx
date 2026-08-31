@@ -24,13 +24,6 @@ import { Search, MapPin, PackageOpen, ImageOff, Plus, SlidersHorizontal } from "
 
 const ALL = "__all__"
 
-const LINE_NAMES: Record<string, string> = {
-  CA: "Camisas", PA: "Pantalones", VE: "Vestidos de baño",
-  SH: "Shorts", FA: "Faldas", JE: "Jeans", MO: "Monokinis",
-  TE: "Tops", VB: "Vestidos", BL: "Blusas", CH: "Chaquetas",
-}
-const lineLabel = (code: string) => LINE_NAMES[code] || code
-
 interface Props {
   initialItems: PublicCatalogItem[]
   initialSites: PublicSite[]
@@ -175,7 +168,7 @@ function CatalogGridInner({ initialItems, initialSites, initialFacets }: Props) 
                     <SelectItem value={ALL}>Todas las líneas</SelectItem>
                     {(facets?.lines || []).map((l) => (
                       <SelectItem key={l.code} value={l.code}>
-                        {lineLabel(l.code)} ({l.count})
+                        {l.name} ({l.count})
                       </SelectItem>
                     ))}
                   </SelectContent>

@@ -23,7 +23,11 @@ export interface PublicCatalogItem {
 }
 
 export interface CatalogFacets {
-  lines: { code: string; count: number }[]
+  // code = category_id (uuid text) desde la RPC public_catalog_facets.
+  // name = nombre humano de la categoría (Accesorios, Camisas, …).
+  // El filtro p_line del RPC public_catalog_list acepta ambos formatos
+  // (uuid nuevo o type_prefix viejo) para no romper URLs compartidas.
+  lines: { code: string; name: string; count: number }[]
   sizes: string[]
 }
 
