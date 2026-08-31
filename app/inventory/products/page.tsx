@@ -44,7 +44,7 @@ import {
 } from "@/components/ui/alert-dialog"
 import { toast } from "@/components/ui/use-toast"
 import { formatCurrency } from "@/lib/utils"
-import { getProductsWithStock, deleteProductSafe } from "@/lib/inventory-actions"
+import { getProductsWithStock, deleteProductSafe, canDeleteProducts } from "@/lib/inventory-actions"
 import { getCategories } from "@/lib/actions"
 import { getSitesWithWarehouses } from "@/lib/site-actions"
 import { useSite } from "@/lib/site-context"
@@ -75,6 +75,7 @@ export default function ProductsPage() {
 
   const { data: sites = [] } = useSWR("sites-wh", getSitesWithWarehouses)
   const { data: categories = [] } = useSWR("categories", getCategories)
+  const { data: canDelete = false } = useSWR("can-delete-products", canDeleteProducts)
   const wid = warehouseId === "all" ? null : warehouseId
   // Solo aplicamos el filtro cuando hay bodega elegida — "relevancia" no
   // está definida sin bodega concreta. Aunque el checkbox esté marcado,
@@ -404,9 +405,11 @@ export default function ProductsPage() {
                         <DropdownMenuItem onClick={() => openEdit(p)}>
                           <Pencil className="mr-2 h-4 w-4" /> Editar
                         </DropdownMenuItem>
-                        <DropdownMenuItem className="text-destructive" onClick={() => setToDelete(p)}>
-                          <Trash2 className="mr-2 h-4 w-4" /> Eliminar
-                        </DropdownMenuItem>
+                        {canDelete && (
+                          <DropdownMenuItem className="text-destructive" onClick={() => setToDelete(p)}>
+                            <Trash2 className="mr-2 h-4 w-4" /> Eliminar
+                          </DropdownMenuItem>
+                        )}
                       </DropdownMenuContent>
                     </DropdownMenu>
                   </TableCell>

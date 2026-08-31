@@ -53,3 +53,15 @@ export async function getAccessibleSiteIds(): Promise<string[] | "all"> {
   if (ids.size === 0 && profile.site_id) ids.add(profile.site_id)
   return Array.from(ids)
 }
+
+// Restringe hard-delete de productos a un único email por instancia,
+// configurado vía env var PRODUCT_DELETE_OWNER_EMAIL (server-only). Sin
+// env var → false para todos: comportamiento deseado en instancias de
+// cliente donde nadie debe poder borrar productos ni siquiera siendo admin.
+export async function isProductDeleteOwner(): Promise<boolean> {
+  const ownerEmail = process.env.PRODUCT_DELETE_OWNER_EMAIL?.trim().toLowerCase()
+  if (!ownerEmail) return false
+  const profile = await getUserProfile()
+  if (!profile?.is_active) return false
+  return profile.email.trim().toLowerCase() === ownerEmail
+}

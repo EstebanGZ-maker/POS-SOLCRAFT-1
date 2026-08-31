@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache"
 import { createServerSupabaseClient } from "@/lib/supabase/server"
-import { getUserProfile } from "@/lib/auth-helpers"
+import { getUserProfile, isProductDeleteOwner } from "@/lib/auth-helpers"
 import { requireRole } from "@/lib/role-guard"
 import { phoneCORequired, PHONE_CO_ERROR } from "@/lib/validators/customer"
 import { withPosTiming } from "@/lib/pos-timing"
@@ -267,6 +267,9 @@ export async function updateProduct(formData: FormData) {
 }
 
 export async function deleteProduct(product_id: string) {
+  if (!(await isProductDeleteOwner())) {
+    return { success: false, message: "Esta acción está restringida al administrador de la plataforma." }
+  }
   const supabase = await createServerSupabaseClient()
 
   // Check if product has any sale items

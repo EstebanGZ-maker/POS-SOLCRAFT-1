@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache"
 import { createServerSupabaseClient } from "@/lib/supabase/server"
 import { requireRole } from "@/lib/role-guard"
-import { getUserProfile, getAccessibleSiteIds } from "@/lib/auth-helpers"
+import { getUserProfile, getAccessibleSiteIds, isProductDeleteOwner } from "@/lib/auth-helpers"
 import { withPosTiming } from "@/lib/pos-timing"
 import {
   fetchProductsWithStockRaw,
@@ -154,6 +154,9 @@ export async function saveProduct(input: {
 
 export async function deleteProductSafe(product_id: string) {
   await requireRole("admin", "encargado")
+  if (!(await isProductDeleteOwner())) {
+    return { success: false, message: "Esta acción está restringida al administrador de la plataforma." }
+  }
   const supabase = await createServerSupabaseClient()
   const { data: saleItems } = await supabase.from("sale_items").select("sale_item_id").eq("product_id", product_id).limit(1)
   if (saleItems && saleItems.length > 0) {
@@ -166,6 +169,12 @@ export async function deleteProductSafe(product_id: string) {
   if (error) return { success: false, message: error.message }
   revalidatePath("/inventory/products")
   return { success: true, message: "Producto eliminado." }
+}
+
+// Expone al cliente si el user logueado puede borrar productos, sin filtrar
+// el email autorizado. La UI oculta el botón cuando devuelve false.
+export async function canDeleteProducts(): Promise<boolean> {
+  return isProductDeleteOwner()
 }
 
 // ============ CATEGORIES ============
