@@ -53,6 +53,7 @@ import { Checkbox } from "@/components/ui/checkbox"
 import { Label } from "@/components/ui/label"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { ProductFormDialog } from "@/components/inventory/product-form-dialog"
+import { BulkActionsBar, type BulkAction } from "@/components/inventory/bulk-actions"
 
 // Roles que ven "solo con historial" por default: los que hacen inventario
 // físico en una sede. Admin/contador ven catálogo completo por default
@@ -72,6 +73,7 @@ export default function ProductsPage() {
   const [formOpen, setFormOpen] = useState(false)
   const [editing, setEditing] = useState<any | null>(null)
   const [toDelete, setToDelete] = useState<any | null>(null)
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
 
   const { data: sites = [] } = useSWR("sites-wh", getSitesWithWarehouses)
   const { data: categories = [] } = useSWR("categories", getCategories)
@@ -193,6 +195,75 @@ export default function ProductsPage() {
   const toggleCat = (id: string) =>
     setActiveCats((prev) => (prev.includes(id) ? prev.filter((c) => c !== id) : [...prev, id]))
 
+  // Selección para acciones masivas. Se mantiene entre cambios de filtro
+  // (usuario puede acumular selección explorando varias facetas); se limpia
+  // solo tras ejecutar una acción (onDone) o click en "Deseleccionar".
+  const selectedProducts = useMemo(
+    () => products.filter((p: any) => selectedIds.has(p.product_id)),
+    [products, selectedIds],
+  )
+  const visibleSelectedCount = filtered.reduce(
+    (acc: number, p: any) => acc + (selectedIds.has(p.product_id) ? 1 : 0),
+    0,
+  )
+  const allVisibleSelected = filtered.length > 0 && visibleSelectedCount === filtered.length
+  const someVisibleSelected = visibleSelectedCount > 0 && !allVisibleSelected
+  const headerCheckState: boolean | "indeterminate" = allVisibleSelected
+    ? true
+    : someVisibleSelected
+      ? "indeterminate"
+      : false
+
+  const toggleAllVisible = (checked: boolean | "indeterminate") => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      const shouldSelect = checked === true
+      for (const p of filtered) {
+        if (shouldSelect) next.add(p.product_id)
+        else next.delete(p.product_id)
+      }
+      return next
+    })
+  }
+
+  const toggleOne = (product_id: string, checked: boolean | "indeterminate") => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (checked === true) next.add(product_id)
+      else next.delete(product_id)
+      return next
+    })
+  }
+
+  const bulkActions: BulkAction<any>[] = useMemo(
+    () => [
+      {
+        id: "delete",
+        label: "Eliminar",
+        icon: Trash2,
+        variant: "destructive",
+        available: () => canDelete,
+        confirm: {
+          title: (n) => `¿Eliminar ${n} producto${n === 1 ? "" : "s"}?`,
+          description: (n) =>
+            `Se eliminarán ${n} productos. Los que tengan ventas asociadas se desactivarán en su lugar.`,
+          actionLabel: "Eliminar",
+        },
+        run: async (items) => {
+          let processed = 0
+          let failed = 0
+          for (const p of items) {
+            const res = await deleteProductSafe(p.product_id)
+            if (res.success) processed++
+            else failed++
+          }
+          return { success: failed === 0, processed, failed }
+        },
+      },
+    ],
+    [canDelete],
+  )
+
   return (
     <div>
       <PageHeader
@@ -311,10 +382,29 @@ export default function ProductsPage() {
         )}
       </div>
 
+      <BulkActionsBar
+        selected={selectedProducts}
+        actions={bulkActions}
+        onClear={() => setSelectedIds(new Set())}
+        onDone={() => {
+          setSelectedIds(new Set())
+          mutate()
+        }}
+        itemLabel={["producto", "productos"]}
+      />
+
       <Card>
         <Table>
           <TableHeader>
             <TableRow>
+              <TableHead className="w-10">
+                <Checkbox
+                  aria-label="Seleccionar todos los visibles"
+                  checked={headerCheckState}
+                  onCheckedChange={toggleAllVisible}
+                  disabled={filtered.length === 0}
+                />
+              </TableHead>
               <TableHead>Nombre</TableHead>
               <TableHead>Referencia</TableHead>
               <TableHead>Categoría</TableHead>
@@ -338,19 +428,26 @@ export default function ProductsPage() {
           <TableBody>
             {isLoading ? (
               <TableRow>
-                <TableCell colSpan={7} className="py-10 text-center text-muted-foreground">
+                <TableCell colSpan={8} className="py-10 text-center text-muted-foreground">
                   Cargando productos...
                 </TableCell>
               </TableRow>
             ) : filtered.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={7} className="py-10 text-center text-muted-foreground">
+                <TableCell colSpan={8} className="py-10 text-center text-muted-foreground">
                   No hay productos.
                 </TableCell>
               </TableRow>
             ) : (
               filtered.map((p: any) => (
-                <TableRow key={p.product_id}>
+                <TableRow key={p.product_id} data-selected={selectedIds.has(p.product_id) ? "true" : undefined}>
+                  <TableCell className="w-10">
+                    <Checkbox
+                      aria-label={`Seleccionar ${p.name}`}
+                      checked={selectedIds.has(p.product_id)}
+                      onCheckedChange={(c) => toggleOne(p.product_id, c)}
+                    />
+                  </TableCell>
                   <TableCell className="font-medium">
                     <span className="flex items-center gap-2.5">
                       {p.image_url ? (
