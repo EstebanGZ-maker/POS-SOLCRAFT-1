@@ -253,9 +253,16 @@ export default function ProductsPage() {
           let processed = 0
           let failed = 0
           for (const p of items) {
-            const res = await deleteProductSafe(p.product_id)
-            if (res.success) processed++
-            else failed++
+            // try/catch por ítem: si uno lanza (auth expirado mid-loop,
+            // timeout de red, etc.), lo contamos como failed y seguimos con
+            // el resto del lote en vez de abortar el bulk entero.
+            try {
+              const res = await deleteProductSafe(p.product_id)
+              if (res.success) processed++
+              else failed++
+            } catch {
+              failed++
+            }
           }
           return { success: failed === 0, processed, failed }
         },

@@ -152,19 +152,57 @@ export async function saveProduct(input: {
   return { success: true, message: "Producto guardado correctamente.", product_id }
 }
 
+// Tablas cuyo FK a products bloquea el hard-delete (RESTRICT o NO ACTION).
+// Verificado con pg_constraint.confdeltype: r/a bloquean, c cascade limpia solo.
+// Si alguna tiene filas → soft-delete (is_active=false) en lugar de hard-delete
+// que Postgres rechaza con FK violation. Chequear sale_items sin las demás
+// (versión previa de esta función) dejaba pasar productos con historial de
+// stock/ajustes/traslados/pedidos-web al hard-delete y ese error crudo se
+// mostraba al usuario como fallo genérico.
+const PRODUCT_BLOCKING_TABLES = [
+  "sale_items",
+  "stock_movements",
+  "adjustment_items",
+  "transfer_items",
+  "online_order_items",
+  "web_order_items",
+] as const
+
+async function productHasBlockingReferences(
+  supabase: Awaited<ReturnType<typeof createServerSupabaseClient>>,
+  product_id: string,
+): Promise<boolean> {
+  for (const table of PRODUCT_BLOCKING_TABLES) {
+    const { data, error } = await supabase
+      .from(table)
+      .select("product_id")
+      .eq("product_id", product_id)
+      .limit(1)
+    // Si la query falla (RLS, red, etc.), asumimos historial por seguridad:
+    // soft-delete es más conservador que arriesgar un hard-delete inconsistente.
+    if (error) return true
+    if (data && data.length > 0) return true
+  }
+  return false
+}
+
 export async function deleteProductSafe(product_id: string) {
   await requireRole("admin", "encargado")
   if (!(await isProductDeleteOwner())) {
     return { success: false, message: "Esta acción está restringida al administrador de la plataforma." }
   }
   const supabase = await createServerSupabaseClient()
-  const { data: saleItems } = await supabase.from("sale_items").select("sale_item_id").eq("product_id", product_id).limit(1)
-  if (saleItems && saleItems.length > 0) {
-    // soft-delete instead
-    await supabase.from("products").update({ is_active: false }).eq("product_id", product_id)
+
+  if (await productHasBlockingReferences(supabase, product_id)) {
+    const { error } = await supabase.from("products").update({ is_active: false }).eq("product_id", product_id)
+    if (error) return { success: false, message: error.message }
     revalidatePath("/inventory/products")
-    return { success: true, message: "Producto tiene ventas: se desactivó en lugar de eliminarse." }
+    return { success: true, message: "Producto con historial: se desactivó en lugar de eliminarse." }
   }
+
+  // Red de seguridad: mantener el catch aunque el chequeo previo ya cubra
+  // las 6 tablas conocidas — por si alguien agrega una FK nueva y olvida
+  // actualizar PRODUCT_BLOCKING_TABLES.
   const { error } = await supabase.from("products").delete().eq("product_id", product_id)
   if (error) return { success: false, message: error.message }
   revalidatePath("/inventory/products")
