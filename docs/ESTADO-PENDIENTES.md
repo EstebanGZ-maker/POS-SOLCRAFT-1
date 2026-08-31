@@ -1,14 +1,288 @@
 # ESTADO-PENDIENTES.md
 
 > **Propósito**: dump de estado para que una instancia nueva de Claude sin
-> memoria pueda retomar sin perder nada. Última actualización: **2026-08-27**
-> (s24: catálogo público configurable por instancia + flujo WhatsApp real +
-> modelo 3D del hero por-instancia). `main` en `cc8bcaa`. Rama
-> `s24-catalog-taiwysport` en origin sin borrar aún.
+> memoria pueda retomar sin perder nada. Última actualización: **2026-08-31**
+> (s25: pulido de UX en /central y /transfers/receive, guard de eliminación
+> por email, selección masiva genérica, fix crítico de bulk-delete con FK
+> RESTRICT, y catálogo público agrupando por categoría real). `main` en
+> `22e0763`. Rama `s24-catalog-taiwysport` en origin sin borrar aún.
 
 ---
 
-## 0. LEE ESTO PRIMERO — estado tras sesión 2026-08-27 (s24 catálogo por-instancia en prod)
+## 0. LEE ESTO PRIMERO — estado tras sesión 2026-08-31 (s25 pulido + guards + fix crítico)
+
+**Estado de ramas**: `main` @ `22e0763`. Sin ramas de feature vivas.
+
+**Cerrado y en prod esta sesión** (7 commits directos a `main`, sin rama de
+feature — todos cambios pequeños/independientes, revisados uno a uno con
+Esteban antes de push):
+
+- `3a76d57 feat(central,ai): foto+refrescar en envío + prompt IA sin adivinar`
+  - `/central`: columna Foto (thumb 40×40) con fallback `ImageOff` cuando
+    `product.image_url` es null. Botón "Refrescar" en header de
+    "Seleccionar productos" con SWR `mutate()`. Auto-mutate al terminar
+    envío exitoso.
+  - `app/api/analyze-product/route.ts`: prompt de Gemini con **regla
+    crítica "no inventes"** — prohibido inferir material/composición/
+    marca/país cuando no son verificables visualmente. Descripciones
+    cortas formato `[tipo] [línea/estilo] [color] [detalles visibles
+    breves]`, max ~12 palabras, sin adjetivos de marketing. Fallback
+    talla "M" **preservado** por requisito estructural del código
+    auto-generado (`PREFIJO-TALLA-PRECIO-NN`).
+
+- `71c228e feat(transfers): botón Refrescar en recepción de mercancía`
+  - Mismo patrón que `/central`: botón outline con `RefreshCw` +
+    spinner que llama `mutate()` del key `pending-transfers-<siteId>`.
+    Solo visible en la vista lista (dentro del checklist de recepción,
+    un refresh pisa cantidades ya digitadas — decisión deliberada).
+    Auto-refresh post-recepción ya existía en `onDone` — no tocado.
+
+- `b053247 feat(products): restringir eliminar producto a email owner por instancia`
+  - Nueva env var **server-only** `PRODUCT_DELETE_OWNER_EMAIL` (sin
+    `NEXT_PUBLIC_` para no filtrar el email al cliente).
+  - `lib/auth-helpers.ts:isProductDeleteOwner()`: compara email del
+    user logueado (trim + lowercase) contra la env var. **Sin env var
+    → false para todos** (fail-closed: default seguro para instancias
+    de cliente donde ni siquiera el admin del cliente debe borrar).
+  - Guard aplicado en 2 entry points server-side:
+    * `deleteProductSafe` (`/inventory/products`, activa) — aplica al
+      soft-delete Y al hard-delete por consistencia UX ("botón Eliminar
+      no funciona salvo para el email autorizado").
+    * `deleteProduct` legacy (`/products`, sin nav pero URL accesible)
+      — cierra el flanco aunque nadie lo linkee.
+  - Nueva server action `canDeleteProducts(): Promise<boolean>` que la
+    UI llama vía SWR. Solo devuelve bool, nunca el email.
+  - UI: item "Eliminar" **oculto** (no deshabilitado con tooltip) para
+    no-owners. Criterio: es una restricción de plataforma, no de rol;
+    un botón deshabilitado invita preguntas de soporte.
+  - **Config Vercel manual (hecho por Esteban)**: en
+    `app-solcraft.com` productions env, `PRODUCT_DELETE_OWNER_EMAIL=
+    esteban@solcraftsas.com` + redeploy. En **Taiwy Sport, NO
+    configurado** por diseño → cliente no puede borrar productos ni el
+    admin de su instancia.
+
+- `46f22af feat(products): selección masiva con arquitectura extensible`
+  - Nueva pieza **genérica** `components/inventory/bulk-actions.tsx`
+    (173 líneas). Tipo `BulkAction<T>` + componente `BulkActionsBar<T>`
+    agnóstico del dominio. Cada página construye su propio array de
+    acciones y lo pasa como prop. Agregar acción futura (cambiar
+    categoría, ajustar precio, etc.) = 1 entrada al array, cero
+    cambios en tabla ni barra.
+  - Cambios en `/inventory/products`: columna checkbox por fila +
+    checkbox tri-state en header ("seleccionar todos los visibles").
+    Selección **persiste entre cambios de filtro** (usuario puede
+    acumular seleccionando por varias facetas); se limpia solo tras
+    ejecutar acción (`onDone`) o click en "Deseleccionar". Primera
+    acción registrada: "Eliminar" con `variant="destructive"` +
+    `available: () => canDelete` (misma restricción de owner).
+  - Loop **secuencial con `for...of`** (no `Promise.all`) — volumen
+    esperado bajo + cuidado del connection pool de Supabase +
+    reporte parcial legible en toast. RPC atómica `delete_products_
+    bulk(uuid[])` queda como deuda para volúmenes altos.
+
+- `02f03b0 fix(products): bulk-delete no procesaba lote + FK RESTRICT sin contemplar` **⚠️ FIX CRÍTICO**
+  - **Bug 1** (arquitectural): `deleteProductSafe` solo chequeaba
+    `sale_items` antes de intentar hard-delete. Un producto sin ventas
+    pero con historial en cualquiera de estas 6 tablas iba directo al
+    `.delete()` que Postgres rechazaba con FK violation:
+    `sale_items` (RESTRICT), `stock_movements` (NO ACTION),
+    `adjustment_items` (RESTRICT), `transfer_items` (RESTRICT),
+    `online_order_items` (NO ACTION), `web_order_items` (NO ACTION).
+    Verificado con `pg_constraint.confdeltype` (r/a bloquean, c
+    cascade limpia solo).
+  - Fix: helper `productHasBlockingReferences(supabase, product_id)`
+    consulta las 6 tablas (loop de queries `LIMIT 1`, cortocircuita
+    en la primera hit). Si CUALQUIERA tiene fila → soft-delete
+    (`is_active=false`). Costo ~6 queries por producto en el peor
+    caso — aceptable para volúmenes esperados. Constante
+    `PRODUCT_BLOCKING_TABLES` documenta el mapping para futuro.
+  - **Bug 2** (loop): el `for...of` dentro del `run` de la acción
+    "delete" no envolvía cada llamada en try/catch. Si
+    `deleteProductSafe` LANZABA para un ítem (auth expirado mid-loop,
+    timeout de red, revalidatePath en route inválido), la excepción
+    abortaba **todo el loop**. Explica el reporte end-user: "toast
+    dijo '1 fallado' pero ninguno de los 9 cambió en DB" — el loop
+    contó 1 fallado antes del throw, luego se cortó.
+  - Fix: try/catch por ítem que cuenta la excepción como failed y
+    continúa con el resto del lote.
+  - **Verificación end-to-end**: producto `GO-U-120-00` (1
+    stock_movement, 1 adjustment_item, 0 ventas) — antes del fix
+    `is_active=true` con `updated_at` viejo; después
+    `is_active=false, updated_at` nuevo. Camino soft-delete tomado
+    correctamente.
+  - **Tercer bug descartado**: hipótesis inicial de "cache stale en
+    UI" resultó falsa. Los productos ya desactivados **sí desaparecen
+    del listado por defecto** (la vista filtra `is_active=true`). El
+    "seguían apareciendo" se explicaba 100% por bugs 1+2 (el lote
+    nunca se procesaba de verdad). No hay que agregar `unstable_
+    noStore()` a `getProductsWithStock`.
+
+- `22e0763 feat(catalog): agrupar 'Nuestras líneas' por categoría real, no por type_prefix`
+  - **Diagnóstico**: la landing agrupaba productos por `type_prefix`
+    (columna que la IA extrae: CA/PA/GO/…) y usaba un `LINE_NAMES`
+    hardcoded en TS para traducir prefix → nombre humano. Solo 11
+    entradas mapeadas (CA/PA/VE/SH/FA/JE/MO/TE/VB/BL/CH); el resto
+    (GO/AC/LO) caía al fallback y mostraba el code crudo.
+  - **Divergencia visible con la data real**: 5 productos con
+    `type_prefix='PA'` estaban categorizados como Accesorios en
+    `category_id` pero se mostraban bajo la línea "Pantalones" en la
+    landing por el mapeo hardcoded. Fuente única violada — la landing
+    usaba una taxonomía (type_prefix), el POS otra (category_id).
+  - **Data cleanup previo** (solo `nxszaxwsrtlofqimbfig`, no en
+    Taiwy Sport): las 5 pavas mal prefijadas actualizadas de
+    `type_prefix='PA'` a `type_prefix='AC'`. `category_id` intacto
+    (siguen en Accesorios). Codes inmutables (`PA-U-95-00` .. `04`)
+    preservados por regla del CLAUDE.md raíz.
+  - **Fix DB**: RPC `public_catalog_facets` reescrita para agrupar
+    por `category_id` con JOIN a `categories`. Devuelve
+    `{code: category_id::text, name: c.name, count: n}`. RPC
+    `public_catalog_list` — filtro `p_line` acepta **ambas**
+    taxonomías (`line = p_line OR category_id::text = p_line`) para
+    no romper links viejos con `?linea=CA`. Migración
+    `catalog_facets_by_category`, `CREATE OR REPLACE FUNCTION`
+    idempotente, aplicada por MCP en ambas instancias.
+  - **Fix TS**: `LINE_NAMES` + `lineLabel` borrados de
+    `app/catalog/page.tsx` **y** `components/catalog/catalog-grid.tsx`
+    (segundo consumidor encontrado durante la revisión). Reemplazado
+    por `l.name` directo del RPC. `CatalogFacets` shape gana `name`.
+  - **Verificación**: `public_catalog_facets()` en app-solcraft.com
+    devuelve `[{code: "55e31e9a-…", name: "Accesorios", count: 160}]`.
+    160 = 143 GO + 7 AC (5 pavas + 2 originales) + 6 LO + 4 productos
+    de "Accesorios" sin type_prefix. Los 4 pantalones legítimos
+    (`PA-32-120-00`, etc.) no aparecen en facets porque están
+    `is_active=false` (soft-deleted en sesiones previas). Comportamiento
+    correcto. Confirmación visual de Esteban: "se ve bien".
+
+**Config manual hecha por Esteban en esta sesión** (fuera del código,
+para runbook futuro):
+
+- **Supabase Storage `Upload file size limit` a 100 MB** en **ambos**
+  proyectos (`nxszaxwsrtlofqimbfig` y `aapchdjwpqhwsquffnxn`). Antes
+  estaba en 50 MB por default de plataforma → toda subida > 50 MB
+  devolvía `400 Payload too large` independiente del `file_size_limit`
+  del bucket. Diagnosticado en el debug del upload del `.glb` de
+  ~62 MB. Setting vive en Dashboard → Storage → Settings (no en
+  Postgres, no consultable via SQL/MCP). **Nuevos proyectos Supabase
+  que se creen para clientes futuros van a arrancar con 50 MB por
+  default — subir a 100 MB como parte del runbook de aprovisionamiento.**
+
+- **Modelo 3D del hero subido en `app-solcraft.com`** vía la UI
+  `/settings/receipt` (61.9 MB, mime persistido como
+  `application/octet-stream` — esperado y correcto, bucket lo tiene
+  en el allowlist junto con `model/gltf-binary`). `catalog_model_url`
+  ahora apunta a
+  `.../catalog-assets/models/1788020462082-e54zki.glb`.
+
+- **`PRODUCT_DELETE_OWNER_EMAIL=esteban@solcraftsas.com`** configurado
+  en Vercel Production de `app-solcraft.com` + redeploy. En Taiwy
+  Sport **NO** configurado (por diseño).
+
+- **Limpieza completa de datos de prueba en Taiwy Sport**
+  (`aapchdjwpqhwsquffnxn`): productos duplicados, traslado de prueba,
+  turno abierto bloqueante. Instancia lista para operación real del
+  cliente. Detalles operativos no requieren re-derivación — el estado
+  es simplemente "limpia y operable".
+
+**Diagnósticos importantes que quedan como conocimiento** (para no
+re-derivar en el futuro):
+
+1. **Cuando un upload a Supabase Storage devuelve 400** con el request
+   ya visible en Network tab: casi siempre es **`Global upload file
+   size limit`** del proyecto (default 50 MB en plataforma), NO el
+   `file_size_limit` del bucket ni RLS. Chequear primero el response
+   body en Network tab. Si dice "Payload too large" / `statusCode:
+   413`, es esto — subir el límite en el dashboard, no tocar código.
+
+2. **Cuando un handler de bulk devuelve "N fallado" pero DB confirma
+   que ni siquiera N se procesaron**: el loop se cortó por un throw
+   no capturado. Regla general para todo `for...of` que llame server
+   actions: envolver cada `await` en `try/catch` si el objetivo es
+   fault-tolerance por ítem. `Promise.all` NO resuelve esto — hace
+   fail-fast igual, y encima satura el connection pool.
+
+3. **Antes de hard-delete de cualquier tabla con FKs**: chequear
+   `pg_constraint.confdeltype` de las FKs entrantes. `r`/`a` bloquean
+   (RESTRICT / NO ACTION), `c` cascade limpia solo, `n` NULLifica.
+   El chequeo puede parecer "over-engineering" pero exactamente eso
+   es lo que faltaba en `deleteProductSafe` y produjo el bug crítico
+   de esta sesión.
+
+### Estado actual de cada instancia post-s25
+
+**Taiwy prod** (`nxszaxwsrtlofqimbfig` → `app-solcraft.com`):
+
+- Catálogo público en prod con modelo 3D real del hero + textos
+  configurados (via UI de `/settings/receipt`).
+- `PRODUCT_DELETE_OWNER_EMAIL` configurado → Esteban (única cuenta
+  admin) puede borrar productos individual y masivamente.
+- Bulk-delete verificado post-fix con `GO-U-120-00`.
+- 5 pavas con `type_prefix` corregido (`AC`).
+- Landing agrupa por categoría real: hoy solo "Accesorios (160)"
+  porque los pantalones legítimos están `is_active=false`.
+
+**Taiwy Sport** (`aapchdjwpqhwsquffnxn` → `taiwysport.app-solcraft.com`):
+
+- Instancia limpia y operable — datos de prueba eliminados.
+- `Upload file size limit` subido a 100 MB (listo para que el cliente
+  suba su propio `.glb`).
+- `PRODUCT_DELETE_OWNER_EMAIL` NO configurado → nadie puede borrar
+  productos (fail-closed intencional).
+- `whatsapp_number` cargado (`3104505577`), pero
+  `whatsapp_enabled = false` — **pendiente que el cliente lo active
+  desde su propio `/settings/receipt`**. Sin eso, checkout WhatsApp
+  bloqueado.
+- Textos catálogo configurados (`TAIWY SPORT` / "Tienda online" /
+  "La casa del deporte").
+- `catalog_model_url` sigue null → diamante procedural. Cliente puede
+  subir su modelo cuando quiera.
+- Landing agrupa por categoría real — muestra las categorías con
+  productos activos en su data.
+
+### Próximo hilo — GRANDE, sin empezar en código
+
+**Camino B — self-service tipo Alegra (multi-tenant)**. Esteban quiere
+avanzar hacia el modelo de largo plazo ya bosquejado en sesiones
+anteriores: usuarios crean su propia cuenta demo y prueban el sistema
+solos, sin aprovisionamiento manual.
+
+**Estado actual = Camino A**: instancia-por-cliente. Un repo, un push
+a `main` deploya en N proyectos Vercel independientes, cada uno con
+su propio Supabase. Funciona bien para los 2 negocios reales en
+producción (app-solcraft.com y taiwysport.app-solcraft.com).
+
+**Camino B es una decisión de arquitectura mayor** — no empezar a
+codear la próxima sesión. Fase de diseño primero. Preguntas abiertas
+que la próxima sesión debe abordar:
+
+- ¿**Multi-tenant real** (`tenant_id` en cada tabla + RLS por
+  tenant + un único Supabase para todos)? El modelo actual de
+  sedes/permisos fue diseñado para "un negocio con múltiples sedes",
+  no para "múltiples negocios distintos compartiendo la misma base"
+  — son paradigmas de aislamiento distintos, no es un rename.
+- **O automatizar el aprovisionamiento actual** (seguir con
+  instancia-por-cliente pero con un signup self-service que dispare
+  la creación automática de Supabase + Vercel por API)? Menos
+  disruptivo pero cuellos de botella distintos (API rate limits,
+  costo por proyecto Supabase, complejidad de despliegue).
+- **Cuentas demo**: expiración, datos de muestra sembrados, límites
+  (¿cuántas ventas/productos permitidos antes de pedir upgrade?).
+- **Facturación**: ¿Stripe / Wompi / Bold en esta fase o después?
+  ¿Modelo de precios (fijo, por usuario, por transacción, freemium)?
+- **Migración de los 2 negocios reales**: ¿app-solcraft.com y Taiwy
+  Sport quedan en Camino A "para siempre", o eventualmente migran?
+  Si migran, ¿ventana de mantenimiento, migración de datos, cambio
+  de URL?
+
+**Primera tarea de la próxima sesión**: sesión de
+diseño/arquitectura (SIN código) para responder esas preguntas,
+apoyándose en la visión de largo plazo ya documentada de sesiones
+anteriores sobre el modelo Alegra. **Explícitamente no arrancar a
+tocar código hasta que las decisiones arquitecturales estén cerradas
+por escrito.**
+
+---
+
+## HISTORIAL — sesión 2026-08-27 (s24 catálogo por-instancia en prod)
 
 **Estado de ramas**: `main` @ `cc8bcaa` (merge s24). Rama
 `s24-catalog-taiwysport` sigue en origin (sin decisión de borrado).
@@ -1775,6 +2049,56 @@ los ajustes siguen pendientes de apply.
 ---
 
 ## 5. Backlog vigente
+
+### Pendientes activos tras s25 (2026-08-31)
+
+- **🔴 ALTA — AI Gateway rate limits en `analyze-product`** (deuda
+  ya conocida, ahora con **19 ocurrencias acumuladas** afectando a los
+  2 negocios reales). Subir de "documentada" a prioridad alta. Fix
+  plausible: retry con backoff exponencial en el cliente + fallback a
+  formulario manual cuando el rate limit se sostiene. Alternativa:
+  proxy propio con quota por tenant.
+- **🟡 MEDIA — WhatsApp checkout bloqueado en Taiwy Sport** —
+  `whatsapp_enabled=false` en `business_settings` de
+  `aapchdjwpqhwsquffnxn`. Cliente debe activarlo desde su propio
+  `/settings/receipt` para no meter `updated_by` a nombre nuestro.
+  Recordatorio ya comunicado a Esteban → cliente.
+- **🟢 BAJA — Cliente Taiwy Sport puede subir su propio `.glb`** del
+  hero (upload limit ya está en 100 MB). Sin fricciones técnicas.
+- **🟢 BAJA — Bug latente sospechado** (no confirmado): patrón
+  `Button asChild + label + <input type="file" hidden>` en el uploader
+  de `/settings/receipt`. No causó el 400 del debug del `.glb` (eso
+  era límite de plataforma), pero podría reaparecer aislado. Fix
+  preventivo si aparece: reemplazar por patrón `useRef` +
+  `ref.current?.click()` usado en `ai-ingress-panel`.
+- **🟢 BAJA — RPC atómica `delete_products_bulk(uuid[])`** para
+  volúmenes altos (>100 items). Hoy el loop secuencial de
+  `deleteProductSafe` es aceptable (decenas ok). Migrar cuando aparezca
+  necesidad real. Misma línea que la deuda de `create_bulk_transfer_atomic`.
+- **🟢 BAJA — Pretty URLs `?linea=<slug>`** en catálogo público.
+  Actualmente `?linea=<category_id_uuid>` funciona pero es feo.
+  Requiere columna `slug` en `categories` + generación automática
+  al crear. Bookmarks viejos con `?linea=CA` siguen funcionando por
+  backward-compat del RPC.
+
+### Deuda heredada de sesiones anteriores (sin cambios en s25)
+
+- **Promociones en venta** (CRUD listo en `/inventory/promotions`,
+  no se aplican en el POS todavía).
+- **`SiteProvider` consolidado** — ver [app/inventory/CLAUDE.md]
+  y menciones en historial.
+- **Gate contador — sobrante sin factura** (motivo `hallazgo`/
+  `donacion` fuera de scope actual, ver §4).
+
+### Próximo hilo — Camino B (self-service tipo Alegra)
+
+Pivote arquitectural mayor. **NO codear en la próxima sesión** —
+sesión de diseño primero. Preguntas y contexto completos en §0 arriba.
+Primera tarea: decidir multi-tenant real vs auto-aprovisionamiento
+Camino A, apoyándose en la visión Alegra ya documentada en sesiones
+previas.
+
+### Backlog anterior (pre-s25) — mantiene vigencia salvo tachados
 
 - **✅ CERRADO** Task #14 (captura del drift canónico) — hecho vía introspección
   MCP en esta sesión. Baseline: `supabase/migrations/20260812000000_baseline_canonical_from_prod.sql`.

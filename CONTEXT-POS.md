@@ -2500,4 +2500,138 @@ futuras a menos que el usuario las abra):
   documentado en s18 y confirmado esta sesión. Mismo cuidado a
   aplicar en cualquier fix futuro.
 
+## §7.20 — Sesión 2026-08-31 (s25 pulido + guards + fix crítico + catálogo por categoría, `main` @ `22e0763`)
+
+**Alcance**: sesión de pulido operativo sobre los dos negocios en prod
+(`app-solcraft.com` y `taiwysport.app-solcraft.com`). 7 commits
+directos a `main` sin rama de feature — cambios pequeños e
+independientes revisados uno a uno.
+
+**Detalle por commit + estado por instancia + config manual** viven
+en `docs/ESTADO-PENDIENTES.md §0` (actualizado 2026-08-31) — fuente
+única de verdad. Este bloque documenta solo los invariantes y decisiones
+estructurales que un futuro Claude debe recordar para no re-derivar.
+
+### Invariantes agregados esta sesión
+
+- **`stock_movements` y `product_stock` NO son las únicas FKs a
+  `products` que bloquean el hard-delete**. La lista completa de FKs
+  con `ON DELETE RESTRICT` o `NO ACTION` (verificada con
+  `pg_constraint.confdeltype`) es: `sale_items`, `stock_movements`,
+  `adjustment_items`, `transfer_items`, `online_order_items`,
+  `web_order_items`. Cualquier función que borre productos DEBE
+  chequear las 6 antes de intentar el delete o hacer soft-delete
+  incondicional. La constante `PRODUCT_BLOCKING_TABLES` en
+  `lib/inventory-actions.ts` documenta el mapping. Si alguien agrega
+  una FK nueva, hay que sumarla también ahí.
+
+- **Bulk operations sobre server actions deben tener try/catch por
+  ítem** en el `for...of` que las invoca. `Promise.all` NO resuelve
+  fault-tolerance por ítem (hace fail-fast) y además satura el
+  connection pool de Supabase. Patrón canónico ahora vive en
+  `app/inventory/products/page.tsx` (acción `delete` de `bulkActions`).
+  `components/inventory/bulk-actions.tsx` es genérico y NO impone la
+  política — cada acción decide su fault-tolerance.
+
+- **Fuente única de taxonomía de productos = `categories.category_id`**,
+  NO `products.type_prefix`. `type_prefix` es un rótulo interno usado
+  por la IA para generar el `code` (`PREFIJO-TALLA-PRECIO-NN`); no
+  debe usarse para agrupar/filtrar en UIs orientadas al usuario final.
+  El catálogo público lo demostró: la doble taxonomía derivó en 5
+  pavas con `type_prefix='PA'` (Pantalones para la landing) pero
+  `category='Accesorios'` (en el POS). Fix: RPC `public_catalog_facets`
+  agrupa por `category_id` con JOIN a `categories`; RPC
+  `public_catalog_list` acepta ambas taxonomías en `p_line` durante
+  la transición para no romper links viejos.
+
+### Nuevas piezas de arquitectura
+
+- **`components/inventory/bulk-actions.tsx`** — pieza genérica reusable.
+  Tipo `BulkAction<T>` (id / label / icon / variant / available? /
+  confirm? / run) + componente `BulkActionsBar<T>` sticky-top que
+  aparece solo con selección ≥ 1. Cada página construye su propio
+  array de acciones y lo pasa como prop. Agregar acción futura
+  (cambiar categoría, ajustar precio, etc.) = 1 entrada al array,
+  cero cambios en tabla ni barra. Ejemplo de uso vivo:
+  `app/inventory/products/page.tsx` con la acción "delete" como única
+  acción registrada por ahora.
+
+- **`PRODUCT_DELETE_OWNER_EMAIL`** — env var server-only (sin
+  `NEXT_PUBLIC_` para no filtrar el email al cliente) que gate
+  hard-delete de productos por identidad exacta, no por rol. Sin
+  configurar → nadie puede borrar (fail-closed). `isProductDeleteOwner()`
+  en `lib/auth-helpers.ts` es el helper canónico. Server action
+  `canDeleteProducts(): Promise<boolean>` expone al cliente solo el
+  bool sin nunca filtrar el email. UI oculta el botón (no lo
+  deshabilita) para no-owners: es restricción de plataforma, no de
+  rol; un botón deshabilitado invita preguntas de soporte. Configurada
+  en `app-solcraft.com`; NO configurada en Taiwy Sport por diseño.
+
+- **Prompt de `analyze-product` con regla "no inventes"** — prohibido
+  inferir material/composición/marca/país cuando no son verificables
+  visualmente. Descripciones cortas formato `[tipo] [línea/estilo]
+  [color] [detalles visibles breves]`, max ~12 palabras. Fallback
+  talla `M` **preservado** — no es adivinar, es requisito estructural
+  del código auto-generado (el prefijo + talla + precio arman
+  `PREFIJO-TALLA-PRECIO-NN`).
+
+### Runbook diagnóstico ganado
+
+- **400 en upload a Supabase Storage con la request visible en
+  Network tab** → casi siempre es el **`Global upload file size limit`**
+  a nivel de proyecto (default plataforma 50 MB), NO el
+  `file_size_limit` del bucket. Chequear response body en Network:
+  si dice `"Payload too large"` / `statusCode: 413`, subir el límite
+  en Dashboard → Storage → Settings. Setting no consultable via
+  SQL/MCP. **Todo proyecto Supabase nuevo va a arrancar con 50 MB
+  por default — subir a 100 MB como parte del runbook de
+  aprovisionamiento futuro.**
+
+- **Toast de bulk dice "N fallado" pero DB confirma que ni siquiera N
+  se procesaron** → loop cortado por throw no capturado. Ver
+  invariante "try/catch por ítem" arriba.
+
+- **Antes de hard-delete de cualquier tabla con FKs** → chequear
+  `pg_constraint.confdeltype` de las FKs entrantes. `r` (RESTRICT) y
+  `a` (NO ACTION) bloquean; `c` (CASCADE) limpia solo; `n` (SET NULL)
+  NULLifica. El chequeo puede parecer over-engineering pero exactamente
+  eso fue lo que faltaba en `deleteProductSafe` y produjo el bug
+  crítico de esta sesión (9 productos que nunca cambiaron pese al
+  "toast dijo procesado").
+
+### Config de plataforma (fuera del repo, para runbook futuro)
+
+Ambos proyectos Supabase (`nxszaxwsrtlofqimbfig` y
+`aapchdjwpqhwsquffnxn`) ahora con:
+- `Upload file size limit = 100 MB` (default era 50 MB).
+- Bucket `catalog-assets` con `file_size_limit = 100 MB` (aplicado en
+  migración `20260826000001` en s24).
+
+Vercel Production de `app-solcraft.com` ahora con:
+- `PRODUCT_DELETE_OWNER_EMAIL = esteban@solcraftsas.com`.
+
+Vercel Production de `taiwysport.app-solcraft.com`:
+- SIN `PRODUCT_DELETE_OWNER_EMAIL` (por diseño — cliente no borra).
+
+### Data cleanup específico (no re-hacer, no replicar)
+
+- `nxszaxwsrtlofqimbfig`: 5 productos con `type_prefix='PA'`
+  actualizados a `'AC'` (`PA-U-95-00` .. `PA-U-95-04` — pavas mal
+  prefijadas por la IA). `code` inmutable preservado; `category_id`
+  ya estaba correcto (Accesorios); solo se limpió `type_prefix`.
+- `aapchdjwpqhwsquffnxn`: limpieza completa de datos de prueba
+  (productos duplicados, traslado de prueba, turno abierto). Instancia
+  lista para operación real del cliente.
+
+### Próximo hilo (contexto para no re-derivar)
+
+**Camino B — self-service tipo Alegra**. Pivote arquitectural mayor.
+No empezar a codear la próxima sesión. Fase de diseño primero para
+resolver: (a) multi-tenant real con `tenant_id`+RLS por tenant vs
+auto-aprovisionamiento del Camino A actual (instancia-por-cliente);
+(b) modelo de cuentas demo (expiración, datos de muestra, límites);
+(c) facturación integrada (Stripe/Wompi/Bold); (d) destino de los 2
+negocios ya en prod bajo Camino A. Contexto completo en
+`docs/ESTADO-PENDIENTES.md §0`.
+
 Fin del contexto.
