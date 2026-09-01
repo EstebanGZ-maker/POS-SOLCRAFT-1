@@ -104,12 +104,15 @@ válida. Si el cliente requiere CORS restringido, en `Project Settings → API
 El schema del sistema vive en dos lugares que se aplican en orden:
 
 1. **`supabase/migrations/`** — migraciones versionadas (baseline + deltas
-   posteriores). Estado actual (2026-08-25):
+   posteriores). Estado actual (2026-09-01):
    - `20260812000000_baseline_canonical_from_prod.sql` — schema completo.
    - `20260822000000_add_dispatch_transfer_atomic.sql` — s21.
    - `20260824000000_add_unique_barcode.sql` — s22.
    - `20260824000001_add_import_products_bulk_rpc.sql` — s22.
    - `20260824000002_update_import_products_bulk_rpc_inactive_message.sql` — s22.
+   - `20260826000000_add_catalog_texts_and_config_rpc.sql` — s24.
+   - `20260826000001_add_catalog_model_url_and_bucket.sql` — s24 (bucket `catalog-assets`).
+   - `20260901000000_add_product_media_bucket.sql` — s26 (bucket `product-media`).
 
 2. **`scripts/`** — scripts sueltos aplicados históricamente. **Verificar
    con `@SUPABASE.md` cuáles ya están incluidos en la baseline y cuáles
@@ -231,6 +234,56 @@ Firma esperada de las 3 críticas del release 2C+D:
 Si alguna falta o tiene firma distinta: alguno de los scripts 15-18 no se
 aplicó o se aplicó en orden incorrecto (típicamente 17c v1 en vez de v2, o
 18 completo pisando el COGS de 17e). Corregir antes de continuar.
+
+### 2.5 Buckets de Storage — verificación OBLIGATORIA post-schema
+
+**No es opcional.** El aprovisionamiento inicial de Taiwy Sport (2026-08-25)
+saltó la creación del bucket `product-media` porque las migraciones de
+catálogo (`catalog-assets`) llegaron después y nadie chequeó que estuvieran
+ambos. Resultado: durante ~1 semana el panel de Ingreso IA creó productos
+sin foto (el upload al bucket inexistente fallaba silencioso, el producto
+quedaba con `image_url=null`, ningún error visible al cliente). Fix
+aplicado en s26 (`20260901000000`), pero para el próximo cliente hay que
+verificar activamente.
+
+Si se aplicaron TODAS las migraciones de `supabase/migrations/` en §2.2
+(incluidas las de agosto/septiembre 2026), los 2 buckets se crean solos.
+Igual verificar explícitamente:
+
+```sql
+SELECT id, public, file_size_limit, allowed_mime_types
+FROM storage.buckets
+ORDER BY id;
+```
+
+Debe devolver **exactamente 2 filas**:
+
+| id | public | file_size_limit | allowed_mime_types |
+|---|---|---|---|
+| `catalog-assets` | true | 104857600 (100 MB) | `model/gltf-binary`, `application/octet-stream`, `image/jpeg`, `image/png`, `image/webp`, `image/avif` |
+| `product-media` | true | 5242880 (5 MB) | `image/jpeg`, `image/png`, `image/webp`, `image/avif` |
+
+Y las policies correspondientes (12 en total — 4 por bucket + las que
+ya vienen del baseline):
+
+```sql
+SELECT policyname, cmd
+FROM pg_policies
+WHERE schemaname='storage' AND tablename='objects'
+  AND policyname LIKE 'product_media%' OR policyname='public_read_product_media'
+   OR policyname LIKE '%catalog%'
+ORDER BY policyname;
+```
+
+Deben aparecer `public_read_product_media` + `product_media_write_staff`
++ `product_media_update_staff` + `product_media_delete_staff` (bucket
+product-media) y las 4 equivalentes de catalog-assets.
+
+**Global upload file size limit** de Supabase (config de plataforma, no
+consultable por SQL): default **50 MB**. Subir a **100 MB** en Dashboard
+→ Storage → Settings antes de que el cliente intente subir su `.glb`
+del hero — sin esto cualquier upload > 50 MB devuelve `400 Payload too
+large` independiente del `file_size_limit` del bucket.
 
 ---
 
@@ -659,3 +712,16 @@ call** (Fase 2). La baseline entera (3299 líneas) no cabe en un solo
 call. La partí en 5 chunks lógicos siguiendo los section markers del
 archivo (`-- ---- Extensions`, `-- ---- Tables`, etc.). Para clientes
 futuros, el mismo split funciona sin cambios.
+
+**7. Bucket `product-media` NUNCA se creó en Taiwy Sport** (Fase 2,
+detectado 2026-09-01). El aprovisionamiento del 25-08 solo aplicó las
+migraciones que existían en ese momento; el bucket `product-media` vive
+en el baseline dump como parte del schema `public` pero los buckets de
+`storage.buckets` NO se dumpean con el schema — hay que crearlos por
+migración explícita (o por dashboard). El baseline no tenía ninguna
+migración de bucket. `catalog-assets` se creó después vía la migración
+`20260826000001`, pero `product-media` quedó huérfano hasta que un
+cliente intentó subir fotos y "nada pasaba". Fix aplicado en s26
+(`20260901000000`, esta migración). §2.5 del runbook ahora exige
+verificación explícita de los 2 buckets después del schema, para que
+esto no vuelva a pasar con el próximo cliente.
