@@ -86,8 +86,12 @@ export async function saveProduct(input: {
     is_favorite: input.is_favorite ?? false,
     barcode: clean(input.barcode),
     size: clean(input.size),
-    image_url: clean(input.image_url),
     type_prefix: input.type_prefix ? input.type_prefix.trim().toUpperCase() : null,
+    // image_url: fuente única de verdad = trigger sync_product_primary_image
+    // sobre product_images. Solo se setea al CREAR (uploader simple del modal
+    // de nuevo producto es el único canal antes de que exista galería); en
+    // UPDATE nunca se incluye para no pisar lo que el trigger acaba de dejar
+    // tras subir foto por el ProductGalleryManager.
   }
 
   let product_id = input.product_id || null
@@ -99,6 +103,7 @@ export async function saveProduct(input: {
       return { success: false, message: error.message }
     }
   } else {
+    payload.image_url = clean(input.image_url)
     payload.stock_quantity = input.initial_stock ?? 0
     const { data, error } = await supabase.from("products").insert(payload).select("product_id").single()
     if (error) {
