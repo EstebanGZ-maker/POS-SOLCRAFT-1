@@ -13,9 +13,15 @@ import { useToast } from "@/hooks/use-toast"
 import { formatCurrency } from "@/lib/utils"
 import { ingressNewProduct } from "@/lib/inventory-actions"
 import { uploadProductImageClient } from "@/lib/storage-client"
-import { Sparkles, Camera, Loader2, Trash2, Check, ImageIcon, RefreshCw } from "lucide-react"
+import { Sparkles, Camera, Loader2, Trash2, Check, ImageIcon, RefreshCw, Clock } from "lucide-react"
 
-type ItemStatus = "analyzing" | "ready" | "saving" | "done" | "error"
+// Espaciado obligatorio entre requests a /api/analyze-product. Responde al
+// límite del free tier de Google Gemini 2.5 Flash: ~10 RPM (una cada 6s).
+// Usamos 6500 ms para dejar 500 ms de colchón por drift de reloj/latencia y
+// no rozar el techo. Ajustar SOLO si Google publica una cuota distinta.
+const AI_MIN_INTERVAL_MS = 6500
+
+type ItemStatus = "queued" | "analyzing" | "ready" | "saving" | "done" | "error"
 
 type IngressItem = {
   id: string
@@ -70,8 +76,27 @@ export function AiIngressPanel({
   const [savingAll, setSavingAll] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
+  // Cola secuencial para respetar el rate-limit de Google Gemini. Chain de
+  // promesas — cada nuevo request se encola detrás del anterior. `lastStartRef`
+  // guarda cuándo arrancó el request previo para calcular el sleep necesario.
+  // Concurrency = 1 por diseño: paralelizar simplifica la UI pero prácticamente
+  // garantiza pegarle al techo de RPM con lotes de 5+ fotos.
+  const queueRef = useRef<Promise<void>>(Promise.resolve())
+  const lastStartRef = useRef<number>(0)
+
   const update = (id: string, patch: Partial<IngressItem>) =>
     setItems((prev) => prev.map((it) => (it.id === id ? { ...it, ...patch } : it)))
+
+  function queueAnalyze(id: string, dataUrl: string, mediaType: string) {
+    queueRef.current = queueRef.current.then(async () => {
+      const now = Date.now()
+      const wait = Math.max(0, AI_MIN_INTERVAL_MS - (now - lastStartRef.current))
+      if (wait > 0) await new Promise((r) => setTimeout(r, wait))
+      lastStartRef.current = Date.now()
+      update(id, { status: "analyzing" })
+      await analyze(id, dataUrl, mediaType)
+    })
+  }
 
   async function analyze(id: string, dataUrl: string, mediaType: string) {
     try {
@@ -125,7 +150,7 @@ export function AiIngressPanel({
         id,
         file,
         dataUrl,
-        status: "analyzing",
+        status: "queued",
         name: "",
         type_prefix: "XX",
         category: "",
@@ -138,7 +163,7 @@ export function AiIngressPanel({
         code: "",
       }
       setItems((prev) => [...prev, newItem])
-      analyze(id, dataUrl, file.type)
+      queueAnalyze(id, dataUrl, file.type)
     }
 
     if (fileInputRef.current) fileInputRef.current.value = ""
@@ -314,7 +339,12 @@ export function AiIngressPanel({
 
                   {/* Fields */}
                   <div className="min-w-0 flex-1">
-                    {item.status === "analyzing" ? (
+                    {item.status === "queued" ? (
+                      <div className="flex h-full items-center gap-2 text-sm text-muted-foreground">
+                        <Clock className="h-4 w-4" />
+                        En cola…
+                      </div>
+                    ) : item.status === "analyzing" ? (
                       <div className="flex h-full items-center gap-2 text-sm text-muted-foreground">
                         <Loader2 className="h-4 w-4 animate-spin" />
                         Analizando con IA…
@@ -439,8 +469,8 @@ export function AiIngressPanel({
                               variant="ghost"
                               size="sm"
                               onClick={() => {
-                                update(item.id, { status: "analyzing", errorMsg: undefined })
-                                analyze(item.id, item.dataUrl, item.file.type)
+                                update(item.id, { status: "queued", errorMsg: undefined })
+                                queueAnalyze(item.id, item.dataUrl, item.file.type)
                               }}
                             >
                               <RefreshCw className="mr-1.5 h-3.5 w-3.5" />

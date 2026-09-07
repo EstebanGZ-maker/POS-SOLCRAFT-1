@@ -1,4 +1,5 @@
 import { generateObject } from "ai"
+import { google } from "@ai-sdk/google"
 import { z } from "zod"
 import { NextResponse } from "next/server"
 
@@ -50,8 +51,17 @@ export async function POST(req: Request) {
     const rawType = (mediaType || "").toLowerCase()
     const normalizedMediaType = isVideo || GEMINI_IMAGE_TYPES.has(rawType) ? mediaType || "image/jpeg" : "image/jpeg"
 
+    // 2026-09-07: migrado del AI Gateway de Vercel a la API nativa de Google
+    // (@ai-sdk/google provider). El provider lee GOOGLE_GENERATIVE_AI_API_KEY
+    // del entorno automáticamente — cada instancia tiene su propia key en
+    // Vercel para aislar el secret entre negocios. La cuota gratuita real
+    // (500 RPD / ~10 RPM en Gemini 2.5 Flash) alcanza para el volumen actual
+    // pero exige espaciado de requests en el cliente — ver ai-ingress-panel.
+    // maxRetries: 2 con backoff exponencial cubre ráfagas puntuales que se
+    // cuelen a pesar del espaciado (dos pestañas, re-analizar manual, etc.).
     const { object } = await generateObject({
-      model: "google/gemini-2.5-flash",
+      model: google("gemini-2.5-flash"),
+      maxRetries: 2,
       schema: productSchema,
       instructions:
         "Eres un catalogador de inventario para un almacén de ropa en Colombia. " +

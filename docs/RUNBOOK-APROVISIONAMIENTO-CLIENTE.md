@@ -318,6 +318,7 @@ En `Project Settings → Environment Variables`, agregar (todas para
 | `WOMPI_INTEGRITY_SECRET` | del cliente | |
 | `WOMPI_EVENTS_SECRET` | del cliente | |
 | `NEXT_PUBLIC_WOMPI_PUBLIC_KEY` | del cliente (opcional, también se puede meter en business_settings vía UI) | |
+| `GOOGLE_GENERATIVE_AI_API_KEY` | key generada en aistudio.google.com | ⚠️ **Obligatoria** — sin esto `/api/analyze-product` (panel IA de `/central`) devuelve 500. Ver §3.2.1 |
 
 **Env vars opcionales** (defaults sirven, incluir solo si hay razón):
 - `NEXT_PUBLIC_SITE_URL` — fallback secundario de `NEXT_PUBLIC_APP_URL`
@@ -331,18 +332,47 @@ En `Project Settings → Environment Variables`, agregar (todas para
   usados por `e2e/*.spec.ts`, `scripts/measure-perf.mjs`, `scripts/smoke-core.mjs`.
   El cliente no corre estos, se saltean.
 
-**Consideración especial — AI Gateway (Vercel) para `/api/analyze-product`**:
+### 3.2.1 Crear API key de Google AI Studio (Gemini)
 
-El panel IA de ingreso usa `generateObject` del SDK `ai` v7 con modelo
-`google/gemini-2.5-flash`. Cuando la app corre en Vercel, la
-autenticación del AI Gateway es automática vía OIDC del proyecto — no
-requiere env var explícita, **PERO el consumo se factura al team
-propietario del proyecto Vercel**. Si el proyecto Vercel del cliente
-está bajo la misma cuenta de Esteban (recomendado para modelo
-administrado), los créditos AI Gateway salen del billing de Esteban. Si
-en algún cliente futuro se decide separar cuentas, hay que crear una API
-key de AI Gateway en el team del cliente y setearla como
-`AI_GATEWAY_API_KEY`.
+**Contexto**: desde 2026-09-07 el endpoint `/api/analyze-product` habla
+directo con la API nativa de Google Gemini (vía el provider `@ai-sdk/google`),
+no más con el AI Gateway de Vercel. Motivo: capa gratuita permanente de
+Google (500 RPD, ~10 RPM en Gemini 2.5 Flash) vs. cuota agresiva del free
+tier del Gateway que producía 429 recurrentes.
+
+**Convención actual** (decidida 2026-09-07): **una sola cuenta de Google
+AI Studio para todas las instancias**, con **una API key distinta por
+proyecto Vercel**. Aísla el secret (leak de una key no compromete al otro
+cliente) pero la cuota se comparte entre instancias — riesgo aceptado
+por simplicidad operativa, revisitar si aparece un tercer cliente y la
+cuota diaria empieza a rozarse.
+
+Pasos:
+
+1. Entrar a `https://aistudio.google.com` con la cuenta Google de la
+   plataforma (Esteban).
+2. `Get API Key` → `Create API Key` → seleccionar/crear un proyecto
+   Google Cloud (los proyectos son gratis y sirven de contenedor).
+3. Copiar la key. Guardar en el gestor de passwords bajo la entrada del
+   cliente con nombre descriptivo (ej: `gemini-key-pos-<slug>`).
+4. En Vercel `Project Settings → Environment Variables`, agregar
+   `GOOGLE_GENERATIVE_AI_API_KEY` para Production (y Preview si se
+   quiere probar el panel IA en preview deploys). ⚠️ Marcar **Sensitive**.
+5. Redeploy manual del último commit de main para que la nueva env var
+   aplique.
+
+**Espaciado de requests**: `components/central/ai-ingress-panel.tsx` tiene
+una cola secuencial con espaciado de 6500 ms entre requests
+(`AI_MIN_INTERVAL_MS`) — es el que protege del 10 RPM de Google. Cuando
+un usuario sube varias fotos, se van analizando de a una con delay entre
+cada una. Los items en espera se muestran con estado "En cola…" hasta
+que arranca su análisis. El route.ts además reintenta con backoff hasta
+2 veces (`maxRetries: 2`) para cubrir ráfagas puntuales (dos pestañas,
+re-analizar manual, etc.).
+
+**Si Google publica nueva cuota** (más generosa o más restrictiva),
+ajustar `AI_MIN_INTERVAL_MS` en el panel. No requiere cambio de runbook,
+solo un commit al código base.
 
 ### 3.3 Primer deploy
 
