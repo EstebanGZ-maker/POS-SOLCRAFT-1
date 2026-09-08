@@ -60,7 +60,7 @@ export async function POST(req: Request) {
     // maxRetries: 2 con backoff exponencial cubre ráfagas puntuales que se
     // cuelen a pesar del espaciado (dos pestañas, re-analizar manual, etc.).
     const { object } = await generateObject({
-      model: google("gemini-2.5-flash"),
+      model: google("gemini-3.6-flash"),
       maxRetries: 2,
       schema: productSchema,
       instructions:
