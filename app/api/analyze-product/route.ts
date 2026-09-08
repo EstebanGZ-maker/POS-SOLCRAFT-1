@@ -1,5 +1,5 @@
 import { generateObject } from "ai"
-import { google } from "@ai-sdk/google"
+// import { google } from "@ai-sdk/google"  // ver bloque comentado abajo — vía inactiva
 import { z } from "zod"
 import { NextResponse } from "next/server"
 
@@ -51,17 +51,31 @@ export async function POST(req: Request) {
     const rawType = (mediaType || "").toLowerCase()
     const normalizedMediaType = isVideo || GEMINI_IMAGE_TYPES.has(rawType) ? mediaType || "image/jpeg" : "image/jpeg"
 
-    // 2026-09-07: migrado del AI Gateway de Vercel a la API nativa de Google
-    // (@ai-sdk/google provider). El provider lee GOOGLE_GENERATIVE_AI_API_KEY
-    // del entorno automáticamente — cada instancia tiene su propia key en
-    // Vercel para aislar el secret entre negocios. La cuota gratuita real
-    // (500 RPD / ~10 RPM en Gemini 2.5 Flash) alcanza para el volumen actual
-    // pero exige espaciado de requests en el cliente — ver ai-ingress-panel.
-    // maxRetries: 2 con backoff exponencial cubre ráfagas puntuales que se
-    // cuelen a pesar del espaciado (dos pestañas, re-analizar manual, etc.).
+    // 2026-09-08: **camino activo = AI Gateway de Vercel con créditos pagos**.
+    // Se intentó migrar a la API nativa de Google (@ai-sdk/google) para usar
+    // la capa gratuita permanente, pero el free tier real medido en AI Studio
+    // para proyectos nuevos resultó ser 5 RPM / 20 RPD por proyecto Cloud —
+    // insuficiente para uso real de negocio. Volvemos al Gateway; la ruta
+    // directa a Google queda como fallback comentado abajo por si en el
+    // futuro Google flexibiliza el free tier o queremos evaluarla otra vez.
+    //
+    // maxRetries: 0 — la Vercel AI SDK NO respeta el retry-after de los
+    // providers (issue vercel/ai#7247): al chocar contra rate-limit dispara
+    // reintentos con su propio backoff corto (~2s, 4s) ignorando la sugerencia
+    // del servidor. Con maxRetries:2 cada request user-visible se convertía
+    // en hasta 3 llamadas reales — amplificación silenciosa que agotaba la
+    // cuota más rápido. Con 0 reintentos, un 429 aparece como error en la
+    // card y el usuario aprieta "Re-analizar" (que pasa por la cola con
+    // AI_MIN_INTERVAL_MS del panel). Sin retries agresivos automáticos.
+    //
+    // --- Ruta inactiva: Google directo (dejar comentada, es trabajo real) ---
+    // import { google } from "@ai-sdk/google"  (línea al tope del archivo)
+    // + env var GOOGLE_GENERATIVE_AI_API_KEY por instancia en Vercel
+    // + reemplazar la línea `model:` de abajo por: model: google("gemini-3.6-flash"),
+    // Para volver: descomentar el import + swap del modelo. El resto queda igual.
     const { object } = await generateObject({
-      model: google("gemini-3.6-flash"),
-      maxRetries: 2,
+      model: "google/gemini-2.5-flash",
+      maxRetries: 0,
       schema: productSchema,
       instructions:
         "Eres un catalogador de inventario para un almacén de ropa en Colombia. " +
