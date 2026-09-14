@@ -114,21 +114,47 @@ export async function setCurrentSite(site_id: string) {
 }
 
 // --- Site CRUD ---
-export async function saveSite(input: { site_id?: string | null; name: string; code: string; address?: string | null }) {
+export async function saveSite(input: {
+  site_id?: string | null
+  name: string
+  code: string
+  address?: string | null
+  is_central?: boolean
+}) {
   await requireRole("admin")
   const supabase = await createServerSupabaseClient()
   const payload = {
     name: input.name.trim(),
     code: input.code.trim().toUpperCase(),
     address: input.address?.trim() || null,
+    is_central: input.is_central ?? false,
   }
+
+  // Validación explícita al CREAR con is_central=true. El unique-partial-index
+  // `one_central_site` de la DB también nos protege, pero mostramos un mensaje
+  // humano en vez del error crudo de constraint. Al editar no validamos —
+  // caso poco frecuente y el UPDATE respeta el índice igual.
+  if (!input.site_id && payload.is_central) {
+    const { data: existing } = await supabase
+      .from("sites")
+      .select("name")
+      .eq("is_central", true)
+      .maybeSingle()
+    if (existing) {
+      return {
+        success: false,
+        message: `Ya existe una sede central: "${existing.name}". Desmárcala antes de crear otra.`,
+      }
+    }
+  }
+
   if (input.site_id) {
     const { error } = await supabase.from("sites").update(payload).eq("site_id", input.site_id)
     if (error) return { success: false, message: error.message }
   } else {
     const { data, error } = await supabase.from("sites").insert(payload).select("site_id").single()
     if (error) return { success: false, message: error.message }
-    // create a primary warehouse for the new site
+    // create a primary warehouse for the new site (defaults: is_system=false, is_public=false)
     await supabase.from("warehouses").insert({ site_id: data.site_id, name: "Principal", is_primary: true })
     // create a sale counter for the new site
     await supabase.from("site_counters").insert({ site_id: data.site_id, last_numero: 0 })
