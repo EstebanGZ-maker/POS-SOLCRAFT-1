@@ -13,7 +13,7 @@ import { useToast } from "@/hooks/use-toast"
 import { formatCurrency } from "@/lib/utils"
 import { ingressNewProduct } from "@/lib/inventory-actions"
 import { uploadProductImageClient } from "@/lib/storage-client"
-import { Sparkles, Camera, Loader2, Trash2, Check, ImageIcon, RefreshCw, Clock } from "lucide-react"
+import { Sparkles, Camera, Loader2, Trash2, Check, ImageIcon, RefreshCw, Clock, Copy } from "lucide-react"
 
 // Espaciado obligatorio entre requests a /api/analyze-product. Responde al
 // límite del free tier de Google Gemini 2.5 Flash: ~10 RPM (una cada 6s).
@@ -95,6 +95,31 @@ export function AiIngressPanel({
       lastStartRef.current = Date.now()
       update(id, { status: "analyzing" })
       await analyze(id, dataUrl, mediaType)
+    })
+  }
+
+  // Duplicar tarjeta ya analizada — evita re-llamar a Gemini para variantes
+  // de la misma prenda (misma foto, típicamente cambia solo la talla). Nace
+  // en estado "ready" directo, con code vacío para que el server autogenere
+  // sufijo NN distinto al original vía next_product_code. La imagen se
+  // hereda como referencia (mismo File y dataUrl); al guardar cada producto
+  // sube su propia copia al bucket product-media — semántica "cada producto
+  // tiene su galería propia" queda intacta.
+  function duplicateItem(id: string) {
+    setItems((prev) => {
+      const idx = prev.findIndex((it) => it.id === id)
+      if (idx === -1) return prev
+      const original = prev[idx]
+      const newItem: IngressItem = {
+        ...original,
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        status: "ready",
+        savedCode: undefined,
+        errorMsg: undefined,
+        quantity: 1,
+        code: "",
+      }
+      return [...prev.slice(0, idx + 1), newItem, ...prev.slice(idx + 1)]
     })
   }
 
@@ -475,6 +500,14 @@ export function AiIngressPanel({
                             >
                               <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
                               Re-analizar
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => duplicateItem(item.id)}
+                            >
+                              <Copy className="mr-1.5 h-3.5 w-3.5" />
+                              Duplicar
                             </Button>
                             <Button
                               variant="ghost"
