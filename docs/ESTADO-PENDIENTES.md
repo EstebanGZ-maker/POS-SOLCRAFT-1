@@ -1,11 +1,52 @@
 # ESTADO-PENDIENTES.md
 
 > **Propósito**: dump de estado para que una instancia nueva de Claude sin
-> memoria pueda retomar sin perder nada. Última actualización: **2026-08-31**
-> (s25: pulido de UX en /central y /transfers/receive, guard de eliminación
-> por email, selección masiva genérica, fix crítico de bulk-delete con FK
-> RESTRICT, y catálogo público agrupando por categoría real). `main` en
-> `22e0763`. Rama `s24-catalog-taiwysport` en origin sin borrar aún.
+> memoria pueda retomar sin perder nada. Última actualización: **2026-09-18**
+> (s27: agrupación de catálogo público por variantes de talla — una card por
+> familia con selector, en vez de una card por talla). `main` avanzó desde
+> `22e0763` con múltiples commits — ver `git log` para el detalle.
+
+---
+
+## Deuda técnica nueva confirmada 2026-09-18 (s27) — duplicados espurios en productos
+
+Durante el diseño del feature de agrupación del catálogo se auditó `products`
+en Taiwy Sport (`aapchdjwpqhwsquffnxn`) y aparecieron múltiples grupos con
+`(name, price, category_id, size)` **repetido varias veces** — no son
+variantes de talla legítimas, son productos duplicados que alguien creó
+mientras aprendía el panel IA / botón Duplicar. Casos concretos verificados:
+
+- **"Uniforme Futbol Arsenal" $85.000**: 8 productos activos, TODOS talla XL.
+- **"Uniforme Futbol Real Madrid" $85.000**: 5 productos activos, TODOS XL.
+- **"Camisilla esqueleto Adidas" $55.000**: repeticiones (2×2XL, 2×3XL, 2×L,
+  1×M, 2×XL).
+- **"Camiseta deportiva Adidas" $68.000**: repeticiones (3×M, 2×2XL, 2×XL,
+  1×L, 1×3XL).
+- **"Conjunto deportivo Adidas negro" $195.000**: (3×6XL, 3×8XL, 1×2XL).
+
+El feature de agrupación esconde el síntoma visual (dedupe cliente-side en
+`groupCatalog` de `catalog-grid.tsx`: cada talla aparece una sola vez en el
+selector, product_id resuelto al primero con stock o al de menor code), pero
+**los duplicados siguen existiendo en la DB y en el POS interno** — desperdician
+inventario ("hay 8 filas Arsenal XL, ¿cuál vendí?"), inflan reportes, y
+si el cliente los edita en la app interna solo cambia una fila.
+
+**Acción pendiente**: limpieza manual coordinada con Esteban — decidir por
+grupo si consolidar filas (mover stock a la fila representante + eliminar
+las otras) o dejarlas como "productos independientes con mismo nombre" (raro
+pero legítimo si son entradas contables separadas). Query de auditoría base:
+
+```sql
+SELECT name, price, category_id, size, COUNT(*) AS repeticiones,
+  ARRAY_AGG(code ORDER BY code) AS codes
+FROM products WHERE is_active = true
+GROUP BY name, price, category_id, size
+HAVING COUNT(*) > 1
+ORDER BY repeticiones DESC, name;
+```
+
+En mi instancia (`nxszaxwsrtlofqimbfig`) el patrón puede o no repetirse —
+correr la misma query antes de asumir alcance.
 
 ---
 

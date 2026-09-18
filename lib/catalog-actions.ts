@@ -18,6 +18,7 @@ export interface PublicCatalogItem {
   image_url: string | null
   line: string | null
   size: string | null
+  category_id: string | null
   available_sites: string[]
   is_available: boolean
 }

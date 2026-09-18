@@ -24,6 +24,95 @@ import { Search, MapPin, PackageOpen, ImageOff, Plus, SlidersHorizontal } from "
 
 const ALL = "__all__"
 
+// Card agrupada: junta productos que solo se diferencian por talla. Clave
+// (name, price, category_id) — alineada con public_product_sizes de la ficha.
+// Los "grupos" con una sola talla renderizan como card simple sin selector
+// para no agregar UI innecesaria al caso mayoritario en catálogos pequeños.
+type SizeVariant = {
+  product_id: string
+  code: string
+  size: string | null
+  image_url: string | null
+  is_available: boolean
+}
+type CatalogGroup = {
+  key: string
+  name: string
+  price: number
+  category_id: string | null
+  representative: PublicCatalogItem  // variante con code mínimo — foto/link estable
+  variants: SizeVariant[]            // deduplicadas por talla, ordenadas
+  available_sites: string[]          // unión de sedes con stock
+  is_available: boolean              // OR de variantes
+}
+
+function groupCatalog(items: PublicCatalogItem[]): CatalogGroup[] {
+  const map = new Map<string, PublicCatalogItem[]>()
+  for (const it of items) {
+    const key = `${it.name}|${it.price}|${it.category_id ?? ""}`
+    const arr = map.get(key)
+    if (arr) arr.push(it)
+    else map.set(key, [it])
+  }
+  const groups: CatalogGroup[] = []
+  for (const [key, arr] of map) {
+    // Representante: menor code lexicográfico — estable, no depende de stock.
+    const sortedByCode = [...arr].sort((a, b) => a.code.localeCompare(b.code))
+    const representative = sortedByCode[0]
+
+    // Deduplicar por talla. Cuando el mismo (name, price, category_id, size)
+    // aparece más de una vez (deuda técnica documentada — Uniforme Arsenal x8
+    // XL, etc.), colapsar en un solo variant que hereda el product_id del
+    // primero con stock, o del de menor code si ninguno tiene stock.
+    const bySize = new Map<string, PublicCatalogItem[]>()
+    for (const it of arr) {
+      const s = it.size ?? ""
+      const bag = bySize.get(s)
+      if (bag) bag.push(it)
+      else bySize.set(s, [it])
+    }
+    const variants: SizeVariant[] = []
+    for (const [size, bag] of bySize) {
+      const withStock = bag.find((b) => b.is_available)
+      const pick = withStock ?? [...bag].sort((a, b) => a.code.localeCompare(b.code))[0]
+      variants.push({
+        product_id: pick.product_id,
+        code: pick.code,
+        size: size || null,
+        image_url: pick.image_url,
+        is_available: bag.some((b) => b.is_available),
+      })
+    }
+    variants.sort((a, b) => (a.size ?? "").localeCompare(b.size ?? ""))
+
+    const sitesUnion = Array.from(
+      new Set(arr.flatMap((it) => it.available_sites)),
+    ).sort()
+
+    groups.push({
+      key,
+      name: representative.name,
+      price: representative.price,
+      category_id: representative.category_id,
+      representative,
+      variants,
+      available_sites: sitesUnion,
+      is_available: variants.some((v) => v.is_available),
+    })
+  }
+  // Preservar orden del listado plano (RPC ya ordena por is_available DESC, name):
+  // los grupos aparecen en el orden en que apareció por primera vez su representante.
+  const firstIdxByKey = new Map<string, number>()
+  items.forEach((it, i) => {
+    const key = `${it.name}|${it.price}|${it.category_id ?? ""}`
+    if (!firstIdxByKey.has(key)) firstIdxByKey.set(key, i)
+  })
+  groups.sort(
+    (a, b) => (firstIdxByKey.get(a.key) ?? 0) - (firstIdxByKey.get(b.key) ?? 0),
+  )
+  return groups
+}
+
 interface Props {
   initialItems: PublicCatalogItem[]
   initialSites: PublicSite[]
@@ -71,37 +160,52 @@ function CatalogGridInner({ initialItems, initialSites, initialFacets }: Props) 
     { fallbackData: initialFacets },
   )
 
-  // Solo refetch si los filtros difieren de los iniciales que el servidor precargó
+  // Solo refetch si los filtros server-side difieren de los iniciales. La talla
+  // NO se envía al RPC — se filtra cliente-side sobre grupos completos, así una
+  // familia con talla M seleccionada sigue mostrando todas sus tallas en el
+  // selector con la M como default. p_size del RPC se mantiene vivo (otros
+  // consumidores hipotéticos futuros) pero el catálogo pasa siempre null.
   const useInitial =
-    siteId === ALL && !debounced && onlyAvailable === true &&
-    line === ALL && size === ALL
+    siteId === ALL && !debounced && onlyAvailable === true && line === ALL
   const { data: items = initialItems, isLoading } = useSWR<PublicCatalogItem[]>(
-    ["catalog-list", siteId, debounced, onlyAvailable, line, size],
+    ["catalog-list", siteId, debounced, onlyAvailable, line],
     () => listPublicCatalog({
       site_id: siteId === ALL ? null : siteId,
       search: debounced,
       only_available: onlyAvailable,
       line: line === ALL ? null : line,
-      size: size === ALL ? null : size,
     }),
     { keepPreviousData: true, fallbackData: useInitial ? initialItems : undefined },
   )
+
+  // Agrupación por (name, price, category_id). Filtro de talla se aplica sobre
+  // los grupos: la familia se muestra si tiene esa talla como variante, pero
+  // la card sigue exponiendo todas sus tallas para que el cliente vea qué más
+  // existe. Cuando hay filtro activo, la talla filtrada se preselecciona.
+  const allGroups = useMemo(() => groupCatalog(items), [items])
+  const groups = useMemo(() => {
+    if (size === ALL) return allGroups
+    return allGroups.filter((g) => g.variants.some((v) => v.size === size))
+  }, [allGroups, size])
 
   const storeSites = useMemo(() => sites.filter((s) => !s.is_central), [sites])
   const activeFilters =
     (siteId !== ALL ? 1 : 0) + (line !== ALL ? 1 : 0) + (size !== ALL ? 1 : 0) + (onlyAvailable ? 0 : 1)
 
-  function handleAdd(e: React.MouseEvent, it: PublicCatalogItem) {
+  function handleAdd(e: React.MouseEvent, g: CatalogGroup, v: SizeVariant) {
     e.preventDefault()
     e.stopPropagation()
     addItem({
-      product_id: it.product_id,
-      code: it.code,
-      name: it.name,
-      price: Number(it.price),
-      image_url: it.image_url,
+      product_id: v.product_id,
+      code: v.code,
+      name: g.name,
+      price: Number(g.price),
+      image_url: v.image_url,
     })
-    toast({ title: "Agregado al carrito", description: it.name })
+    toast({
+      title: "Agregado al carrito",
+      description: v.size ? `${g.name} — Talla ${v.size}` : g.name,
+    })
   }
 
   function clearFilters() {
@@ -224,7 +328,7 @@ function CatalogGridInner({ initialItems, initialSites, initialFacets }: Props) 
           </div>
         )}
 
-        {!isLoading && items.length === 0 && (
+        {!isLoading && groups.length === 0 && (
           <div className="py-20 text-center">
             <PackageOpen className="mx-auto mb-3 h-12 w-12 text-[hsl(var(--gold-lo))] opacity-50" />
             <p className="font-display text-lg">No encontramos productos</p>
@@ -252,89 +356,184 @@ function CatalogGridInner({ initialItems, initialSites, initialFacets }: Props) 
           </div>
         )}
 
-        {items.length > 0 && (
+        {groups.length > 0 && (
           <>
             <p className="mb-4 text-xs uppercase tracking-widest text-muted-foreground">
-              {items.length} {items.length === 1 ? "pieza" : "piezas"}
+              {groups.length} {groups.length === 1 ? "pieza" : "piezas"}
             </p>
             <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
-              {items.map((it, idx) => (
-                <Link
-                  key={it.product_id}
-                  href={`/catalog/${encodeURIComponent(it.code)}`}
-                  prefetch
-                  className="block"
-                >
-                  <GlowCard className={`h-full ${!it.is_available ? "opacity-60" : ""}`}>
-                    <div className="relative flex aspect-square items-center justify-center overflow-hidden bg-[hsl(var(--muted))]">
-                      {it.image_url ? (
-                        <Image
-                          src={it.image_url}
-                          alt={it.name}
-                          fill
-                          // Las 8 primeras son las que ve el visitante sin scroll:
-                          // se cargan con prioridad, el resto queda perezosa.
-                          priority={idx < 8}
-                          loading={idx < 8 ? undefined : "lazy"}
-                          sizes="(max-width: 640px) 50vw, (max-width: 1024px) 33vw, 25vw"
-                          className="object-cover transition-transform duration-500 group-hover:scale-105 motion-reduce:transition-none"
-                        />
-                      ) : (
-                        <ImageOff className="h-10 w-10 text-[hsl(var(--gold-lo))] opacity-40" />
-                      )}
-
-                      {it.size && (
-                        <span className="absolute left-2 top-2 rounded-full border border-[hsl(var(--gold-mid)/0.5)] bg-[hsl(var(--background)/0.8)] px-2 py-0.5 font-mono text-[10px] text-[hsl(var(--gold-mid))] backdrop-blur">
-                          Talla {it.size}
-                        </span>
-                      )}
-
-                      <span
-                        className={`absolute right-2 top-2 rounded-full px-2 py-0.5 text-[10px] font-medium backdrop-blur ${
-                          it.is_available
-                            ? "border border-emerald-400/40 bg-emerald-500/15 text-emerald-300"
-                            : "border border-white/15 bg-black/50 text-muted-foreground"
-                        }`}
-                      >
-                        {it.is_available ? "Disponible" : "Agotado"}
-                      </span>
-                    </div>
-
-                    <div className="space-y-1.5 p-3">
-                      <div className="font-mono text-[10px] uppercase tracking-wider text-[hsl(var(--gold-lo))]">
-                        {it.code}
-                      </div>
-                      <h3 className="line-clamp-2 min-h-[2.5rem] text-sm font-medium">{it.name}</h3>
-                      <div className="font-mono text-base font-bold text-[hsl(var(--gold-mid))]">
-                        {formatCurrency(Number(it.price))}
-                      </div>
-
-                      {it.available_sites.length > 0 && siteId === ALL && (
-                        <div className="flex items-start gap-1 pt-0.5 text-[10px] text-muted-foreground">
-                          <MapPin className="mt-0.5 h-3 w-3 shrink-0" />
-                          <span className="line-clamp-1">{it.available_sites.join(" · ")}</span>
-                        </div>
-                      )}
-
-                      {it.is_available && (
-                        <Button
-                          type="button"
-                          size="sm"
-                          className="mt-2 w-full gap-1 font-medium glow-gold-sm"
-                          onClick={(e) => handleAdd(e, it)}
-                        >
-                          <Plus className="h-3.5 w-3.5" />
-                          Agregar
-                        </Button>
-                      )}
-                    </div>
-                  </GlowCard>
-                </Link>
+              {groups.map((g, idx) => (
+                <GroupCard
+                  key={g.key}
+                  group={g}
+                  priority={idx < 8}
+                  showSites={siteId === ALL}
+                  preselectedSize={size === ALL ? null : size}
+                  onAdd={handleAdd}
+                />
               ))}
             </div>
           </>
         )}
       </div>
     </div>
+  )
+}
+
+// Card por grupo con selector inline. Estado local de talla seleccionada
+// para poder actualizar la foto y el link a la ficha en tiempo real cuando
+// el cliente cambia de talla — cada variante tiene su propia foto real,
+// así que el cliente ve exactamente la prenda que va a comprar antes de
+// agregarla al carrito, no una foto genérica.
+function GroupCard({
+  group,
+  priority,
+  showSites,
+  preselectedSize,
+  onAdd,
+}: {
+  group: CatalogGroup
+  priority: boolean
+  showSites: boolean
+  preselectedSize: string | null
+  onAdd: (e: React.MouseEvent, g: CatalogGroup, v: SizeVariant) => void
+}) {
+  const hasSizeSelector = group.variants.length > 1
+
+  // Preselección: (1) la talla del filtro si está en el grupo,
+  // (2) la primera talla con stock, (3) la primera del grupo.
+  const initialSize = (() => {
+    if (preselectedSize) {
+      const m = group.variants.find((v) => v.size === preselectedSize)
+      if (m) return m.size
+    }
+    const firstAvail = group.variants.find((v) => v.is_available)
+    if (firstAvail) return firstAvail.size
+    return group.variants[0]?.size ?? null
+  })()
+
+  const [selectedSize, setSelectedSize] = useState<string | null>(initialSize)
+
+  // El variant activo determina foto y product_id del "Agregar". Fallback
+  // al representante si por alguna razón no se encontró el variant elegido
+  // (edge inesperado, no debería pasar en flujo normal).
+  const active =
+    group.variants.find((v) => v.size === selectedSize) ??
+    group.variants[0] ?? {
+      product_id: group.representative.product_id,
+      code: group.representative.code,
+      size: group.representative.size,
+      image_url: group.representative.image_url,
+      is_available: group.is_available,
+    }
+
+  const displayImage = active.image_url ?? group.representative.image_url
+  const displayCode = hasSizeSelector ? group.representative.code : active.code
+  const linkHref = `/catalog/${encodeURIComponent(active.code)}`
+
+  return (
+    <Link href={linkHref} prefetch className="block">
+      <GlowCard className={`h-full ${!group.is_available ? "opacity-60" : ""}`}>
+        <div className="relative flex aspect-square items-center justify-center overflow-hidden bg-[hsl(var(--muted))]">
+          {displayImage ? (
+            <Image
+              src={displayImage}
+              alt={group.name}
+              fill
+              // Las 8 primeras son las que ve el visitante sin scroll:
+              // se cargan con prioridad, el resto queda perezosa.
+              priority={priority}
+              loading={priority ? undefined : "lazy"}
+              sizes="(max-width: 640px) 50vw, (max-width: 1024px) 33vw, 25vw"
+              className="object-cover transition-transform duration-500 group-hover:scale-105 motion-reduce:transition-none"
+            />
+          ) : (
+            <ImageOff className="h-10 w-10 text-[hsl(var(--gold-lo))] opacity-40" />
+          )}
+
+          {!hasSizeSelector && active.size && (
+            <span className="absolute left-2 top-2 rounded-full border border-[hsl(var(--gold-mid)/0.5)] bg-[hsl(var(--background)/0.8)] px-2 py-0.5 font-mono text-[10px] text-[hsl(var(--gold-mid))] backdrop-blur">
+              Talla {active.size}
+            </span>
+          )}
+
+          <span
+            className={`absolute right-2 top-2 rounded-full px-2 py-0.5 text-[10px] font-medium backdrop-blur ${
+              group.is_available
+                ? "border border-emerald-400/40 bg-emerald-500/15 text-emerald-300"
+                : "border border-white/15 bg-black/50 text-muted-foreground"
+            }`}
+          >
+            {group.is_available ? "Disponible" : "Agotado"}
+          </span>
+        </div>
+
+        <div className="space-y-1.5 p-3">
+          <div className="font-mono text-[10px] uppercase tracking-wider text-[hsl(var(--gold-lo))]">
+            {displayCode}
+          </div>
+          <h3 className="line-clamp-2 min-h-[2.5rem] text-sm font-medium">{group.name}</h3>
+          <div className="font-mono text-base font-bold text-[hsl(var(--gold-mid))]">
+            {formatCurrency(Number(group.price))}
+          </div>
+
+          {group.available_sites.length > 0 && showSites && (
+            <div className="flex items-start gap-1 pt-0.5 text-[10px] text-muted-foreground">
+              <MapPin className="mt-0.5 h-3 w-3 shrink-0" />
+              <span className="line-clamp-1">{group.available_sites.join(" · ")}</span>
+            </div>
+          )}
+
+          {hasSizeSelector && (
+            <div
+              className="flex flex-wrap gap-1 pt-1"
+              onClick={(e) => {
+                // El Link envolvente navega a la ficha si se hace click en cualquier
+                // parte de la card. El selector de talla es interactivo — atajamos
+                // el bubbling para que apretar un chip NO dispare la navegación.
+                e.preventDefault()
+                e.stopPropagation()
+              }}
+            >
+              {group.variants.map((v) => {
+                const label = v.size ?? "-"
+                const isSelected = v.size === selectedSize
+                const disabled = !v.is_available
+                return (
+                  <button
+                    key={label}
+                    type="button"
+                    disabled={disabled}
+                    aria-pressed={isSelected}
+                    onClick={() => setSelectedSize(v.size)}
+                    className={`rounded-md border px-2 py-0.5 text-[11px] font-mono transition ${
+                      disabled
+                        ? "border-white/10 bg-white/5 text-muted-foreground line-through opacity-50 cursor-not-allowed"
+                        : isSelected
+                          ? "border-[hsl(var(--gold-mid))] bg-[hsl(var(--gold-mid)/0.15)] text-[hsl(var(--gold-mid))]"
+                          : "border-gold-soft bg-transparent hover:border-gold-strong"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                )
+              })}
+            </div>
+          )}
+
+          {active.is_available && (
+            <Button
+              type="button"
+              size="sm"
+              className="mt-2 w-full gap-1 font-medium glow-gold-sm"
+              onClick={(e) => onAdd(e, group, active)}
+            >
+              <Plus className="h-3.5 w-3.5" />
+              Agregar
+            </Button>
+          )}
+        </div>
+      </GlowCard>
+    </Link>
   )
 }
