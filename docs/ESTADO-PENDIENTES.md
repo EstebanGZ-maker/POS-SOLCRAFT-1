@@ -48,6 +48,41 @@ ORDER BY repeticiones DESC, name;
 En mi instancia (`nxszaxwsrtlofqimbfig`) el patrón puede o no repetirse —
 correr la misma query antes de asumir alcance.
 
+**Segundo hallazgo relacionado — casing inconsistente en nombres**: durante
+la misma auditoría apareció el par `"Ten Guayo Nike Lunar Gato"` (3
+variantes de talla, TG-41/42/43-245-00) vs `"ten guayo Nike Lunar Gato"`
+(minúscula en "ten", 1 sola variante TG-43-245-05, mismo precio y categoría).
+El agrupador cliente-side los trata como grupos DISTINTOS porque el criterio
+es case-sensitive por diseño — se decidió no relajar la regla con
+`LOWER(name)` porque eso agruparía a la fuerza otros pares que legítimamente
+son productos distintos y solo comparten un typo. Fix correcto:
+**renombrar el producto puntual** en `/inventory/products` (o SQL directo)
+para que el casing coincida con la familia:
+
+```sql
+UPDATE products
+SET name = 'Ten Guayo Nike Lunar Gato'
+WHERE code = 'TG-43-245-05' AND is_active = true;
+```
+
+Después de eso, ese producto se agrupa automáticamente con los otros 3 y
+la card muestra 4 tallas (41, 42, 43 duplicado en el selector — el
+deduplicador colapsa a 3 chips, product_id resuelto al primero con stock).
+Buscar más casos con casing inconsistente antes de asumir que este es
+el único:
+
+```sql
+SELECT LOWER(name), COUNT(DISTINCT name) AS variantes_de_casing,
+  ARRAY_AGG(DISTINCT name) AS casings
+FROM products WHERE is_active = true
+GROUP BY LOWER(name)
+HAVING COUNT(DISTINCT name) > 1;
+```
+
+Ambos hallazgos (duplicados espurios + casing inconsistente) son limpieza
+manual de DATOS, no de código — el feature de agrupación funciona correctamente
+sobre datos limpios. Coordinar con Esteban cuándo hacer la pasada.
+
 ---
 
 ## 0. LEE ESTO PRIMERO — estado tras sesión 2026-08-31 (s25 pulido + guards + fix crítico)
