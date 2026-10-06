@@ -407,15 +407,33 @@ export async function createSale(
     priceIndex[p.product_id] = { base, tax: Number(p.tax_rate) || 0 }
   }
 
+  // Precio: el server define el TECHO (products.price × impuesto × (1-%desc)),
+  // el cliente puede ENVIAR un unit_price ≤ ese techo. Esto permite descuentos
+  // manuales del vendedor (editar precio base en EditLineDialog) sin abrir la
+  // puerta a precios inflados del lado del cliente comprometido. Hasta el fix
+  // de 2026-10-06 el server ignoraba por completo item.unit_price y siempre
+  // escribía el techo — rompía todo descuento manual en silencio durante los
+  // 70 días previos. Ver docs/ESTADO-PENDIENTES.md bloque "fix precio POS".
   const validatedItems = items.map((item) => {
     const info = priceIndex[item.product_id]
-    if (!info) return { product_id: item.product_id, quantity: item.quantity, unit_price: item.unit_price, base_price: item.unit_price, discount: 0, tax_rate: 0 }
+    if (!info) {
+      return {
+        product_id: item.product_id,
+        quantity: item.quantity,
+        unit_price: item.unit_price,
+        base_price: item.unit_price,
+        discount: 0,
+        tax_rate: 0,
+      }
+    }
     const discount = Math.max(0, Math.min(100, Number(item.discount) || 0))
-    const serverPrice = info.base * (1 + info.tax / 100) * (1 - discount / 100)
+    const serverCeiling = info.base * (1 + info.tax / 100) * (1 - discount / 100)
+    const clientPrice = Math.max(0, Number(item.unit_price) || 0)
+    const unit_price = Math.min(clientPrice, serverCeiling)
     return {
       product_id: item.product_id,
       quantity: item.quantity,
-      unit_price: serverPrice,
+      unit_price,
       base_price: info.base,
       discount,
       tax_rate: info.tax,

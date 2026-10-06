@@ -1,10 +1,57 @@
 # ESTADO-PENDIENTES.md
 
 > **Propósito**: dump de estado para que una instancia nueva de Claude sin
-> memoria pueda retomar sin perder nada. Última actualización: **2026-09-18**
-> (s27: agrupación de catálogo público por variantes de talla — una card por
-> familia con selector, en vez de una card por talla). `main` avanzó desde
+> memoria pueda retomar sin perder nada. Última actualización: **2026-10-06**
+> (s28: fix crítico de precio en POS — `createSale` ignoraba descuentos
+> manuales del vendedor durante 70 días en silencio). `main` avanzó desde
 > `22e0763` con múltiples commits — ver `git log` para el detalle.
+
+---
+
+## Fix crítico 2026-10-06 (s28) — descuentos manuales en POS no se grababan
+
+**Bug reportado por Esteban**: al bajar el precio de una línea en el POS
+vía EditLineDialog (editar `basePrice` para dar un descuento manual), la
+venta se grababa con el precio OFICIAL del catálogo. Pasaba en las 2
+instancias y siempre, no intermitente.
+
+**Causa raíz**: `createSale` en [`lib/actions.ts`](lib/actions.ts) hacía
+"server decide el precio" como *reemplazar* el `unit_price` del cliente
+por `products.price × (1 + tax/100) × (1 - discount%/100)`, en vez de
+*clampear*. La intención del principio #3 del CLAUDE.md raíz era proteger
+contra precios inflados — pero la implementación también rechazaba
+precios bajados (descuentos manuales). Zero rastro en DB porque el server
+siempre escribía el techo.
+
+**Antigüedad**: desde el commit raíz `^21a128a` del 2026-07-31. **70 días
+silencioso**. `git blame` confirma zero cambios al bloque en toda la
+historia del repo.
+
+**Alcance medido antes del fix** (2026-10-06):
+
+| Instancia | sale_items totales | con discount% > 0 | ventas con descuento registrado |
+|---|---|---|---|
+| Solcraft | 74 | 0 | 0 |
+| Taiwy Sport | 46 | 0 | 0 |
+
+**NINGÚN vendedor usó jamás el canal `discount%`** — todos los descuentos
+intentados en 70 días pasaron por `basePrice` edit (el canal intuitivo) y
+se perdieron. Toda venta con intento de descuento durante ese período
+quedó cobrada por el precio oficial.
+
+**Fix aplicado**: `unit_price = Math.min(clientPrice, serverCeiling)`.
+Server define techo (protege contra inflación), cliente puede bajar
+(descuento manual libre, sin gate de rol — confirmado con Esteban que
+cualquier vendedor puede descontar).
+
+**Datos pasados — NO recuperables desde DB**: el bug no deja huella
+distinguible. No hay forma de identificar automáticamente qué ventas
+específicas tuvieron descuentos manuales perdidos vs cuáles cobraron
+precio oficial correctamente. Si surge un reclamo de cliente ("me
+cobraron de más") o una discrepancia de caja contra las notas del
+vendedor, cada caso tiene que resolverse manualmente contrastando el
+sale_id contra la memoria del vendedor que lo registró. No vale la pena
+intentar auditoría masiva.
 
 ---
 
