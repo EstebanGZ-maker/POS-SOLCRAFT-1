@@ -2171,91 +2171,171 @@ los ajustes siguen pendientes de apply.
 
 ---
 
-## 5. Backlog vigente
+## 5. Backlog vigente — ÍNDICE ÚNICO (consolidado 2026-10-06, s28)
 
-### Pendientes activos tras s25 (2026-08-31)
+> Esta sección es la **foto real del HOY**, no un log cronológico. Los
+> bloques HISTORIAL arriba quedan intactos como registro, pero el estado
+> auténtico de qué está pendiente vive acá. Cada entrada tiene prioridad
+> explícita y última verificación.
 
-- **🔴 ALTA — AI Gateway rate limits en `analyze-product`** (deuda
-  ya conocida, ahora con **19 ocurrencias acumuladas** afectando a los
-  2 negocios reales). Subir de "documentada" a prioridad alta. Fix
-  plausible: retry con backoff exponencial en el cliente + fallback a
-  formulario manual cuando el rate limit se sostiene. Alternativa:
-  proxy propio con quota por tenant.
-- **🟡 MEDIA — WhatsApp checkout bloqueado en Taiwy Sport** —
-  `whatsapp_enabled=false` en `business_settings` de
-  `aapchdjwpqhwsquffnxn`. Cliente debe activarlo desde su propio
-  `/settings/receipt` para no meter `updated_by` a nombre nuestro.
-  Recordatorio ya comunicado a Esteban → cliente.
-- **🟢 BAJA — Cliente Taiwy Sport puede subir su propio `.glb`** del
-  hero (upload limit ya está en 100 MB). Sin fricciones técnicas.
-- **🟢 BAJA — Bug latente sospechado** (no confirmado): patrón
-  `Button asChild + label + <input type="file" hidden>` en el uploader
-  de `/settings/receipt`. No causó el 400 del debug del `.glb` (eso
-  era límite de plataforma), pero podría reaparecer aislado. Fix
-  preventivo si aparece: reemplazar por patrón `useRef` +
-  `ref.current?.click()` usado en `ai-ingress-panel`.
-- **🟢 BAJA — RPC atómica `delete_products_bulk(uuid[])`** para
-  volúmenes altos (>100 items). Hoy el loop secuencial de
-  `deleteProductSafe` es aceptable (decenas ok). Migrar cuando aparezca
-  necesidad real. Misma línea que la deuda de `create_bulk_transfer_atomic`.
-- **🟢 BAJA — Pretty URLs `?linea=<slug>`** en catálogo público.
-  Actualmente `?linea=<category_id_uuid>` funciona pero es feo.
-  Requiere columna `slug` en `categories` + generación automática
-  al crear. Bookmarks viejos con `?linea=CA` siguen funcionando por
-  backward-compat del RPC.
+### 🔴 BLOQUEANTE para la PRÓXIMA SESIÓN — hacer antes que nada
 
-### Deuda heredada de sesiones anteriores (sin cambios en s25)
+- **Verificar end-to-end el fix de precio en POS (s28, commit `93282f8`)**.
+  El fix está deployado en ambas instancias pero NUNCA se probó con una
+  venta real. Antes de cualquier otra tarea, Esteban debe:
+  1. Hacer una venta en `/pos` bajando `basePrice` en el `EditLineDialog`
+     (descuento manual, ej. $85.000 → $70.000, SIN tocar discount%).
+     Pasar el número de venta → verificar `sale_items.unit_price = 70000`.
+  2. Intentar lo opuesto (subir basePrice a $200.000) y verificar que el
+     clamp del server lo deja en el techo del catálogo (protección contra
+     fraude sigue viva).
+  Dinero real en producción desde 2026-07-17; cualquier regresión silenciosa
+  en este fix repite el bug de 70 días que acabamos de cerrar.
 
-- **Promociones en venta** (CRUD listo en `/inventory/promotions`,
-  no se aplican en el POS todavía).
-- **`SiteProvider` consolidado** — ver [app/inventory/CLAUDE.md]
-  y menciones en historial.
-- **Gate contador — sobrante sin factura** (motivo `hallazgo`/
-  `donacion` fuera de scope actual, ver §4).
+### 🟠 Datos — limpieza manual confirmada en Taiwy Sport (s27)
 
-### Próximo hilo — Camino B (self-service tipo Alegra)
+- **Duplicados espurios de productos** (`name + price + category_id + size`
+  repetidos): Arsenal x8 XL, Real Madrid x5 XL, Camisilla esqueleto Adidas,
+  Camiseta deportiva Adidas, Conjunto Adidas negro, etc. El agrupador del
+  catálogo público esconde el síntoma, pero siguen en DB. Query de
+  auditoría + alternativas de consolidación en §0 (s27). En
+  `nxszaxwsrtlofqimbfig` no se auditó aún.
+- **Casing inconsistente**: "Ten Guayo Nike Lunar Gato" vs "ten guayo
+  Nike Lunar Gato" (TG-43-245-05). Fix = `UPDATE products SET name=... WHERE
+  code='TG-43-245-05'`. Query para encontrar otros casos en §0 (s27).
 
-Pivote arquitectural mayor. **NO codear en la próxima sesión** —
-sesión de diseño primero. Preguntas y contexto completos en §0 arriba.
-Primera tarea: decidir multi-tenant real vs auto-aprovisionamiento
-Camino A, apoyándose en la visión Alegra ya documentada en sesiones
-previas.
+### 🟠 Seguridad — rotaciones de claves pendientes
 
-### Backlog anterior (pre-s25) — mantiene vigencia salvo tachados
-
-- **✅ CERRADO** Task #14 (captura del drift canónico) — hecho vía introspección
-  MCP en esta sesión. Baseline: `supabase/migrations/20260812000000_baseline_canonical_from_prod.sql`.
-- **✅ CERRADO** validación en branch Supabase real — hecho para crédito Fase 1
-  esta sesión (patrón replicable documentado en §3).
-- **Backups**: Pro incluye daily backups automáticos (7 días retención). PITR
-  es add-on separado; hoy no está activado. Recomendado activarlo antes de
-  volumen de ventas real.
-- **#13 Docs CONTEXT-POS §3.1** — registrar 4 drifts menores capturados esta
-  sesión: `stock_movements.movement_type` acepta `reserva_online` +
-  `liberacion_online`; `transfers.status` acepta `cancelado`;
-  `web_orders.payment_method` acepta `transfer` + `gateway`; columnas de
-  `sales` (subtotal/discount_total/tax_total/numero/status) que estaban solo
-  parcialmente documentadas.
-- **#14 Rotar `SUPABASE_SERVICE_ROLE_KEY`** en Supabase Dashboard + Vercel
-  Production+Preview. Además auditar otras SECDEF con anon (candidatos:
+- **Rotación anon key de `nxszaxwsrtlofqimbfig`**: checklist entregado en
+  sesión previa, nunca ejecutado. "No urgente — seguridad real depende de
+  RLS, sí conveniente." Ejecutar en ventana de baja actividad.
+- **Rotación `SUPABASE_SERVICE_ROLE_KEY`** (Supabase Dashboard + Vercel
+  Production + Preview). Además auditar SECDEF con anon:
   `adjust_warehouse_stock`, `create_web_order`, `transfer_stock`,
   `get_low_stock_products`, `get_sales_summary`, `next_product_code`,
-  `decrement_product_stock`, `receive_transfer_item`, `send_transfer_via_transit`;
-  `place_web_order`/`public_place_order` deben quedar con anon por diseño
-  del storefront público).
-- **#20 Borrar `PLAN-PENDIENTES.md` viejo de la raíz** — reconciliado en main
-  (llegó via cherry-pick del hotfix Wompi). Es una versión anterior; toda
-  su info vigente ya está en `docs/ESTADO-PENDIENTES.md`.
-- **#21 Pin deps `"latest"` en `package.json`** — reemplazar los `"latest"`
-  por versiones fijas para que `pnpm install` sea reproducible y no
-  re-bumpee `@supabase/supabase-js`, `react-hook-form`, `sonner`, etc.
-- **Smoke test visual de prod** post-merge (venta contado, turno, cliente
-  con celular obligatorio) — pendiente (§0).
-- **Branch Supabase `credit-sales-phase1-validation` (`oxramdmsllprpxbhkhmi`)**
-  sigue **VIVO** al cierre de esta sesión (MIGRATIONS_FAILED interno pero
-  preview_project_status ACTIVE_HEALTHY, costando $0.01344/hora). Puede
-  borrarse con `delete_branch` — ya no aporta valor para crédito, se puede
-  crear uno nuevo cuando se valide ajustes Fase 1.
+  `decrement_product_stock`, `receive_transfer_item`,
+  `send_transfer_via_transit`. (`place_web_order`/`public_place_order`
+  quedan con anon por diseño del storefront público — no tocar.)
+
+### 🟠 Limpieza — logging temporal vencido hace >1 mes
+
+- **`[product-import]` en `lib/product-import.ts`**: vencía 2026-08-31,
+  hoy vencido hace 36 días. Seguro limpiar en commit solo-logs.
+- **`[pos-timing]` en `lib/pos-timing.ts` + `withPosTiming` en 6 server
+  actions + `getPOSBootstrap`**: vencía 2026-08-29, hoy vencido hace 38
+  días. Seguro limpiar en el mismo commit o uno aparte.
+
+### 🟡 Mantenimiento — pequeño pero valioso
+
+- **PITR en Supabase**: Pro incluye daily backups (7 días), PITR es add-on
+  separado NO activado. Recomendado antes de volumen de ventas real.
+- **Deps `"latest"` en `package.json`**: pinear versiones de
+  `@supabase/supabase-js`, `react-hook-form`, `sonner`, etc. para que
+  `pnpm install` sea reproducible y no re-bumpee en builds futuros.
+- **Borrar `PLAN-PENDIENTES.md` viejo de la raíz**: es versión anterior;
+  toda su info vigente ya está en este archivo.
+- **Rama `s24-catalog-taiwysport`** sigue en `origin` sin borrar.
+  Verificado 2026-10-06. Patrón previo fue borrar ramas tras merge —
+  consultar antes de ejecutar.
+
+### 🟡 Features paridad Alegra — pendientes de implementación
+
+- **Promociones aplicadas en venta**: CRUD listo en
+  `/inventory/promotions` y `getActivePromotionsForPOS` ya devuelve
+  `promoMap`, pero `PaymentDialog`/`createSale` NO aplican el descuento
+  automáticamente. Feature abierta.
+- **Consolidación `SiteProvider`** (`lib/site-context.tsx`): `bootstrap()`
+  hace 2 server actions serializadas por cookies (~1s combinado en cold).
+  Mismo patrón que `getPOSBootstrap` resolvió para `/pos`. Blast radius
+  mayor (toda la app, no solo /pos).
+- **Gate contador — sobrante sin factura** (motivos `hallazgo` /
+  `donacion`): decisión de negocio pendiente con el contador. No depende
+  de código.
+- **Atomicidad real de `createBulkTransfer`** (RPC SQL
+  `create_bulk_transfer_atomic` con `FOR UPDATE` + rollback real).
+  Mitigación TS actual (DELETE compensatorio) cubre 99% pero no es
+  transacción real. Herramienta correctiva vigente mientras tanto:
+  `adminCloseGhostTransfer` + botón visible cuando
+  `getTransferDetail.is_ghost === true`. **Smoke C/D/E/F del refactor s21
+  tampoco se ejercitó** — se cubren en el primer traslado masivo real.
+- **`getShiftReceivables` post-bootstrap POS**: round-trip extra visible
+  en el waterfall. Candidato a incluir en `getPOSBootstrap` como campo
+  opcional. Bajo impacto.
+- **RPC `delete_products_bulk(uuid[])`** para volúmenes altos (>100
+  items). Hoy el loop secuencial de `deleteProductSafe` es aceptable
+  (decenas ok). Migrar cuando aparezca necesidad real.
+- **Pretty URLs `?linea=<slug>`** en catálogo público (hoy
+  `?linea=<category_id_uuid>`). Requiere columna `slug` en `categories`.
+  Backward-compat con `?linea=CA` ya cubierto por el RPC.
+
+### 🟢 Hardcodes del código base — deuda estructural conocida
+
+Afectan a futuros clientes de otro rubro / país. No bloquean a los 2
+clientes actuales (ambos ropa/calzado, Colombia).
+
+- **Moneda COP hardcoded** en `lib/utils.ts`, `components/ui/money-input.tsx`,
+  acciones Wompi.
+- **Pasarela Wompi Colombia-only**. Cliente no-colombiano necesita
+  integrar otra pasarela.
+- **Panel IA (`/api/analyze-product`)**: prompt + `type_prefix` CA/PA/VE/…
+  hardcoded a ropa.
+- **Sistema asume ≥2 sedes** (`is_central=TRUE` + no-central). Cliente de
+  sede única se aprovisiona con 2 sedes virtuales (ver RUNBOOK §5.2).
+
+### 🔵 Decisión arquitectural pendiente — Camino B (self-service tipo Alegra)
+
+Pivote mayor. **NO codear hasta cerrar diseño primero**. Contexto completo
+en §0 arriba (sesión del hilo "GRANDE"). Primera tarea: decidir multi-tenant
+real vs auto-aprovisionamiento Camino A.
+
+### Convenciones para el próximo cliente nuevo (si aparece)
+
+Documentadas en `docs/RUNBOOK-APROVISIONAMIENTO-CLIENTE.md`. Punto clave:
+
+- **Fork del repo por cliente** — evita reuso del proyecto Vercel por el
+  comportamiento de MCP `create_git_project` (reusa el proyecto ya linked
+  al repo). Patrón "N proyectos Vercel apuntando al mismo main" también
+  desperdicia builds. Alternativa: crear proyecto Vercel desde dashboard
+  manual (permite múltiples por repo). Para Taiwy Sport se eligió manual.
+
+### ✅ Cerrados en esta pasada de consolidación (2026-10-06)
+
+Items que estaban en el backlog pero verificados cerrados hoy — se
+documentan acá para que no vuelvan a arrastrarse en próximas sesiones:
+
+- **AI Gateway rate limits en `/api/analyze-product`** — **RESUELTO**.
+  Migración al Gateway pago hecha en s27 (commit `0706e0b`, 2026-09-08).
+  Esteban compró $20 USD de crédito via dashboard de Vercel. Verificación
+  2026-10-06: `get_runtime_errors` con filtro `/api/analyze-product`,
+  ventana 7 días → **0 errores en ambas instancias**.
+- **Branch Supabase `credit-sales-phase1-validation`
+  (`oxramdmsllprpxbhkhmi`)** — ya NO existe. Verificado con
+  `list_branches` en las 2 instancias (ninguna tiene ramas activas).
+  Ya no cuesta $0.01344/hora.
+- **Task #14 (captura canónica del baseline vía db pull)** —
+  cerrado hace sesiones vía introspección MCP. Baseline en
+  `supabase/migrations/20260812000000_baseline_canonical_from_prod.sql`.
+- **Task #15 (enforce "exactamente 1 warehouse.is_primary por sede")** —
+  verificado en §6 (todas las 6 sedes de prod cumplen); el "enforce" en
+  schema queda como mejora futura si surge violación, no urgente.
+- **Validación en branch Supabase real** — cerrado hace sesiones (patrón
+  replicable documentado en §3).
+
+### ❌ Descartado / nunca iniciado — NO re-arrastrar como pendiente
+
+- **Cliente de celulares/tecnología**. Mencionado conceptualmente en
+  sesiones viejas como "próximo cliente hipotético" en el RUNBOOK, pero
+  nunca se aprovisionó. Verificado 2026-10-06 con `list_projects`: solo
+  existen 2 proyectos Supabase (`nxszaxwsrtlofqimbfig` + `aapchdjwpqhwsquffnxn`).
+  Si Esteban decide retomarlo, es una **decisión nueva**, no un pendiente
+  en curso.
+- **WhatsApp checkout en Taiwy Sport** — depende del cliente, no de
+  nosotros. Fuera del backlog técnico. Si el cliente lo activa, listo;
+  si no, es su decisión.
+- **Bug latente del uploader `Button asChild + label`** en
+  `/settings/receipt` — hipótesis descartada en su momento (el 400 era
+  límite de plataforma). Si aparece realmente, se evalúa; mientras tanto
+  no es deuda abierta.
 
 ---
 
