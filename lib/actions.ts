@@ -5,20 +5,17 @@ import { createServerSupabaseClient } from "@/lib/supabase/server"
 import { getUserProfile, isProductDeleteOwner } from "@/lib/auth-helpers"
 import { requireRole } from "@/lib/role-guard"
 import { phoneCORequired, PHONE_CO_ERROR } from "@/lib/validators/customer"
-import { withPosTiming } from "@/lib/pos-timing"
 import { fetchCustomersRaw, fetchCategoriesRaw } from "@/lib/pos-bootstrap-queries"
 
 // --- Customer Actions ---
 export async function getCustomers() {
-  return withPosTiming("getCustomers", async () => {
-    const supabase = await createServerSupabaseClient()
-    try {
-      return await fetchCustomersRaw(supabase)
-    } catch (e: any) {
-      console.error("Error fetching customers:", e?.message ?? e)
-      return []
-    }
-  })
+  const supabase = await createServerSupabaseClient()
+  try {
+    return await fetchCustomersRaw(supabase)
+  } catch (e: any) {
+    console.error("Error fetching customers:", e?.message ?? e)
+    return []
+  }
 }
 
 export async function createCustomer(formData: FormData) {
@@ -112,15 +109,13 @@ export async function deleteCustomer(customer_id: string) {
 
 // --- Category Actions ---
 export async function getCategories() {
-  return withPosTiming("getCategories", async () => {
-    const supabase = await createServerSupabaseClient()
-    try {
-      return await fetchCategoriesRaw(supabase)
-    } catch (e: any) {
-      console.error("Error fetching categories:", e?.message ?? e)
-      return []
-    }
-  })
+  const supabase = await createServerSupabaseClient()
+  try {
+    return await fetchCategoriesRaw(supabase)
+  } catch (e: any) {
+    console.error("Error fetching categories:", e?.message ?? e)
+    return []
+  }
 }
 
 // Create a contact/customer from the detailed "Nuevo contacto" form.

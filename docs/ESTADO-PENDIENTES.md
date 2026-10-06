@@ -2178,19 +2178,32 @@ los ajustes siguen pendientes de apply.
 > auténtico de qué está pendiente vive acá. Cada entrada tiene prioridad
 > explícita y última verificación.
 
-### 🔴 BLOQUEANTE para la PRÓXIMA SESIÓN — hacer antes que nada
+### 🟢 Fix de precio en POS (s28, commit `93282f8`) — PARCIALMENTE verificado 2026-10-06
 
-- **Verificar end-to-end el fix de precio en POS (s28, commit `93282f8`)**.
-  El fix está deployado en ambas instancias pero NUNCA se probó con una
-  venta real. Antes de cualquier otra tarea, Esteban debe:
-  1. Hacer una venta en `/pos` bajando `basePrice` en el `EditLineDialog`
-     (descuento manual, ej. $85.000 → $70.000, SIN tocar discount%).
-     Pasar el número de venta → verificar `sale_items.unit_price = 70000`.
-  2. Intentar lo opuesto (subir basePrice a $200.000) y verificar que el
-     clamp del server lo deja en el techo del catálogo (protección contra
-     fraude sigue viva).
-  Dinero real en producción desde 2026-07-17; cualquier regresión silenciosa
-  en este fix repite el bug de 70 días que acabamos de cerrar.
+**Caso 1 — descuento manual (bajar `basePrice`): ✅ CONFIRMADO con ventas reales
+en AMBAS instancias**:
+
+- Solcraft (`nxszaxwsrtlofqimbfig`), venta **#4**, `sale_id
+  03ea21d3-1f3e-4c88-ab42-8a5cb4024ed6` (2026-10-06): producto `GO-U-72-15`
+  (Gorra), precio catálogo $72.000, editado a $35.000 →
+  `sale_items.unit_price = 35000`. Descuento manual persistido correctamente.
+- Taiwy Sport (`aapchdjwpqhwsquffnxn`), venta **#37**, `sale_id
+  eacf9f7c-a439-4f00-b47d-3312246048f4` (2026-10-06): producto `PU-00`
+  (PRUEBA), precio catálogo $10.000, editado a $1.000 →
+  `sale_items.unit_price = 1000`. Mismo resultado en la otra instancia.
+
+El caso cotidiano y real (vendedor dando descuento manual) quedó cerrado
+con datos de producción. El bug de 70 días ya no reaparece.
+
+**Caso 2 — clamp contra precio inflado: ⚠️ NO ejercitado con venta real**.
+La lógica (`Math.min(clientPrice, serverCeiling)`) fue revisada en diseño
+pero no se corrió una venta deliberada subiendo `basePrice` por encima del
+catálogo. Esteban decidió no correr esta prueba por ahora. Riesgo bajo:
+requiere intento deliberado de un vendedor malicioso, no es un error
+accidental común. Queda como **deuda de verificación pendiente, no
+bloqueante**. Si en algún momento se quiere cerrar: una venta de prueba en
+Taiwy Sport subiendo `basePrice` a 2× del catálogo basta — `unit_price` en
+DB debe quedar en el techo del catálogo, no en el valor inflado.
 
 ### 🟠 Datos — limpieza manual confirmada en Taiwy Sport (s27)
 

@@ -2,7 +2,6 @@
 
 import { createServerSupabaseClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
-import { withPosTiming } from "@/lib/pos-timing"
 import {
   fetchCurrentShiftRaw,
   fetchShiftBalanceRaw,
@@ -16,10 +15,8 @@ export type { ShiftBalance }
 // La lógica pura vive en lib/pos-bootstrap-queries.ts (compartida con
 // getPOSBootstrap consolidado); esta es solo el wrapper con auth + client.
 export async function getCurrentShift(site_id: string): Promise<ShiftBalance | null> {
-  return withPosTiming("getCurrentShift", async () => {
-    const supabase = await createServerSupabaseClient()
-    return fetchCurrentShiftRaw(supabase, site_id)
-  })
+  const supabase = await createServerSupabaseClient()
+  return fetchCurrentShiftRaw(supabase, site_id)
 }
 
 export async function openShift(input: {

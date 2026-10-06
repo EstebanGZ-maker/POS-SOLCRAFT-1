@@ -2,7 +2,6 @@
 
 import { createServerSupabaseClient } from "@/lib/supabase/server"
 import { requireRole } from "@/lib/role-guard"
-import { withPosTiming } from "@/lib/pos-timing"
 import {
   fetchWarehouseForSiteRaw,
   fetchCurrentShiftRaw,
@@ -61,64 +60,62 @@ const emptyBoot: POSBootstrap = {
 // - Los 6 restantes en Promise.allSettled: cada uno decodifica independiente.
 //   Falla de una NO afecta a las otras. UI degrada por pieza.
 export async function getPOSBootstrap(sid: string): Promise<POSBootstrap> {
-  return withPosTiming("getPOSBootstrap", async () => {
-    await requireRole("admin", "contador", "encargado", "vendedor")
-    const supabase = await createServerSupabaseClient()
+  await requireRole("admin", "contador", "encargado", "vendedor")
+  const supabase = await createServerSupabaseClient()
 
-    if (!sid) return { ...emptyBoot, errors: { warehouse: "Falta el site_id." } }
+  if (!sid) return { ...emptyBoot, errors: { warehouse: "Falta el site_id." } }
 
-    const errors: POSBootstrapErrors = {}
+  const errors: POSBootstrapErrors = {}
 
-    // Paso 1: warehouse (bloqueante duro — sin él el resto es inútil).
-    let warehouse_id: string | null = null
-    try {
-      warehouse_id = await fetchWarehouseForSiteRaw(supabase, sid)
-    } catch (e: any) {
-      errors.warehouse = e?.message ?? String(e)
-    }
-    if (!warehouse_id) {
-      return {
-        ...emptyBoot,
-        errors: {
-          warehouse: errors.warehouse ?? "Esta sede no tiene bodega asignada.",
-        },
-      }
-    }
-
-    // Paso 2: allSettled real. Server-to-Supabase HTTP/2 pool paraleliza sin
-    // el bloqueo de cookies de Next.js Server Actions.
-    const [shiftR, productsR, customersR, categoriesR, priceListsR, promotionsR] =
-      await Promise.allSettled([
-        fetchCurrentShiftRaw(supabase, sid),
-        fetchProductsWithStockRaw(supabase, warehouse_id, { onlyRelevant: true }),
-        fetchCustomersRaw(supabase),
-        fetchCategoriesRaw(supabase),
-        fetchPriceListsForPOSRaw(supabase),
-        fetchActivePromotionsForPOSRaw(supabase, sid),
-      ])
-
-    function pick<T>(
-      r: PromiseSettledResult<T>,
-      key: keyof POSBootstrapErrors,
-      fallback: T,
-    ): T {
-      if (r.status === "fulfilled") return r.value
-      errors[key] = r.reason?.message ?? String(r.reason)
-      return fallback
-    }
-
+  // Paso 1: warehouse (bloqueante duro — sin él el resto es inútil).
+  let warehouse_id: string | null = null
+  try {
+    warehouse_id = await fetchWarehouseForSiteRaw(supabase, sid)
+  } catch (e: any) {
+    errors.warehouse = e?.message ?? String(e)
+  }
+  if (!warehouse_id) {
     return {
-      warehouse_id,
-      shift: pick(shiftR, "shift", null),
-      products: pick(productsR, "products", []),
-      customers: pick(customersR, "customers", []),
-      categories: pick(categoriesR, "categories", []),
-      priceLists: pick(priceListsR, "priceLists", { lists: [], priceMap: {} }),
-      promotions: pick(promotionsR, "promotions", {
-        promotions: [],
-        promoMap: {} as Record<string, { name: string; discount: number }>,
-      }),
-      errors,
+      ...emptyBoot,
+      errors: {
+        warehouse: errors.warehouse ?? "Esta sede no tiene bodega asignada.",
+      },
     }
-  })
+  }
+
+  // Paso 2: allSettled real. Server-to-Supabase HTTP/2 pool paraleliza sin
+  // el bloqueo de cookies de Next.js Server Actions.
+  const [shiftR, productsR, customersR, categoriesR, priceListsR, promotionsR] =
+    await Promise.allSettled([
+      fetchCurrentShiftRaw(supabase, sid),
+      fetchProductsWithStockRaw(supabase, warehouse_id, { onlyRelevant: true }),
+      fetchCustomersRaw(supabase),
+      fetchCategoriesRaw(supabase),
+      fetchPriceListsForPOSRaw(supabase),
+      fetchActivePromotionsForPOSRaw(supabase, sid),
+    ])
+
+  function pick<T>(
+    r: PromiseSettledResult<T>,
+    key: keyof POSBootstrapErrors,
+    fallback: T,
+  ): T {
+    if (r.status === "fulfilled") return r.value
+    errors[key] = r.reason?.message ?? String(r.reason)
+    return fallback
+  }
+
+  return {
+    warehouse_id,
+    shift: pick(shiftR, "shift", null),
+    products: pick(productsR, "products", []),
+    customers: pick(customersR, "customers", []),
+    categories: pick(categoriesR, "categories", []),
+    priceLists: pick(priceListsR, "priceLists", { lists: [], priceMap: {} }),
+    promotions: pick(promotionsR, "promotions", {
+      promotions: [],
+      promoMap: {} as Record<string, { name: string; discount: number }>,
+    }),
+    errors,
+  }
 }

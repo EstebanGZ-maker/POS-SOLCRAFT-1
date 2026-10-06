@@ -327,37 +327,10 @@ export function validateRows(
         code: cellAt("code"),
         barcode: cellAt("barcode"),
       }
-      // TEMP s22: logging fila-a-fila pre-Zod para diagnosticar el bug de
-      // "14/14 con error" del archivo real. Remover en commit de limpieza
-      // una vez validado el fix de normalización de celdas exceljs.
-      if (typeof window !== "undefined") {
-        // eslint-disable-next-line no-console
-        console.log("[product-import] row", row_index, {
-          candidate,
-          types: Object.fromEntries(
-            Object.entries(candidate).map(([k, v]) => [
-              k,
-              v === null ? "null" : Array.isArray(v) ? "array" : typeof v,
-            ]),
-          ),
-        })
-      }
       const parsed = productImportRowSchema.safeParse(candidate)
       if (parsed.success) {
         product = parsed.data
       } else {
-        // TEMP s22: log detallado de issues Zod (path + message + code)
-        // para diagnosticar mensajes genéricos "Invalid input".
-        if (typeof window !== "undefined") {
-          // eslint-disable-next-line no-console
-          console.log("[product-import] row", row_index, "zod-issues",
-            parsed.error.issues.map((i) => ({
-              path: i.path.join("."),
-              code: i.code,
-              message: i.message,
-            })),
-          )
-        }
         for (const issue of parsed.error.issues) {
           const fieldLabel = issue.path[0]
             ? ` (campo "${String(issue.path[0])}")`

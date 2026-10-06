@@ -4,7 +4,6 @@ import { revalidatePath } from "next/cache"
 import { createServerSupabaseClient } from "@/lib/supabase/server"
 import { requireRole } from "@/lib/role-guard"
 import { getUserProfile, getAccessibleSiteIds, isProductDeleteOwner } from "@/lib/auth-helpers"
-import { withPosTiming } from "@/lib/pos-timing"
 import {
   fetchProductsWithStockRaw,
   fetchPriceListsForPOSRaw,
@@ -22,15 +21,13 @@ export async function getProductsWithStock(
   warehouse_id?: string | null,
   opts?: { onlyRelevant?: boolean },
 ) {
-  return withPosTiming("getProductsWithStock", async () => {
-    const supabase = await createServerSupabaseClient()
-    try {
-      return await fetchProductsWithStockRaw(supabase, warehouse_id, opts)
-    } catch (e: any) {
-      console.error("Error fetching products with stock:", e?.message ?? e)
-      return []
-    }
-  })
+  const supabase = await createServerSupabaseClient()
+  try {
+    return await fetchProductsWithStockRaw(supabase, warehouse_id, opts)
+  } catch (e: any) {
+    console.error("Error fetching products with stock:", e?.message ?? e)
+    return []
+  }
 }
 
 export async function getProductById(product_id: string) {
@@ -255,15 +252,13 @@ export async function getPriceLists() {
 }
 
 export async function getPriceListsForPOS() {
-  return withPosTiming("getPriceListsForPOS", async () => {
-    const supabase = await createServerSupabaseClient()
-    try {
-      return await fetchPriceListsForPOSRaw(supabase)
-    } catch (e: any) {
-      console.error("Error fetching price lists:", e?.message ?? e)
-      return { lists: [], priceMap: {} }
-    }
-  })
+  const supabase = await createServerSupabaseClient()
+  try {
+    return await fetchPriceListsForPOSRaw(supabase)
+  } catch (e: any) {
+    console.error("Error fetching price lists:", e?.message ?? e)
+    return { lists: [], priceMap: {} }
+  }
 }
 
 export async function getPriceListWithProducts(price_list_id: string) {
@@ -323,15 +318,13 @@ export async function getPromotions() {
 }
 
 export async function getActivePromotionsForPOS(siteId: string | null) {
-  return withPosTiming("getActivePromotionsForPOS", async () => {
-    const supabase = await createServerSupabaseClient()
-    try {
-      return await fetchActivePromotionsForPOSRaw(supabase, siteId)
-    } catch (e: any) {
-      console.error("Error fetching active promotions:", e?.message ?? e)
-      return { promotions: [], promoMap: {} as Record<string, { name: string; discount: number }> }
-    }
-  })
+  const supabase = await createServerSupabaseClient()
+  try {
+    return await fetchActivePromotionsForPOSRaw(supabase, siteId)
+  } catch (e: any) {
+    console.error("Error fetching active promotions:", e?.message ?? e)
+    return { promotions: [], promoMap: {} as Record<string, { name: string; discount: number }> }
+  }
 }
 
 export async function savePromotion(input: {
