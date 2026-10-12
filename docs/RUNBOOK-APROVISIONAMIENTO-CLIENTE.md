@@ -183,6 +183,40 @@ Deltas post-baseline via `supabase/migrations/*.sql` (aplicar ANTES de
 los scripts 15-18, no después):
 - s21 (`20260822...`) — `dispatch_transfer_atomic`.
 - s22/s23 (`20260824*`) — importador masivo + permiso.
+- s24 (`20260826*`) — textos del catálogo + modelo 3D configurable + bucket.
+- (`20260901*`) — bucket `product-media`.
+- (`20260918*`) — agrupación catálogo por name/price/category.
+- **s28 (`20261012000000_revoke_anon_from_internal_rpcs`) — OBLIGATORIO.**
+  Cierra EXECUTE a `anon`/`PUBLIC` sobre 10 RPCs internos (8 INVOKER del
+  release 2C-D + `create_web_order` + `public_place_order`). Sin este
+  delta, el cliente nace con esos RPCs ejecutables por cualquiera con la
+  anon key.
+- **s28 (`20261012000001_revoke_anon_from_definer_rpcs_with_guards`) —
+  OBLIGATORIO.** Segunda tanda: 5 RPCs DEFINER con guard interno pero
+  EXECUTE abierto a anon (`list_orphan_product_media` sin guard;
+  `dispatch_transfer_atomic`, `import_products_bulk_atomic`,
+  `receive_transfer`, `reconcile_transfer` con guard — se revoca igual
+  por defensa en profundidad).
+
+> **Patrón para RPCs nuevos a futuro**: toda función SQL creada en el
+> schema `public` nace con `EXECUTE` para `PUBLIC` por default. Supabase
+> además otorga `EXECUTE` explícito a `anon` vía *default privileges* al
+> crear funciones en `public` — por eso `REVOKE EXECUTE … FROM PUBLIC`
+> solo no alcanza para quitar el acceso de anon: hay que revocar también
+> a `anon` explícitamente. Toda migración que agregue un RPC interno (no
+> destinado al storefront público) debe terminar con:
+>
+> ```sql
+> REVOKE EXECUTE ON FUNCTION public.<nombre>(<args>) FROM PUBLIC, anon;
+> GRANT  EXECUTE ON FUNCTION public.<nombre>(<args>) TO authenticated, service_role;
+> ```
+>
+> Las únicas excepciones son RPCs invocables por el storefront público
+> (hoy: `place_web_order`, `public_get_order`, `public_web_order_lookup`,
+> `public_*` del catálogo), que mantienen `EXECUTE` para `anon` por
+> diseño. Los helpers usados por policies de RLS (`is_admin`,
+> `has_permission`, `has_site_access`, `user_role`, `is_global_role`,
+> `user_accessible_sites`) tampoco se tocan.
 
 Además, aplicar como delta manual el trigger `on_auth_user_created` sobre
 `auth.users` (no está en el baseline dump porque `auth` es schema

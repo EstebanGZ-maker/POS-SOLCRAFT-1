@@ -592,7 +592,8 @@ update_online_order_status(p_order_id uuid, p_new_status text, p_user_id uuid, p
 `transfer_stock` — variante antigua.
 `next_product_code` — genera código con `type_prefix + secuencial`.
 `get_low_stock_products` — reescrita 2026-07-31 para leer de `product_stock` (antes leía columna legacy `products.stock_quantity`).
-`create_web_order`, `place_web_order` — variantes viejas de `public_place_order`.
+`place_web_order` — **función ACTIVA del storefront público** (`lib/catalog-actions.ts:138`). Única DEFINER con EXECUTE para `anon` por diseño (checkout público).
+`create_web_order`, `public_place_order` — variantes anteriores sin uso en el repo (verificado 2026-10-12). Revocadas de `anon`/`PUBLIC` por la migración `20261012000000_revoke_anon_from_internal_rpcs`. **Candidatas a DROP** en una limpieza futura; se dejan vivas por ahora por si existe algún consumidor SQL no mapeado.
 `admin_create_user(email, password, full_name, role, site_id)`, `admin_reset_password(user_id, new_password)` — revocadas de anon en script 09.
 `handle_new_user()` — trigger de auth.users que crea user_profiles con role='vendedor'.
 

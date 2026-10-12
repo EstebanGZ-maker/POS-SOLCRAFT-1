@@ -27,6 +27,10 @@
 | a confirmar (s25, 2026-08-31) | `nxszaxwsrtlofqimbfig` (Solcraft) | `UPDATE products SET type_prefix='AC' WHERE type_prefix='PA' AND code IN (...)` (5 productos) | 5 pavas con `category_id` de Accesorios tenían `type_prefix='PA'` → aparecían en la línea "Pantalones" de la landing (que agrupaba por `type_prefix` hardcoded). Precedió al fix s25 que reescribió `public_catalog_facets` para agrupar por `category_id` real. Codes inmutables (`PA-U-95-00` .. `04`) preservados. | Esteban |
 | 2026-10-06 (s28) | `nxszaxwsrtlofqimbfig` + `aapchdjwpqhwsquffnxn` | Verificación READ-ONLY de ventas pre-fix: `SELECT COUNT(*) FROM sale_items WHERE ...` + `SELECT * FROM sale_items WHERE sale_id IN ('03ea21d3...', 'eacf9f7c...')` | Confirmar end-to-end el fix de precio del commit `93282f8` (descuentos manuales persistidos). | Esteban |
 | 2026-10-12 (s28) | `nxszaxwsrtlofqimbfig` | `has_function_privilege` + `pg_proc` + `pg_policies` sobre 11 RPCs + 9 tablas (READ-ONLY) | Auditoría SECDEF: verificar exposición real anon antes de aplicar `20261012000000_revoke_anon_from_internal_rpcs`. | Esteban |
+| 2026-10-12 ~22:30 UTC | `nxszaxwsrtlofqimbfig` | `apply_migration` MCP → migración `revoke_anon_from_internal_rpcs` (versionada en `supabase/migrations/20261012000000_...sql`) | Cerrar EXECUTE a `anon`/`PUBLIC` sobre 10 RPCs internos. Verificado con `has_function_privilege`. | Esteban |
+| 2026-10-12 ~22:45 UTC | `nxszaxwsrtlofqimbfig` | Smoke reversible: ajuste `#1` (+1 unidad) desde `/inventory/adjustments` + `void_adjustment` → `status='voided'`, 2 stock_movements compensados, `verify_kardex_integrity`/`verify_adjustment_accounting_integrity`/`verify_credit_integrity` en 0 violaciones | Validar end-to-end que la 1era migración de permisos no rompió el flujo de ajustes para rol admin. Pre-requisito antes de aplicar en Taiwy Sport. | Esteban |
+| 2026-10-12 ~23:00 UTC | `aapchdjwpqhwsquffnxn` | `apply_migration` MCP → migración `revoke_anon_from_internal_rpcs` (misma versionada) | Replicar 1era migración de permisos en Taiwy Sport. Verificado con `has_function_privilege`. Smoke equivalente: ajuste `#2` anulado en esta instancia (reportado por Esteban antes de autorizar el paso). | Esteban |
+| 2026-10-12 ~23:00 UTC | `nxszaxwsrtlofqimbfig` + `aapchdjwpqhwsquffnxn` | `apply_migration` MCP → migración `revoke_anon_from_definer_rpcs_with_guards` (versionada en `supabase/migrations/20261012000001_...sql`), aplicada en ambas instancias | Cerrar EXECUTE a `anon`/`PUBLIC` sobre 5 DEFINER con guard interno (`list_orphan_product_media` sin guard; `dispatch_transfer_atomic`, `import_products_bulk_atomic`, `receive_transfer`, `reconcile_transfer` con guard — defensa en profundidad). Verificado con `has_function_privilege` en ambas. | Esteban |
 
 > **Reglas de la tabla**:
 > - **No se borran filas** — una intervención antigua que se revierte se
@@ -2254,12 +2258,17 @@ DB debe quedar en el techo del catálogo, no en el valor inflado.
   sesión previa, nunca ejecutado. "No urgente — seguridad real depende de
   RLS, sí conveniente." Ejecutar en ventana de baja actividad.
 - **Rotación `SUPABASE_SERVICE_ROLE_KEY`** (Supabase Dashboard + Vercel
-  Production + Preview). Además auditar SECDEF con anon:
-  `adjust_warehouse_stock`, `create_web_order`, `transfer_stock`,
-  `get_low_stock_products`, `get_sales_summary`, `next_product_code`,
-  `decrement_product_stock`, `receive_transfer_item`,
-  `send_transfer_via_transit`. (`place_web_order`/`public_place_order`
-  quedan con anon por diseño del storefront público — no tocar.)
+  Production + Preview). Sin fecha definida.
+
+### 🟡 Deuda estructural — DEFINER sin uso en el repo
+
+- **`create_web_order` y `public_place_order`** quedaron revocadas de
+  `anon`/`PUBLIC` por `20261012000000`, pero siguen vivas en el schema. Sin
+  referencias en el código TS del repo (verificado 2026-10-12 — solo las
+  usa, si acaso, un consumidor SQL no mapeado). **Candidatas a DROP** en
+  una limpieza futura cuando se confirme que no hay consumidor externo.
+  La única DEFINER del storefront que debe quedar con anon es
+  `place_web_order` (checkout público activo).
 
 ### 🟠 Limpieza — logging temporal vencido hace >1 mes
 
@@ -2341,6 +2350,31 @@ Documentadas en `docs/RUNBOOK-APROVISIONAMIENTO-CLIENTE.md`. Punto clave:
   al repo). Patrón "N proyectos Vercel apuntando al mismo main" también
   desperdicia builds. Alternativa: crear proyecto Vercel desde dashboard
   manual (permite múltiples por repo). Para Taiwy Sport se eligió manual.
+
+### ✅ Cerrados en esta pasada de endurecimiento SECDEF (2026-10-12)
+
+- **Auditar SECDEF con anon** — **cerrado**. Dos migraciones versionadas
+  aplicadas en ambas instancias:
+  - `20261012000000_revoke_anon_from_internal_rpcs` — REVOKE EXECUTE a
+    `PUBLIC, anon` + GRANT a `authenticated, service_role` sobre 10 RPCs
+    (8 INVOKER + `create_web_order` + `public_place_order`). Preserva
+    `place_web_order` con anon (storefront). Verificado con
+    `has_function_privilege` en Solcraft (2026-10-12 ~22:40 UTC) y Taiwy
+    Sport (poco después). Smoke reversible pasado: ajuste `#1` en
+    Solcraft + ajuste `#2` en Taiwy Sport, ambos anulados, kardex y
+    contabilidad con 0 violaciones post-anulación.
+  - `20261012000001_revoke_anon_from_definer_rpcs_with_guards` — misma
+    mecánica sobre 5 DEFINER con guard interno
+    (`list_orphan_product_media` sin guard — exposición menor de
+    metadata del bucket; `dispatch_transfer_atomic`,
+    `import_products_bulk_atomic`, `receive_transfer`,
+    `reconcile_transfer` con guard, revocadas por defensa en
+    profundidad). Verificado con `has_function_privilege` en ambas.
+- Nota actualizada en `docs/RUNBOOK-APROVISIONAMIENTO-CLIENTE.md §2.2`:
+  Supabase otorga EXECUTE a anon por *default privileges* al crear
+  funciones en `public` → `REVOKE FROM PUBLIC` solo no alcanza; hay que
+  revocar también a `anon` explícitamente. Patrón obligatorio para
+  cualquier RPC interno nuevo documentado en la misma sección.
 
 ### ✅ Cerrados en esta pasada de consolidación (2026-10-06)
 
