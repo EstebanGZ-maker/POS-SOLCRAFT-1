@@ -1,10 +1,41 @@
 # ESTADO-PENDIENTES.md
 
 > **Propósito**: dump de estado para que una instancia nueva de Claude sin
-> memoria pueda retomar sin perder nada. Última actualización: **2026-10-06**
-> (s28: fix crítico de precio en POS — `createSale` ignoraba descuentos
-> manuales del vendedor durante 70 días en silencio). `main` avanzó desde
-> `22e0763` con múltiples commits — ver `git log` para el detalle.
+> memoria pueda retomar sin perder nada. Última actualización: **2026-10-12**
+> (s28: fix crítico de precio en POS confirmado parcialmente con 2 ventas
+> reales + endurecimiento SECDEF + registro de intervenciones manuales).
+> `main` avanzó desde `22e0763` con múltiples commits — ver `git log` para
+> el detalle.
+
+---
+
+## Registro de intervenciones manuales en producción
+
+> Toda ejecución de SQL contra las DBs productivas que NO pasó por una
+> migración versionada en `supabase/migrations/`. Se agrega **en el mismo
+> momento** en que se hace la intervención. Fecha "a confirmar" marca
+> intervenciones recuperadas del historial donde no quedó el timestamp
+> exacto; mantener así hasta que se confirme por log de Supabase o por
+> memoria de Esteban.
+
+| Fecha | Instancia | SQL / acción | Motivo | Autorizado por |
+|---|---|---|---|---|
+| a confirmar (s24) | `aapchdjwpqhwsquffnxn` (Taiwy Sport) | `UPDATE business_settings SET whatsapp_enabled=true WHERE id=1` | Habilitar método WhatsApp en checkout público. Sin esto el checkout quedaba bloqueado ("No hay métodos de pago habilitados"). | Esteban |
+| a confirmar (s24 o anterior) | `aapchdjwpqhwsquffnxn` | `UPDATE warehouses SET is_public=true WHERE ...` (criterio no registrado) | Marcar bodegas elegibles para el storefront público. Precondición de `public_place_order`. | Esteban |
+| a confirmar (s25, 2026-08-31) | `aapchdjwpqhwsquffnxn` | Borrado de datos de prueba: `DELETE FROM products WHERE ...`, `DELETE FROM transfers WHERE ...`, `DELETE FROM inventory_adjustments WHERE ...`, `DELETE FROM stock_movements WHERE ...`, `UPDATE pos_shifts SET status='closed' ...` (criterios exactos no registrados) | Dejar la instancia limpia y operable para la primera operación real del cliente. Documentado en §0 (s25) como "Limpieza completa de datos de prueba en Taiwy Sport". | Esteban |
+| a confirmar | `aapchdjwpqhwsquffnxn` | `UPDATE product_images SET updated_at=NOW() WHERE ...` (criterio no registrado) | Disparar `trg_sync_primary_image` para repoblar `products.image_url` a partir de la galería `product_images`. Workaround ante un gap entre importación de imágenes y propagación al campo principal. | Esteban |
+| a confirmar (s25, 2026-08-31) | `nxszaxwsrtlofqimbfig` (Solcraft) | `UPDATE products SET type_prefix='AC' WHERE type_prefix='PA' AND code IN (...)` (5 productos) | 5 pavas con `category_id` de Accesorios tenían `type_prefix='PA'` → aparecían en la línea "Pantalones" de la landing (que agrupaba por `type_prefix` hardcoded). Precedió al fix s25 que reescribió `public_catalog_facets` para agrupar por `category_id` real. Codes inmutables (`PA-U-95-00` .. `04`) preservados. | Esteban |
+| 2026-10-06 (s28) | `nxszaxwsrtlofqimbfig` + `aapchdjwpqhwsquffnxn` | Verificación READ-ONLY de ventas pre-fix: `SELECT COUNT(*) FROM sale_items WHERE ...` + `SELECT * FROM sale_items WHERE sale_id IN ('03ea21d3...', 'eacf9f7c...')` | Confirmar end-to-end el fix de precio del commit `93282f8` (descuentos manuales persistidos). | Esteban |
+| 2026-10-12 (s28) | `nxszaxwsrtlofqimbfig` | `has_function_privilege` + `pg_proc` + `pg_policies` sobre 11 RPCs + 9 tablas (READ-ONLY) | Auditoría SECDEF: verificar exposición real anon antes de aplicar `20261012000000_revoke_anon_from_internal_rpcs`. | Esteban |
+
+> **Reglas de la tabla**:
+> - **No se borran filas** — una intervención antigua que se revierte se
+>   deja con una nota adicional, no se elimina.
+> - **Preferir migración versionada** cuando la operación es repetible o
+>   deba replicarse en instancias nuevas. Esta tabla captura solo lo
+>   que es intrínsecamente one-off o se ejecutó antes de la regla.
+> - **Toda nueva intervención** desde 2026-10-12 debe aparecer acá con
+>   fecha exacta, SQL completo (o resumen fiel), motivo y autorización.
 
 ---
 

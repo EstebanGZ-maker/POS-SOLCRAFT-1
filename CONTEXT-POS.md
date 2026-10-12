@@ -2,6 +2,46 @@
 
 Contexto denso de POS-SOLCRAFT para pasar a otra instancia de Claude sin acceso al repo. Estado al 2026-08-27. Ver §7.19 (última sesión: s24 catálogo público 100 % configurable por instancia — textos + flujo WhatsApp real + modelo 3D del hero — en prod), §7.18 (sesión 2026-08-25 productización + aprovisionamiento Taiwy Sport) y §7.17 (sesión 2026-08-24 s21/s22/s23). Detalle operativo actualizado siempre en `docs/ESTADO-PENDIENTES.md §0`.
 
+## 0. Reglas de sesión (obligatorias — leer antes de tocar nada)
+
+Reglas que aplican a toda sesión de trabajo sobre este repo. Son
+obligatorias — no "convenciones" ni "ideales". Si una tarea entra en
+conflicto con alguna, se discute y se registra la excepción explícita
+antes de ejecutarla.
+
+1. **Rama + preview + smoke + merge para todo lo que toque dinero,
+   stock o permisos**. Prohibido `push` directo a `main` para esos
+   cambios. Un hotfix directo requiere **aprobación explícita de
+   Esteban en el momento** y queda registrado como excepción (fecha,
+   motivo, archivo tocado).
+2. **Antes de `CREATE OR REPLACE` sobre una función SQL existente**,
+   comparar `md5(prosrc)` entre las dos instancias productivas
+   (`nxszaxwsrtlofqimbfig` y `aapchdjwpqhwsquffnxn`) y confirmar que
+   el cuerpo que se va a sobrescribir es el "correcto". Si hay
+   deriva, decidir primero cuál versión es la vigente y documentar
+   el motivo del endurecimiento o unificación en el comentario de la
+   migración.
+3. **Toda migración SQL vive en `supabase/migrations/`** con
+   timestamp. Debe ser:
+   - **Idempotente** (`IF NOT EXISTS`, `CREATE OR REPLACE`, `ON
+     CONFLICT`, `DROP ... IF EXISTS`).
+   - **Aplicada en ambas instancias** (`nxszaxwsrtlofqimbfig` +
+     `aapchdjwpqhwsquffnxn`) antes de considerar el deploy cerrado.
+   - **Aplicada antes que el código** TS que la consume (el TS no se
+     mergea mientras la DB no esté lista).
+   - **Si crea un RPC interno (no destinado al storefront público):
+     terminar con `REVOKE EXECUTE … FROM PUBLIC, anon` +
+     `GRANT EXECUTE … TO authenticated, service_role`**. Supabase
+     otorga EXECUTE a anon por default privileges — `REVOKE FROM
+     PUBLIC` solo no alcanza (ver nota en runbook §2.2).
+4. **Nada se borra ni se sobrescribe sin rastro** — quién, cuándo,
+   por qué. Se anula, no se borra (ej. `status='voided'` +
+   `voided_by/voided_at/void_reason`). Con el cliente operando, no se
+   borra data a mano. Toda intervención manual en producción
+   (SQL ejecutado contra DB sin pasar por migración versionada) se
+   registra inmediatamente en `docs/ESTADO-PENDIENTES.md §
+   "Registro de intervenciones manuales en producción"`.
+
 ## 1. Stack y versiones
 
 - **Framework**: Next.js `15.5.21` (App Router, RSC).
