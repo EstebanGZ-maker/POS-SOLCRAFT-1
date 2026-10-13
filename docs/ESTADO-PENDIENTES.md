@@ -2,10 +2,10 @@
 
 > **Propósito**: dump de estado para que una instancia nueva de Claude sin
 > memoria pueda retomar sin perder nada. Última actualización: **2026-10-13**
-> (s28: cierre del endurecimiento SECDEF — permisos aplicados en ambas
-> instancias; dos pendientes 🔴 ALTA abiertos sobre alineación de guards
-> en Solcraft y trazabilidad de anulaciones). `main` avanzó desde
-> `22e0763` con múltiples commits — ver `git log` para el detalle.
+> (s28 cierre: endurecimiento SECDEF aplicado y verificado +
+> `scripts/verify_provisioning.sql` como gate obligatorio del runbook +
+> datos y decisiones de `celulares-carmen` listos para arrancar Bloque B
+> en la próxima sesión). `main` @ `e94279f`. Ver `git log` para el detalle.
 
 ---
 
@@ -167,7 +167,158 @@ sobre datos limpios. Coordinar con Esteban cuándo hacer la pasada.
 
 ---
 
-## 0. LEE ESTO PRIMERO — estado tras sesión 2026-08-31 (s25 pulido + guards + fix crítico)
+## 0. LEE ESTO PRIMERO — estado tras sesión 2026-10-13 (s28 cierre SECDEF + verify_provisioning + preparación celulares-carmen)
+
+**Estado de ramas**: `main` @ `e94279f`. Sin ramas de feature vivas.
+
+### Cerrado en esta sesión
+
+- **Endurecimiento de permisos SECDEF cerrado** (ambas instancias). 15
+  funciones internas sin `EXECUTE` para `anon`: migraciones
+  `20261012000000_revoke_anon_from_internal_rpcs` (10 RPCs) y
+  `20261012000001_revoke_anon_from_definer_rpcs_with_guards` (5
+  DEFINER con guard). Verificado con `has_function_privilege`. Smoke
+  reversible pasado: ajuste #1 anulado en Solcraft, ajuste #2 anulado
+  en Taiwy Sport, `verify_kardex_integrity` /
+  `verify_credit_integrity` / `verify_adjustment_accounting_integrity`
+  en 0 violaciones post-anulación. Commit `63880f8`.
+- **Auditoría de deriva** entre instancias (lectura). 57 funciones por
+  instancia, **0 huérfanas**, **0 deriva en triggers, índices y
+  policies RLS**. Deriva real solo en **4 guards de rol en Solcraft**
+  (`apply_customer_credit`, `create_adjustment`, `create_sale`,
+  `void_adjustment`): tienen el guard legacy
+  `IF v_role NOT IN (...)` que acepta `v_role = NULL`; Taiwy Sport ya
+  tiene la versión endurecida con `IF v_role IS NULL OR v_role NOT IN
+  (...)`. Las 3 funciones `void_sale`, `get_shift_balance` y
+  `register_payment` difieren solo en el `;` final después de `END`
+  del bloque PL/pgSQL (verificado byte-por-byte, sin efecto —
+  opcional en PL/pgSQL dentro de `AS $function$ ... $function$`). Las
+  otras 13 funciones con md5 distinto son solo comentarios +
+  whitespace. **Repo correcto** (scripts 15 a 18 ya tienen las
+  versiones endurecidas); un tercer cliente aprovisionado via runbook
+  §2.3 nace con los guards correctos.
+- **Reglas de sesión y registro de intervenciones manuales**
+  formalizados en `CONTEXT-POS.md §0` y `ESTADO-PENDIENTES.md § "Registro
+  de intervenciones manuales en producción"` (commits `2b6b298` y
+  `63880f8`).
+- **Bloque A: `scripts/verify_provisioning.sql`** (commit `e94279f`,
+  2026-10-13). Script SOLO LECTURA con 37 chequeos que validan toda
+  instancia recién aprovisionada: 15 anon-false (internas) + 10
+  anon-true (storefront) + 2 buckets + 2 triggers + 29 RPCs del
+  release 2C+D + Tránsito única + bodegas primaries + 10 `md5_logic`
+  vs baseline Taiwy Sport (con detección automática de "GUARD DÉBIL"
+  en los 4 guards) + 3 integridades en 0 + `business_settings`.
+  Validado 37/37 PASS en Taiwy Sport, 8 fails esperados en Solcraft
+  (4 guards + 4 cosméticos — todos ya documentados como pendientes
+  ALTA). Agregado al runbook como §6.1 "Verificación automática
+  post-smoke — GATE OBLIGATORIO".
+
+### Decisiones del cliente `celulares-carmen` (próxima sesión arranca por acá)
+
+Instancia aislada (Camino A), subdominio
+`celulares-carmen.app-solcraft.com`. Datos recibidos:
+- **Negocio**: Celulares Carmen (`business_name` editable desde
+  `/settings/receipt`).
+- **Admin inicial**: `esteban@solcraftsas.com` (minúsculas, como siempre).
+- **Sedes**: Bodega Central (`is_central=TRUE`, virtual, recibe y
+  distribuye) + "Celulares carmen 1" + "Celulares carmen 2" (ambas de
+  venta, `is_central=FALSE`). Todas con `is_public=false`.
+  - **Códigos de sede propuestos**: `CEN`, `CC1`, `CC2`. PENDIENTES de
+    aprobación de Esteban antes de ejecutar Fase 3 del runbook.
+- **Sin IVA**: `products.tax_rate` default 0.
+- **Rubro**: celulares, accesorios y tecnología. Venta por referencia,
+  sin IMEI.
+- **Alcance**: solo POS presencial. **Sin** catálogo público, WhatsApp
+  ni Wompi. `PRODUCT_DELETE_OWNER_EMAIL` NO configurar (igual que
+  Taiwy Sport).
+- **Panel IA de ingreso**: NO usarlo hasta tener el perfil de rubro
+  (Bloque C). Carga inicial es por el importador de Excel.
+- **Categorías semilla (10, lista final)**: FUNDAS, CARGADORES,
+  AUDIFONOS, VIDRIOS, CABLES, POWERBANKS (corregido desde
+  "POWEBANKS"), SOPORTES, PARLANTES, RELOJES, ACCESORIOS. **Sin**
+  CELULARES, TABLETS ni LAPTOPS por decisión de Esteban. **Nota
+  crítica al registro**: sin categoría CELULARES el importador de
+  Excel rechazará filas de celulares hasta que se cree esa categoría
+  desde `/inventory/management`.
+- **Verificación pendiente (sin implementar)**: existencia de
+  pantalla para renombrar sedes y categorías. Si no existe, proponer
+  alcance.
+- **Costo del proyecto Supabase**: Esteban autoriza sobre el importe
+  real que muestre la confirmación de costos al crear el proyecto. La
+  referencia previa fue USD 10/mes por proyecto adicional en plan
+  Team/Pro (no USD 25). Pedir confirmación de costo antes de crear.
+- **Proyecto Vercel**: lo crea Esteban desde el dashboard sobre el
+  mismo repo, con rama de producción `main` igual que Taiwy Sport.
+- **`service_role` key**: la carga Esteban en Vercel desde el
+  dashboard. **NO viaja por chat.**
+
+### Pendientes, en orden
+
+1. **Bloque B**: aprovisionar `celulares-carmen` fase por fase con el
+   runbook, pausando después de cada fase para que Esteban verifique.
+   Smoke real a cargo de Esteban: una venta en cada local, un
+   traslado Central → local con recepción, cierre de turno. Yo
+   verifico contra la DB.
+2. **Bloque C**: diseño del perfil de rubro **por instancia** para la
+   IA (sin FK a `tenants`, sin CHECK de lista fija de rubros).
+   Parametriza prompt, campos extraídos, etiquetas UI ("Talla" →
+   "Capacidad" / "Variante"), esquema de código, categorías semilla.
+   Implementación posterior por rama + preview + smoke. Cuando exista
+   la tabla `tenants`, el rubro se mueve ahí.
+3. **Bloque D**: `docs/CAMINO-B-MULTITENANT.md` +
+   `docs/PLAN-IMPLEMENTACION-CLIENTES.md` con las 7 correcciones
+   acordadas:
+   - Conteo real: 36 tablas en `public` (no 29).
+   - **Supabase Vault v0.3.1** está instalado — rehacer la decisión
+     Wompi con credenciales **cifradas por tenant en Vault**, no env
+     vars por slug ni texto plano.
+   - IA: el código ya volvió al **AI Gateway pago** (ya no usa
+     `GOOGLE_GENERATIVE_AI_API_KEY` ni la API directa de Google).
+     Verificar en docs de Vercel si el Gateway permite atribuir
+     consumo por usuario/tag.
+   - Perfil de rubro: fuera de Fase 6, pasa a Bloque C. FK a
+     `rubro_profiles` (no CHECK de lista fija).
+   - `current_tenant()`: benchmark contra `tenant_id` como claim JWT
+     y contra `(SELECT current_tenant())` en policies, en staging,
+     antes de comprometer la reescritura de las 97 policies.
+   - RPCs públicos: `p_tenant_id` NO es frontera de seguridad (la
+     anon key es pública). Definir qué expone y qué valida cada RPC
+     público (tenant activo, tienda habilitada, anti-spam).
+   - Auth: comodín de redirect URLs `*.app-solcraft.com` + JWT secret
+     compartido como riesgo.
+   - Modelo de releases: evaluar si Vercel permite fijar rama de
+     producción por proyecto. Propuesta: `main` corre Solcraft; los
+     clientes usan rama `release` que se promueve tras smoke en
+     Solcraft y en un cliente piloto. Solo reportar — no cambiar
+     Taiwy Sport.
+   Orden del plan: primero rubro y aprovisionamiento; después
+   staging, suite de aislamiento y, recién entonces, `tenant_id` y
+   RLS. **NO** migrar Solcraft ni Taiwy Sport. 4 fases, adaptado a:
+   celulares, sin DIAN por ahora, **seis clientes en espera**.
+4. **ALTA — sin tocar aún** (pendientes del backlog SECDEF/deriva):
+   - Alineación de los 4 guards de rol en Solcraft
+     (`apply_customer_credit`, `create_adjustment`, `create_sale`,
+     `void_adjustment`): adoptar la versión de Taiwy Sport,
+     `CREATE OR REPLACE` sin `DROP` (preserva REVOKE a anon). SQL no
+     escrito ni aplicado.
+   - Trazabilidad de anulaciones (`voided_by`, `voided_at`,
+     `void_reason` + vista "Anulados"). Alcance primera pasada:
+     ajustes. Diseño aprobado; migración no aplicada.
+   - Rotación anon key en Solcraft (`nxszaxwsrtlofqimbfig`) y
+     `SUPABASE_SERVICE_ROLE_KEY`: siguen pendientes, sin fecha.
+
+### Reglas obligatorias (recordatorio)
+
+Diseño antes que código; mostrar SQL antes de aplicarlo; todo lo que
+toque dinero/stock/permisos va por rama + preview + smoke + merge;
+migraciones versionadas en ambas instancias; migración antes que
+código; `md5(prosrc)` entre instancias antes de pisar funciones;
+nada se borra a mano; cada intervención manual al registro;
+`service_role` nunca por chat.
+
+---
+
+## HISTORIAL — sesión 2026-08-31 (s25 pulido + guards + fix crítico)
 
 **Estado de ramas**: `main` @ `22e0763`. Sin ramas de feature vivas.
 

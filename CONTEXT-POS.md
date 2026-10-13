@@ -1,6 +1,6 @@
 # CONTEXT-POS.md
 
-Contexto denso de POS-SOLCRAFT para pasar a otra instancia de Claude sin acceso al repo. Estado al 2026-08-27. Ver §7.19 (última sesión: s24 catálogo público 100 % configurable por instancia — textos + flujo WhatsApp real + modelo 3D del hero — en prod), §7.18 (sesión 2026-08-25 productización + aprovisionamiento Taiwy Sport) y §7.17 (sesión 2026-08-24 s21/s22/s23). Detalle operativo actualizado siempre en `docs/ESTADO-PENDIENTES.md §0`.
+Contexto denso de POS-SOLCRAFT para pasar a otra instancia de Claude sin acceso al repo. Estado al **2026-10-13**. Última sesión documentada acá: **§7.21** (s28 cierre: endurecimiento SECDEF aplicado en ambas instancias + `scripts/verify_provisioning.sql` como gate obligatorio del runbook + preparación cliente `celulares-carmen`). Detalle operativo actualizado siempre en `docs/ESTADO-PENDIENTES.md §0`.
 
 ## 0. Reglas de sesión (obligatorias — leer antes de tocar nada)
 
@@ -2540,6 +2540,82 @@ futuras a menos que el usuario las abra):
   comparten repo → un push a main = 2 builds en paralelo. Ya
   documentado en s18 y confirmado esta sesión. Mismo cuidado a
   aplicar en cualquier fix futuro.
+
+## §7.21 — Sesión 2026-10-13 (s28 cierre SECDEF + verify_provisioning + preparación celulares-carmen, `main` @ `e94279f`)
+
+**Alcance**: cerrar el módulo de endurecimiento SECDEF/deriva iniciado
+en sesiones previas, dejar en el repo el gate automático de
+verificación post-aprovisionamiento, y pre-cargar las decisiones del
+próximo cliente (`celulares-carmen`) listas para arrancar el runbook
+sin re-derivar nada.
+
+**Lo que queda invariante de aquí en adelante** (no se re-derive):
+
+1. **15 funciones internas con `anon_exec=false`** en ambas instancias
+   productivas. Migraciones versionadas:
+   - `supabase/migrations/20261012000000_revoke_anon_from_internal_rpcs.sql`
+     (10 RPCs: 8 INVOKER + `create_web_order` + `public_place_order`).
+   - `supabase/migrations/20261012000001_revoke_anon_from_definer_rpcs_with_guards.sql`
+     (5 DEFINER con guard interno: `list_orphan_product_media`,
+     `dispatch_transfer_atomic`, `import_products_bulk_atomic`,
+     `receive_transfer`, `reconcile_transfer`).
+2. **10 funciones públicas del storefront con `anon_exec=true`** por
+   diseño: `place_web_order`, `public_catalog_business`,
+   `public_catalog_facets`, `public_catalog_list`,
+   `public_catalog_product`, `public_catalog_sites`,
+   `public_commerce_config`, `public_product_sizes`, `public_get_order`,
+   `public_web_order_lookup`.
+3. **`place_web_order` es la DEFINER ACTIVA** del checkout público
+   (`lib/catalog-actions.ts:138`). `create_web_order` y
+   `public_place_order` son variantes legacy sin uso en el repo —
+   revocadas de anon por la migración 1, pero vivas en el schema;
+   candidatas a DROP en una limpieza futura.
+4. **Nota de default privileges de Supabase**: al crear una función en
+   `public`, Supabase otorga `EXECUTE` a `anon` por default privileges.
+   `REVOKE EXECUTE FROM PUBLIC` solo NO alcanza — hay que revocar
+   también a `anon` explícitamente. Toda migración que agregue un RPC
+   interno nuevo debe terminar con
+   `REVOKE EXECUTE ... FROM PUBLIC, anon` +
+   `GRANT EXECUTE ... TO authenticated, service_role`. Documentado en
+   `docs/RUNBOOK-APROVISIONAMIENTO-CLIENTE.md §2.2`.
+5. **Deriva confirmada entre Solcraft y Taiwy Sport**:
+   - **Triggers, índices y policies RLS**: 0 deriva (6 / 123 / 97
+     objetos iguales byte-a-byte).
+   - **Funciones**: 57 por instancia, 0 huérfanas. Solo 4 difieren en
+     **lógica real** — los guards de rol en `apply_customer_credit`,
+     `create_adjustment`, `create_sale`, `void_adjustment`. Solcraft
+     tiene legacy `IF v_role NOT IN (...)`, Taiwy tiene endurecido
+     `IF v_role IS NULL OR v_role NOT IN (...)`. Taiwy es la referencia
+     correcta (coincide con los scripts 15 a 18 del repo). 3 funciones
+     (`void_sale`, `get_shift_balance`, `register_payment`) difieren
+     solo en el `;` final después de `END` del bloque PL/pgSQL —
+     verificado byte-por-byte, **sin efecto funcional** (opcional en
+     PL/pgSQL dentro de `AS $function$ ... $function$`). Las 13
+     restantes son solo comentarios + whitespace.
+   - **Alineación de los 4 guards en Solcraft** queda como pendiente
+     ALTA en `ESTADO-PENDIENTES.md §0` — no aplicado todavía.
+6. **`scripts/verify_provisioning.sql`** (commit `e94279f`): 37
+   chequeos SOLO LECTURA. Incorporado al runbook como **§6.1 "Verificación
+   automática post-smoke — GATE OBLIGATORIO"**. Toda fila con `ok=false`
+   bloquea el handoff al cliente. Baseline del chequeo 33 (md5_logic de
+   10 funciones críticas) tomado de Taiwy Sport al 2026-10-13 —
+   detecta automáticamente el guard DÉBIL en las 4 funciones afectadas
+   si una instancia nueva no quedó alineada.
+7. **Reglas de sesión formalizadas** en `CONTEXT-POS.md §0` (desde
+   2026-10-12, commit `2b6b298`): rama+preview+smoke+merge para
+   dinero/stock/permisos; md5 antes de pisar funciones; migraciones
+   idempotentes versionadas en ambas instancias; nada se borra a mano;
+   intervenciones manuales van al registro en `ESTADO-PENDIENTES.md`.
+
+**Lo que queda abierto** (ver `ESTADO-PENDIENTES.md §0` para detalle):
+
+- Aprovisionar `celulares-carmen` (datos y decisiones ya cerrados).
+- Diseño de perfil de rubro por instancia (Bloque C).
+- Docs multi-tenant con 7 correcciones acordadas (Bloque D).
+- Alineación de los 4 guards + trazabilidad de anulaciones + rotación
+  de claves — todos pendientes ALTA sin arrancar.
+
+---
 
 ## §7.20 — Sesión 2026-08-31 (s25 pulido + guards + fix crítico + catálogo por categoría, `main` @ `22e0763`)
 
