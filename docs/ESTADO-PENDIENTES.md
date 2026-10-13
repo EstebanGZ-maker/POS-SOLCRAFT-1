@@ -1,11 +1,11 @@
 # ESTADO-PENDIENTES.md
 
 > **Propósito**: dump de estado para que una instancia nueva de Claude sin
-> memoria pueda retomar sin perder nada. Última actualización: **2026-10-12**
-> (s28: fix crítico de precio en POS confirmado parcialmente con 2 ventas
-> reales + endurecimiento SECDEF + registro de intervenciones manuales).
-> `main` avanzó desde `22e0763` con múltiples commits — ver `git log` para
-> el detalle.
+> memoria pueda retomar sin perder nada. Última actualización: **2026-10-13**
+> (s28: cierre del endurecimiento SECDEF — permisos aplicados en ambas
+> instancias; dos pendientes 🔴 ALTA abiertos sobre alineación de guards
+> en Solcraft y trazabilidad de anulaciones). `main` avanzó desde
+> `22e0763` con múltiples commits — ver `git log` para el detalle.
 
 ---
 
@@ -2251,6 +2251,78 @@ DB debe quedar en el techo del catálogo, no en el valor inflado.
 - **Casing inconsistente**: "Ten Guayo Nike Lunar Gato" vs "ten guayo
   Nike Lunar Gato" (TG-43-245-05). Fix = `UPDATE products SET name=... WHERE
   code='TG-43-245-05'`. Query para encontrar otros casos en §0 (s27).
+
+### 🔴 ALTA — pendientes abiertos del cierre SECDEF/deriva (2026-10-13)
+
+1. **Alineación de guards de rol en Solcraft** (`nxszaxwsrtlofqimbfig`).
+   Las 4 funciones `apply_customer_credit`, `create_adjustment`,
+   `create_sale` y `void_adjustment` en Solcraft tienen el guard viejo
+   `IF v_role NOT IN (...)` que acepta `v_role = NULL` (porque
+   `NULL NOT IN (...)` es NULL → el IF no lanza). Taiwy Sport ya tiene
+   la versión endurecida con `IF v_role IS NULL OR v_role NOT IN (...)`.
+   **Acción**: migración `CREATE OR REPLACE FUNCTION` (sin `DROP`, para
+   no perder los REVOKE a `anon` ya aplicados por
+   `20261012000000_revoke_anon_from_internal_rpcs`) adoptando la versión
+   completa de Taiwy Sport (sin híbrida de mensajes de error de
+   `create_adjustment` — ya verificado que ningún código TS parsea
+   `'Motivo inválido'` ni `'Falta product_id'`). Taiwy Sport no se
+   toca. Smoke tras aplicar: ajuste `+1` + anulación + venta de contado
+   de 1 ítem en turno abierto + anulación. **SQL aún no escrito ni
+   aplicado.** Repo correcto, Taiwy Sport correcta — solo Solcraft
+   atrasado.
+
+2. **Trazabilidad de anulaciones** (`voided_by`, `voided_at`,
+   `void_reason` + vista "Anulados"). Alcance primera pasada:
+   **ajustes** (`inventory_adjustments` + RPC `void_adjustment` + UI
+   `/inventory/adjustments`). `void_sale` y traslados quedan para
+   pasadas aparte con su propia revisión. Requisito explícito de
+   Esteban: hoy no hay historial visible de anulados ni rastro de
+   quién/cuándo/por qué fuera de `stock_movements.user_id`.
+   **Diseño aprobado** en esta sesión:
+   - Columnas con FK a `auth.users(id) ON DELETE SET NULL`
+     (convención de `created_by`; PK de `user_profiles` es `id`).
+   - Firma `void_adjustment(p_adjustment_id, p_reason text DEFAULT NULL)`
+     con validación `>= 3 chars` obligatoria en TS/UI, no en SQL (evita
+     ventana de deploy roto).
+   - DROP + CREATE del RPC (evita sobrecarga ambigua) seguido de
+     `REVOKE EXECUTE FROM PUBLIC, anon` + `GRANT TO authenticated,
+     service_role` (Supabase otorga EXECUTE a anon por default
+     privileges al crear funciones en `public`; sin esto el DROP+CREATE
+     reabriría anon).
+   - UI: `getAdjustments(status?: 'active'|'voided'|'all')`, pestañas
+     Activos | Anulados | Todos (default Activos), banner con
+     quién/cuándo/motivo (`"sin dato"` para históricos pre-migración),
+     link a los movimientos de reversa en kardex, dialog con textarea.
+   Archivo propuesto: `supabase/migrations/20261013000000_void_adjustment_traceability.sql`.
+   **Migración no aplicada.** Dependencia: debe ejecutarse DESPUÉS de
+   #1 (la alineación del NULL guard) para que la nueva versión del RPC
+   herede el guard endurecido como base.
+
+### Resultado de la auditoría de deriva (2026-10-12, solo lectura)
+
+- 57 funciones de `public` en cada instancia. **0 huérfanas** (todas
+  presentes en ambas).
+- **0 deriva en triggers** (6 por instancia, md5 idéntico).
+- **0 deriva en índices** (123 por instancia, md5 idéntico).
+- **0 deriva en policies RLS** (97 por instancia, md5 idéntico).
+- **Deriva real solo en 4 funciones** — los guards de rol listados en
+  el pendiente #1 arriba.
+- Las otras 16 funciones con md5 distinto son **cosmética verificada**:
+  10 son comentarios + whitespace; 3 (`void_sale`, `get_shift_balance`,
+  `register_payment`) difieren por el `;` final después de `END` del
+  bloque PL/pgSQL (opcional, zero efecto); 3 (`close_shift`,
+  `verify_adjustment_accounting_integrity`, `verify_credit_integrity`)
+  difieren por un mensaje de error cosmético o un alias de columna sin
+  impacto funcional. **No se alinean**.
+- Diagnóstico de origen: la deriva de los 4 guards viene de que el
+  baseline canónico (`20260812000000_baseline_canonical_from_prod.sql`)
+  tenía las versiones débiles del prod viejo, y los scripts 15-18
+  (release 2C+D) las sobrescriben con la versión endurecida. **Taiwy
+  Sport** aplicó baseline + 15-18 completos (s24 aprovisionamiento) →
+  quedó endurecida. **Solcraft** quedó en una versión intermedia donde
+  esos 4 cuerpos nunca fueron reemplazados por las versiones 2C+D.
+- Un **tercer cliente** aprovisionado via `docs/RUNBOOK-APROVISIONAMIENTO-CLIENTE.md`
+  §2.3 nace con la versión endurecida (baseline + 15-18 obligatorios).
 
 ### 🟠 Seguridad — rotaciones de claves pendientes
 
