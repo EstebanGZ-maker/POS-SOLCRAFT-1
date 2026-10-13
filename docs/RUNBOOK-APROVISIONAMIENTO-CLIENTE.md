@@ -588,6 +588,43 @@ Con los datos iniciales cargados, ejecutar en el navegador contra
       sandbox, redirect de vuelta a `/catalog/order/*/pago`. Verificar
       webhook procesado en `payment_events` tabla.
 
+### 6.1 Verificación automática post-smoke — GATE OBLIGATORIO
+
+Antes del handoff (§7), correr `scripts/verify_provisioning.sql` contra
+la DB de la nueva instancia. Es SOLO LECTURA, devuelve una fila por
+chequeo con `ok=true|false` y `detail`.
+
+```sql
+-- Vía MCP execute_sql o Supabase Studio SQL Editor
+\i scripts/verify_provisioning.sql
+```
+
+**Toda fila con `ok=false` bloquea el handoff.** Chequeos cubiertos (37):
+
+- 15 funciones internas con `anon_exec=false` (de las 2 migraciones
+  SECDEF `20261012000000` + `20261012000001`).
+- 10 funciones públicas del storefront con `anon_exec=true`
+  (`place_web_order`, `public_catalog_*`, `public_commerce_config`,
+  `public_get_order`, `public_product_sizes`, `public_web_order_lookup`).
+  Deben existir aunque el storefront público no se use en esta
+  instancia — son parte del baseline.
+- Buckets `product-media` (público, acepta jpg/png) y `catalog-assets`
+  (público, ≥50 MB file_size_limit, acepta `model/gltf-binary`).
+- Triggers `on_auth_user_created` (auth.users) y `trg_sync_primary_image`
+  (product_images).
+- 29 RPCs del release 2C+D + helpers presentes por nombre.
+- 1 bodega `is_system=TRUE` (Tránsito única) y cada sede con al menos
+  1 `is_primary=TRUE`.
+- `md5_logic` de 10 funciones críticas reportado para contraste manual
+  entre instancias (deriva se detecta así).
+- `verify_kardex_integrity`, `verify_credit_integrity`,
+  `verify_adjustment_accounting_integrity` en 0 violaciones.
+- `business_settings` con exactamente 1 fila y `business_name` no vacío.
+
+Guardar la salida completa en el registro de aprovisionamiento del
+cliente (§7.4). Si cualquier chequeo falla, resolver y re-correr antes
+de continuar.
+
 ---
 
 ## 7. Handoff al cliente
