@@ -565,18 +565,42 @@ se evita introducir excepciones al modelo de `is_central` que después
 habría que revertir cuando aparezca un segundo cliente con configuración
 similar.
 
-```sql
--- Sede central (virtual, solo para ingreso de mercancía)
-INSERT INTO sites (name, code, is_central, address) VALUES
-  ('Bodega Central', 'CENTRAL', TRUE, NULL);
+El código `sites.code` **no es consultado por nombre** en TS/TSX ni en
+funciones SQL (verificado con grep en 2026-10-14, aprovisionamiento
+celulares-carmen): el sistema identifica la sede central siempre por
+`is_central=TRUE` (ver `lib/site-actions.ts:82`, `lib/site-context.tsx:39`,
+`one_central_site` unique index). Elegí un código corto nemotécnico
+(`CEN`, `CENTRAL`, `BC`...), pero no toques eso luego de aprovisionar
+porque el `code` igual se muestra en algunas UIs.
 
--- Sede de venta real (donde ocurre el POS)
+```sql
+-- Sede central (virtual, solo para ingreso de mercancía).
+-- <CODIGO_CENTRAL>: 2-7 chars nemotécnicos; libre, no hay dependencia
+-- textual del código en el código fuente.
+INSERT INTO sites (name, code, is_central, address) VALUES
+  ('Bodega Central', '<CODIGO_CENTRAL>', TRUE, NULL);
+
+-- Sede de venta real (donde ocurre el POS).
+-- Repetir el bloque por cada sede de venta del cliente.
 INSERT INTO sites (name, code, is_central, address) VALUES
   ('<NOMBRE_TIENDA>', '<CODIGO_3_LETRAS>', FALSE, '<DIRECCION>');
 
--- Warehouse primaria para cada sede (transparente al usuario)
-INSERT INTO warehouses (site_id, name, is_primary)
-SELECT site_id, 'Principal', TRUE FROM sites;
+-- Warehouse primaria para cada sede (transparente al usuario).
+INSERT INTO warehouses (site_id, name, is_primary, is_system, is_public)
+SELECT site_id, 'Principal', TRUE, FALSE,
+       <IS_PUBLIC>  -- true si la sede expone catálogo público, false si no
+  FROM sites WHERE NOT is_central;
+
+-- Warehouse Principal del central (no se expone al catálogo público,
+-- solo recibe mercancía antes del traslado a sedes de venta).
+INSERT INTO warehouses (site_id, name, is_primary, is_system, is_public)
+SELECT site_id, 'Principal', TRUE, FALSE, FALSE
+  FROM sites WHERE is_central;
+
+-- Warehouse Tránsito del central (patrón de inventario en vuelo).
+INSERT INTO warehouses (site_id, name, is_primary, is_system, is_public)
+SELECT site_id, 'Tránsito', FALSE, TRUE, FALSE
+  FROM sites WHERE is_central;
 ```
 
 ### 5.3 Cliente por defecto del POS
@@ -785,6 +809,43 @@ de continuar.
   `https://vercel.com/estebangz-makers-projects/pos-taiwysport`)
 - **Vercel team id**: `team_NYfI1cmi7rmw2rG6BEP7Ws2p`
 - **Admin inicial**: `esteban@solcraftsas.com` (UUID `fe6fb143-da2b-4aaa-9d56-7bb954d81738`)
+
+## Registro de la segunda ejecución — celulares-carmen (2026-10-13 → 2026-10-14)
+
+- **Cliente**: Celulares Carmen
+- **Fecha de aprovisionamiento**: 2026-10-13 (Fases 0-2) + 2026-10-14 (Fase 5).
+- **Subdominio**: `celulares-carmen.app-solcraft.com` (Vercel: pendiente,
+  lo crea Esteban desde el dashboard).
+- **Supabase project ref**: `lmuuilicckgderapyxma` (dashboard:
+  `https://supabase.com/dashboard/project/lmuuilicckgderapyxma`)
+- **Supabase region**: sa-east-1 (São Paulo).
+- **Costo confirmado**: USD 10/mes (`confirmation_id`
+  `BGoZHqqJd2JYMt+cWSDFH7qDeNkZZAwbTytJrHy7r+E=`).
+- **Admin inicial**: `esteban@solcraftsas.com` (pendiente de alta en Dashboard
+  → Authentication → Add user; luego UPDATE a role='admin' + user_sites).
+- **Estado al 2026-10-14**:
+  - Fase 1 (crear proyecto): ✅ `ACTIVE_HEALTHY`.
+  - Fase 2 (schema + release 2C+D + migraciones versionadas): ✅ aplicada
+    en 15 llamadas de `apply_migration` sin errores (baseline 5 bloques +
+    trigger auth + scripts 15/16/17a/17b/17c_v2/17e + 18 PARCIAL + 10
+    migraciones versionadas incluyendo las 2 de 20261012 REVOKE anon +
+    20260918000001 fix facets recuperada).
+  - Fase 5 (datos iniciales): ✅ 3 sites (CEN/CC1/CC2) + 4 warehouses
+    (Tránsito+Principal en CEN, Principal en CC1 y CC2, todas
+    is_public=false) + 10 categories + 1 business_settings + 1 price_lists
+    default + 3 adjustment_counters + 3 site_counters.
+  - **verify_provisioning.sql**: **39/39 PASS** post-Fase 5.
+- **Precondiciones nuevas descubiertas** (ya incorporadas al runbook §2.3):
+  precondición walk-in `Consumidor final` ANTES del script 15.
+- **Migración recuperada**: `20260918000001_public_catalog_facets_by_category.sql`
+  (fix s25 del 2026-08-31 que estaba sin versionar; recuperada el 2026-10-14
+  del `statements[1]` de Taiwy Sport).
+- **Pendiente para que el cliente opere**:
+  - Esteban crea proyecto Vercel + env vars + subdominio.
+  - Esteban crea admin inicial en Supabase Auth; luego se le asigna
+    role='admin' + user_sites via SQL.
+  - Smoke real: 1 venta en cada local + 1 traslado Central→local con
+    recepción + cierre de turno.
 
 ### Estado del smoke test al cierre de sesión
 
