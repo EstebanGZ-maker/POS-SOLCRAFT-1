@@ -45,8 +45,13 @@ gestor de passwords, entrada nueva para el cliente):
 En el dashboard de Supabase → `New Project`:
 
 - **Name**: `pos-<slug-del-cliente>` (ej: `pos-taiwysport`).
-- **Database Password**: generar uno fuerte, **guardar en el gestor de
-  passwords**.
+- **Database Password**: **no se genera ni se almacena en el gestor**. El
+  endpoint `create_project` del Management API no la acepta como argumento y
+  la app no se conecta nunca a Postgres por `postgres://...` (todo pasa por
+  PostgREST/Auth con la anon key y el service_role). Si en el futuro se
+  necesita acceso directo a la DB (`psql`, `pg_dump`), se **resetea desde
+  Dashboard → Project Settings → Database → Reset database password** en ese
+  momento y se descarta tras el uso. No circula por chat ni queda guardada.
 - **Region**: `South America (São Paulo)` — latencia más baja para clientes
   en Colombia (verificar si el cliente está en otra región y ajustar).
 - **Plan**: **Pro**. Decisión ya tomada. Razones:
@@ -135,6 +140,71 @@ Verificar al final:
   products, product_stock, sales, transfers, business_settings, etc.).
 - `list_migrations` refleja las 5 migraciones aplicadas.
 
+### 2.2.1 ⚠️ Partición del baseline en 5 bloques — lección de Taiwy Sport (2026-08-25)
+
+Aplicar `20260812000000_baseline_canonical_from_prod.sql` como un único
+`apply_migration` **ROMPE** en Supabase MCP por dos razones distintas, ambas
+observadas durante el aprovisionamiento inicial de Taiwy Sport:
+
+1. **Tamaño del payload del MCP**: 3299 líneas / ~160 KB superan el límite
+   práctico del endpoint `apply_migration`, que corta el request mitad schema.
+2. **Orden de dependencias con `check_function_bodies` activo**: el dump
+   serializa funciones en orden alfabético — `has_permission` (línea 599)
+   aparece antes de `is_admin` (línea 628), y su cuerpo contiene
+   `SELECT public.is_admin()`. Con `check_function_bodies = on`, Postgres
+   valida referencias en el `CREATE OR REPLACE FUNCTION` y rechaza
+   `has_permission` por "function public.is_admin() does not exist".
+
+**La partición es por nombre de función, NO por rango de línea**, porque el
+baseline ordena las 48 funciones alfabéticamente y los grupos lógicos
+(helpers / core / público) quedan intercalados en el rango 585–2640.
+
+**5 bloques a aplicar en orden**:
+
+| # | Bloque | Contenido | Extracción |
+|---|---|---|---|
+| 1 | **Tablas + FKs** | 33 `CREATE TABLE` + 55 `ADD CONSTRAINT FOREIGN KEY` | `sed -n '1,584p'` del baseline |
+| 2a | **Helpers de rol + trigger functions** | 12 funciones: `is_admin`, `is_global_role`, `user_role`, `user_site_id`, `user_accessible_sites`, `is_admin_or_encargado`, `has_permission`, `has_site_access`, `handle_new_user`, `set_web_order_number`, `sync_product_primary_image`, `update_updated_at_column` | script helper (ver abajo) |
+| 2b | **RPCs core** | 26 funciones no-helper, no-`public_*` (`add_cash_movement`, `adjust_warehouse_stock`, `admin_create_user`, `admin_reset_password`, `apply_wompi_transaction`, `close_shift`, `create_sale`, `create_web_order`, `decrement_product_stock`, `fulfill_web_order`, `get_low_stock_products`, `get_sales_summary`, `list_orphan_product_media`, `log_payment_event`, `next_product_code`, `open_shift`, `place_web_order`, `receive_transfer`, `receive_transfer_item`, `reconcile_transfer`, `send_transfer_via_transit`, `set_web_order_payment_reference`, `transfer_stock`, `update_online_order_status`, `verify_kardex_integrity`, `void_sale`) | script helper |
+| 2c | **Web y catálogo** | 10 funciones `public_*` (`public_catalog_business`, `public_catalog_facets`, `public_catalog_list`, `public_catalog_product`, `public_catalog_sites`, `public_commerce_config`, `public_get_order`, `public_place_order`, `public_product_sizes`, `public_web_order_lookup`) | script helper |
+| 3 | **Triggers + RLS + Policies + Índices + REVOKE** | 5 `CREATE TRIGGER` + 33 `ENABLE RLS` + 99 `CREATE POLICY` + 70 `CREATE INDEX`/`UNIQUE INDEX` + 15 `REVOKE` | `sed -n '2641,3297p'` del baseline |
+
+**Defensas obligatorias para los bloques 2a / 2b / 2c**:
+
+- Prefijar cada bloque con `SET check_function_bodies = false;` (sin `LOCAL`
+  — `SET LOCAL` sólo tiene efecto dentro de transacción, y `apply_migration`
+  del MCP ya envuelve en una, pero `SET` plano es más portable y defensivo).
+- En el bloque 2a, **reordenar** las 12 funciones poniendo primero las que
+  son referenciadas (`is_admin`, `is_global_role`, `user_role`,
+  `user_site_id`, `user_accessible_sites`, `is_admin_or_encargado`) y
+  después las que referencian (`has_permission`, `has_site_access`,
+  `handle_new_user`, trigger functions). Esto es doble cinto frente al SET.
+
+**Control de integridad del extractor (OBLIGATORIO antes de aplicar)**:
+
+El script de extracción debe producir un reporte que confirme:
+
+- Las 48 funciones del baseline aparecen **exactamente una vez** entre
+  los 3 archivos de funciones (2a + 2b + 2c).
+- Ninguna función falta ni se duplica.
+- El cuerpo normalizado (`md5(regexp_replace(prosrc, '\s+', '', 'g'))`) de
+  cada función en los extractos coincide byte-por-byte con el del baseline.
+
+Si el reporte falla, parar; no aplicar hasta diagnosticar.
+
+**Conteos de referencia** (Taiwy Sport tras baseline + 3 migraciones, por
+registro de Esteban): 33 tablas, 50 funciones, 99 policies, 112 índices.
+Baseline sola da 48 funciones; +2 (`dispatch_transfer_atomic`,
+`import_products_bulk_atomic`) llegan con las migraciones s21/s22. 98
+policies es estado FINAL tras scripts 15-18 + release 2C+D + migraciones
+versionadas (contabilizado en celulares-carmen 2026-10-14 y confirmado
+en Taiwy Sport).
+- Índices y triggers: informativos, no bloquean la ejecución.
+
+Los conteos intermedios son informativos: **solo un error de SQL detiene
+la ejecución** entre bloques. La aceptación final es la comparación
+contra Taiwy Sport post-release 2C+D + migraciones.
+
 ### 2.3 ⚠️ CRÍTICO — aplicar scripts release 2C+2D después del baseline
 
 **La baseline canónica `20260812000000` está INCOMPLETA.** Falta el release
@@ -151,6 +221,25 @@ Los scripts 15-18 existían en `scripts/` pero la baseline dumpeada del
 12-08 no los introspectó (razón exacta desconocida — probablemente el
 dump generador tenía filtros o el estado de prod al 12-08 no los tenía
 todos consolidados).
+
+**Precondición OBLIGATORIA — crear el walk-in `Consumidor final` ANTES de
+los scripts** (lección Taiwy Sport retroactiva + celulares-carmen
+2026-10-13). El script `15_credit_sales_phase1.sql` ejecuta un `UPDATE ...
+WHERE name='Consumidor final'` y después verifica `COUNT(walk-in)=1` con
+`RAISE EXCEPTION` abortivo. Si la fila no existe, Fase 2.3 aborta y la DB
+queda a mitad del release 2C+D. Las columnas `is_walk_in` y `allows_credit`
+las agrega el propio script 15, por eso el INSERT previo trae solo `name`:
+
+```sql
+INSERT INTO customers (name)
+SELECT 'Consumidor final'
+WHERE NOT EXISTS (SELECT 1 FROM customers WHERE name = 'Consumidor final');
+```
+
+**Idempotente por diseño** (`WHERE NOT EXISTS`) para que una re-aplicación
+no cree un segundo "Consumidor final" — `customers.name` no tiene UNIQUE
+constraint y el POS busca walk-in por nombre, un duplicado rompería el
+flujo. §5.3 queda cumplido por este paso.
 
 **Aplicar EN ESTE ORDEN EXACTO** (todo vía Supabase MCP `apply_migration`
 o SQL editor del dashboard), después de las migraciones de §2.2:
@@ -492,8 +581,17 @@ SELECT site_id, 'Principal', TRUE FROM sites;
 
 ### 5.3 Cliente por defecto del POS
 
+**Ya cumplido en §2.3** como precondición del release 2C+D. No volver a
+ejecutar un `INSERT INTO customers (name) VALUES ('Consumidor final');`
+sin protección: `customers.name` no es UNIQUE y el POS busca el walk-in
+por nombre, un duplicado rompe el flujo. Si por alguna razón hay que
+re-aplicar el seed en una instancia existente, usar la versión idempotente
+del §2.3:
+
 ```sql
-INSERT INTO customers (name) VALUES ('Consumidor final');
+INSERT INTO customers (name)
+SELECT 'Consumidor final'
+WHERE NOT EXISTS (SELECT 1 FROM customers WHERE name = 'Consumidor final');
 ```
 
 ### 5.4 Categorías base

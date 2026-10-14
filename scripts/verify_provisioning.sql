@@ -167,56 +167,95 @@ sites_without_primary AS (
 ),
 
 -- ============================================================
--- Chequeo 33: md5_logic de 10 funciones críticas vs BASELINE
+-- Chequeos 33a: LÓGICA OBLIGATORIA del guard endurecido
 --
--- El baseline son los md5_logic (sin whitespace, sin comentarios,
--- lowercase) de la instancia Taiwy Sport al 2026-10-13 — que corre
--- las versiones ENDURECIDAS del release 2C+D de los scripts 15 a 18
--- del repo. Cualquier instancia nueva aprovisionada correctamente con
--- el runbook debe tener estos mismos hashes.
+-- Las 4 funciones del release 2C+D que tocan dinero/stock deben
+-- rechazar `v_role=NULL` (user autenticado sin fila en user_profiles).
+-- Guard legacy débil: `IF v_role NOT IN (...)` — acepta NULL.
+-- Guard endurecido: `IF v_role IS NULL OR v_role NOT IN (...)`.
+-- Esta verificación es OBLIGATORIA independiente de cualquier
+-- diferencia cosmética y bloquea el handoff.
+-- ============================================================
+guard_check AS (
+  SELECT b.proname,
+         (p.prosrc ~ 'v_role\s+IS\s+NULL\s+OR\s+v_role\s+NOT\s+IN') AS ok
+  FROM (VALUES
+    ('apply_customer_credit'),
+    ('create_adjustment'),
+    ('create_sale'),
+    ('void_adjustment')
+  ) AS b(proname)
+  LEFT JOIN pg_proc p ON p.proname = b.proname
+  LEFT JOIN pg_namespace ns ON ns.oid = p.pronamespace AND ns.nspname = 'public'
+),
+
+-- ============================================================
+-- Chequeos 33b: md5 normalizado vs baseline del REPO
 --
--- Un hash distinto en las 4 funciones con guard de rol
--- (apply_customer_credit, create_adjustment, create_sale,
--- void_adjustment) detecta el guard DÉBIL legacy:
---     IF v_role NOT IN ('admin','encargado'[,'vendedor']) THEN
--- vs. el endurecido:
---     IF v_role IS NULL OR v_role NOT IN ('admin','encargado'[,'vendedor']) THEN
+-- Baseline: `celulares-carmen` al 2026-10-14 — instancia
+-- aprovisionada 100% desde el repo (scripts 15 a 17e + 18 PARCIAL +
+-- migraciones versionadas, SIN edits in-place). Los 10 hashes
+-- coinciden byte-por-byte con los que calcula `hash_repo_vs_cc.sh`
+-- extrayendo las funciones directo de los archivos de `scripts/`.
 --
--- Las otras 6 funciones (close_shift, void_sale, register_payment,
--- get_shift_balance, dispatch_transfer_atomic, receive_transfer,
--- reconcile_transfer) difieren principalmente en formato cosmético
--- entre versiones (ej. ';' final después del END del bloque PL/pgSQL,
--- aliases de columna, whitespace). Mantenerlas en el baseline obliga
--- a que todas las instancias partan de la misma plantilla exacta.
+-- Normalización acordada: quitar comentarios `--...` hasta fin de
+-- línea + quitar TODO whitespace + lower() + rtrim un `;` final.
 --
--- Si Taiwy Sport evoluciona (ej. tras aplicar la migración de
--- alineación de guards en otra instancia + hacerla el nuevo
--- benchmark), ACTUALIZAR estos hashes aquí y re-commitear este
--- script.
+-- Las instancias productivas pre-existentes (Solcraft, Taiwy Sport)
+-- pueden diverger en diferencias cosméticas documentadas en
+-- `ESTADO-PENDIENTES.md` (prosrc reformateado, aliases AS X ausentes,
+-- wording de RAISE EXCEPTION distinto). En ellas pueden fallar los
+-- 4 hashes cosméticos conocidos: close_shift, create_adjustment,
+-- verify_adjustment_accounting_integrity, verify_credit_integrity.
+-- Nuevas instancias aprovisionadas desde el repo deben dar 10/10.
 -- ============================================================
 critical_baseline AS (
   SELECT * FROM (VALUES
     ('apply_customer_credit',       '33b87b3d68a515d9db21147da60f6500'),
-    ('create_adjustment',           '63c8f1b7d6d0247177f0aca25e67f3aa'),
+    ('close_shift',                 'e907303674c9e7bf1b74f3d8933c6200'),
+    ('create_adjustment',           'e5152d0cb2e76d74b15be946e15e731a'),
     ('create_sale',                 '0be1f9629255bc161dd8163158a2f54b'),
-    ('void_adjustment',             '58c2918a54563224d2f42f0d33dd3b7e'),
-    ('close_shift',                 'a844e6a55b7d93040bb1931d46b92d9c'),
-    ('void_sale',                   '377e80eb2a36a01d253e31bcb1d57840'),
-    ('register_payment',            '04b71386ee0336e8eea5f41cd82891b7'),
     ('get_shift_balance',           'ec45aa61384cf30fc3d0663f130efcf6'),
-    ('dispatch_transfer_atomic',    '0fed4f6aec0a1657719980292ce0f928'),
-    ('receive_transfer',            'ae7710204771ba6729a1d86906abfbf8'),
-    ('reconcile_transfer',          '94583fcfa4baf2fefaa043486093facb')
+    ('register_payment',            '04b71386ee0336e8eea5f41cd82891b7'),
+    ('verify_adjustment_accounting_integrity', 'f76136c20d41979c783bbaa1498fe3e9'),
+    ('verify_credit_integrity',     'f05b7dbef08d72bd6d0ca4a31875c885'),
+    ('void_adjustment',             '58c2918a54563224d2f42f0d33dd3b7e'),
+    ('void_sale',                   '377e80eb2a36a01d253e31bcb1d57840')
   ) AS b(proname, md5_expected)
 ),
 critical_md5 AS (
   SELECT b.proname,
          b.md5_expected,
-         md5(regexp_replace(regexp_replace(lower(p.prosrc),'--[^\n]*','','g'),
-                            '[[:space:]]','','g')) AS md5_actual
+         md5(rtrim(
+           regexp_replace(
+             regexp_replace(lower(p.prosrc),'--[^\n]*','','g'),
+             '\s','','g'
+           ),
+           ';'
+         )) AS md5_actual
   FROM critical_baseline b
   LEFT JOIN pg_proc p ON p.proname = b.proname
   LEFT JOIN pg_namespace ns ON ns.oid = p.pronamespace AND ns.nspname = 'public'
+),
+
+-- ============================================================
+-- Chequeo 40: conteos globales del schema public
+-- Esperado para una instancia POS-SOLCRAFT recién aprovisionada:
+-- 36 tablas, 57 funciones, 98 policies, 123 índices, 6 triggers.
+-- ============================================================
+schema_counts AS (
+  SELECT
+    (SELECT COUNT(*)::int FROM information_schema.tables
+       WHERE table_schema='public' AND table_type='BASE TABLE') AS tbl,
+    (SELECT COUNT(*)::int FROM pg_proc
+       WHERE pronamespace='public'::regnamespace) AS fns,
+    (SELECT COUNT(*)::int FROM pg_policies
+       WHERE schemaname='public') AS pol,
+    (SELECT COUNT(*)::int FROM pg_indexes
+       WHERE schemaname='public') AS idx,
+    (SELECT COUNT(*)::int FROM pg_trigger t
+       JOIN pg_class c ON c.oid=t.tgrelid
+       WHERE c.relnamespace='public'::regnamespace AND NOT t.tgisinternal) AS trg
 ),
 
 -- ============================================================
@@ -240,15 +279,15 @@ bs AS (
 -- ============================================================
 -- Output: UNA FILA POR CHEQUEO
 -- ============================================================
-SELECT lpad(n::text,2,'0') || '. anon_internal_' || name AS check, ok,
+SELECT lpad(n::text,2,'0') || '. anon_internal_' || name AS chk, ok,
        'firma: ' || sigs AS detail
 FROM anon_internal
 UNION ALL
-SELECT lpad((15+n)::text,2,'0') || '. anon_public_' || name AS check, ok,
+SELECT lpad((15+n)::text,2,'0') || '. anon_public_' || name AS chk, ok,
        'firma: ' || sigs AS detail
 FROM anon_public
 UNION ALL
-SELECT '26. bucket_product_media' AS check,
+SELECT '26. bucket_product_media' AS chk,
        -- product-media sirve fotos de producto (jpg/png/webp/avif).
        -- 5 MB es suficiente; mayor no se exige. Chequea que exista y sea
        -- público, con al menos JPEG/PNG en el mime allowlist.
@@ -259,7 +298,7 @@ SELECT '26. bucket_product_media' AS check,
                  FROM buckets WHERE id='product-media'),
                 'BUCKET AUSENTE') AS detail
 UNION ALL
-SELECT '27. bucket_catalog_assets' AS check,
+SELECT '27. bucket_catalog_assets' AS chk,
        -- catalog-assets sirve el modelo 3D del hero (.glb) + fallbacks.
        -- Requiere file_size_limit >= 50 MB (el .glb de referencia pesa ~62 MB
        -- y el proyecto debe tener subida Global de 100 MB — ver runbook §5).
@@ -271,60 +310,93 @@ SELECT '27. bucket_catalog_assets' AS check,
                  FROM buckets WHERE id='catalog-assets'),
                 'BUCKET AUSENTE') AS detail
 UNION ALL
-SELECT '28. trigger_on_auth_user_created' AS check,
+SELECT '28. trigger_on_auth_user_created' AS chk,
        (SELECT cnt FROM trg_new_user) = 1 AS ok,
        'count=' || (SELECT cnt FROM trg_new_user)::text AS detail
 UNION ALL
-SELECT '29. trigger_trg_sync_primary_image' AS check,
+SELECT '29. trigger_trg_sync_primary_image' AS chk,
        (SELECT cnt FROM trg_sync_img) = 1 AS ok,
        'count=' || (SELECT cnt FROM trg_sync_img)::text AS detail
 UNION ALL
-SELECT '30. rpcs_release_2cd_presentes' AS check,
+SELECT '30. rpcs_release_2cd_presentes' AS chk,
        NOT EXISTS (SELECT 1 FROM required_rpcs WHERE NOT present) AS ok,
        coalesce('faltan: ' || string_agg(name, ', '), 'todas presentes (' || (SELECT count(*)::text FROM required_rpcs) || ')') AS detail
 FROM required_rpcs WHERE NOT present
 UNION ALL
-SELECT '31. bodega_transito_unica' AS check,
+SELECT '31. bodega_transito_unica' AS chk,
        (SELECT cnt FROM transit) = 1 AS ok,
        'count=' || (SELECT cnt FROM transit)::text ||
        ' names=' || coalesce((SELECT names FROM transit),'(ninguna)') AS detail
 UNION ALL
-SELECT '32. toda_sede_con_bodega_primaria' AS check,
+SELECT '32. toda_sede_con_bodega_primaria' AS chk,
        NOT EXISTS (SELECT 1 FROM sites_without_primary) AS ok,
        coalesce('sedes sin primary: ' || string_agg(name, ', '),
                 'todas las sedes tienen bodega primaria') AS detail
 FROM sites_without_primary
 UNION ALL
-SELECT '33. md5_logic_' || proname AS check,
+SELECT '33a. guard_endurecido_' || proname AS chk,
+       COALESCE(ok, FALSE) AS ok,
+       CASE
+         WHEN ok IS NULL THEN 'FUNCTION AUSENTE'
+         WHEN ok THEN 'guard endurecido presente (v_role IS NULL OR v_role NOT IN)'
+         ELSE 'GUARD DÉBIL — prosrc no matchea /v_role IS NULL OR v_role NOT IN/'
+       END AS detail
+FROM guard_check
+UNION ALL
+SELECT '33b. md5_norm_' || proname AS chk,
        (md5_actual IS NOT NULL AND md5_actual = md5_expected) AS ok,
        CASE
          WHEN md5_actual IS NULL
            THEN 'FUNCTION AUSENTE (esperaba md5=' || md5_expected || ')'
          WHEN md5_actual = md5_expected
-           THEN 'md5=' || md5_actual || ' (coincide con baseline)'
-         ELSE 'DRIFT DETECTED — actual=' || md5_actual
-              || ' | esperado=' || md5_expected
-              || CASE WHEN proname IN ('apply_customer_credit','create_adjustment',
-                                       'create_sale','void_adjustment')
-                 THEN ' | PROBABLE GUARD DÉBIL (v_role NOT IN sin v_role IS NULL OR)'
-                 ELSE ' | revisar diff manual' END
+           THEN 'md5=' || md5_actual || ' (coincide con repo canónico)'
+         ELSE 'DRIFT — actual=' || md5_actual || ' | esperado=' || md5_expected
        END AS detail
 FROM critical_md5
 UNION ALL
-SELECT '34. verify_kardex_integrity_cero' AS check,
+SELECT '40. conteos_schema_public' AS chk,
+       (tbl=36 AND fns=57 AND pol=98 AND idx=123 AND trg=6) AS ok,
+       'tables=' || tbl || ' functions=' || fns ||
+       ' policies=' || pol || ' indexes=' || idx || ' triggers=' || trg ||
+       ' (esperado 36/57/98/123/6)' AS detail
+FROM schema_counts
+UNION ALL
+SELECT '34. verify_kardex_integrity_cero' AS chk,
        (SELECT cnt FROM kardex_viol) = 0 AS ok,
        'violaciones=' || (SELECT cnt FROM kardex_viol)::text AS detail
 UNION ALL
-SELECT '35. verify_credit_integrity_cero' AS check,
+SELECT '35. verify_credit_integrity_cero' AS chk,
        (SELECT cnt FROM credit_viol) = 0 AS ok,
        'violaciones=' || (SELECT cnt FROM credit_viol)::text AS detail
 UNION ALL
-SELECT '36. verify_adjustment_accounting_integrity_cero' AS check,
+SELECT '36. verify_adjustment_accounting_integrity_cero' AS chk,
        (SELECT cnt FROM adj_viol) = 0 AS ok,
        'violaciones=' || (SELECT cnt FROM adj_viol)::text AS detail
 UNION ALL
-SELECT '37. business_settings_con_business_name' AS check,
+SELECT '37. business_settings_con_business_name' AS chk,
        (SELECT rows_cnt = 1 AND has_name = 1 FROM bs) AS ok,
        'rows=' || (SELECT rows_cnt FROM bs)::text ||
        ' business_name=' || coalesce((SELECT quote_literal(the_name) FROM bs), 'NULL') AS detail
-ORDER BY check;
+UNION ALL
+-- Precondición del release 2C+D: exactamente 1 walk-in. El script 15 lo
+-- requiere al aplicar (verificación abortiva D12) y el POS lo busca por
+-- `is_walk_in=true` en runtime. Dos filas rompen el flujo del POS porque
+-- el deduplicador asume unicidad.
+SELECT '38. walk_in_unico_con_credito_cerrado' AS chk,
+       (SELECT COUNT(*) = 1
+          FROM customers
+         WHERE is_walk_in = TRUE AND allows_credit = FALSE) AS ok,
+       'walk-ins con is_walk_in=true y allows_credit=false: ' ||
+       (SELECT COUNT(*) FROM customers
+         WHERE is_walk_in = TRUE AND allows_credit = FALSE)::text AS detail
+UNION ALL
+-- customers.name no tiene UNIQUE constraint; un seed duplicado del runbook
+-- (p.ej. §5.3 ejecutado sin WHERE NOT EXISTS después de §2.3) crearía un
+-- 2do 'Consumidor final' con is_walk_in=false que compite por nombre en el
+-- POS. El chequeo garantiza que el nombre canonical del walk-in es único.
+SELECT '39. consumidor_final_sin_duplicados_por_nombre' AS chk,
+       (SELECT COUNT(*) <= 1
+          FROM customers WHERE name = 'Consumidor final') AS ok,
+       'filas con name=''Consumidor final'': ' ||
+       (SELECT COUNT(*) FROM customers WHERE name = 'Consumidor final')::text AS detail
+ORDER BY 1;

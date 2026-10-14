@@ -31,6 +31,8 @@
 | 2026-10-12 ~22:45 UTC | `nxszaxwsrtlofqimbfig` | Smoke reversible: ajuste `#1` (+1 unidad) desde `/inventory/adjustments` + `void_adjustment` → `status='voided'`, 2 stock_movements compensados, `verify_kardex_integrity`/`verify_adjustment_accounting_integrity`/`verify_credit_integrity` en 0 violaciones | Validar end-to-end que la 1era migración de permisos no rompió el flujo de ajustes para rol admin. Pre-requisito antes de aplicar en Taiwy Sport. | Esteban |
 | 2026-10-12 ~23:00 UTC | `aapchdjwpqhwsquffnxn` | `apply_migration` MCP → migración `revoke_anon_from_internal_rpcs` (misma versionada) | Replicar 1era migración de permisos en Taiwy Sport. Verificado con `has_function_privilege`. Smoke equivalente: ajuste `#2` anulado en esta instancia (reportado por Esteban antes de autorizar el paso). | Esteban |
 | 2026-10-12 ~23:00 UTC | `nxszaxwsrtlofqimbfig` + `aapchdjwpqhwsquffnxn` | `apply_migration` MCP → migración `revoke_anon_from_definer_rpcs_with_guards` (versionada en `supabase/migrations/20261012000001_...sql`), aplicada en ambas instancias | Cerrar EXECUTE a `anon`/`PUBLIC` sobre 5 DEFINER con guard interno (`list_orphan_product_media` sin guard; `dispatch_transfer_atomic`, `import_products_bulk_atomic`, `receive_transfer`, `reconcile_transfer` con guard — defensa en profundidad). Verificado con `has_function_privilege` en ambas. | Esteban |
+| ~2026-08-26 16:51 UTC (retroactivo) | `aapchdjwpqhwsquffnxn` (Taiwy Sport) | `INSERT INTO customers (name) VALUES ('Consumidor final');` antes del script 15. Timestamp aproximado tomado del `created_at` real de la fila walk-in en esa instancia. | Precondición no documentada del script `15_credit_sales_phase1.sql`: el bootstrap del walk-in (`UPDATE ... WHERE name='Consumidor final'`) + la verificación abortiva D12 (`v_count<>1 THEN RAISE EXCEPTION`) exigen esa fila presente. El runbook ponía el INSERT en §5.3 (Fase 5), después de los scripts 15-18 (§2.3), creando dependencia circular. Resuelto 2026-10-13 moviendo el paso a §2.3. | **Autorización: no consta; reconstruido el 2026-10-13.** |
+| 2026-10-13 ~22:58 UTC | `lmuuilicckgderapyxma` (celulares-carmen) | `INSERT INTO customers (name) SELECT 'Consumidor final' WHERE NOT EXISTS (SELECT 1 FROM customers WHERE name='Consumidor final') RETURNING customer_id, name, created_at;` → `customer_id=2356442f-abee-4a3c-8e4f-361d23978fba`. | Precondición del script 15 (ver fila anterior). Cumplimiento del nuevo §2.3 del runbook, aplicado antes de ejecutar scripts 15-18 en la nueva instancia. INSERT idempotente (`WHERE NOT EXISTS`) para que una re-aplicación no cree duplicados. | Esteban |
 
 > **Reglas de la tabla**:
 > - **No se borran filas** — una intervención antigua que se revierte se
@@ -251,6 +253,61 @@ Instancia aislada (Camino A), subdominio
   mismo repo, con rama de producción `main` igual que Taiwy Sport.
 - **`service_role` key**: la carga Esteban en Vercel desde el
   dashboard. **NO viaja por chat.**
+
+### Migración MCP suelta `catalog_facets_by_category` recuperada (2026-10-14)
+
+El 2026-08-31 21:57:28 UTC se aplicó por MCP una migración
+`catalog_facets_by_category` a `nxszaxwsrtlofqimbfig` y
+`aapchdjwpqhwsquffnxn` que reescribió `public_catalog_facets` para
+agrupar por `category_id` + ajustó `public_catalog_list`. La
+migración NO se versionó en `supabase/migrations/`, lo que generó
+deriva silenciosa entre repo y producción (el repo quedó con la
+versión del baseline que agrupa por `type_prefix`). Detectado durante
+aprovisionamiento de celulares-carmen el 2026-10-14 vs hash de
+referencia Taiwy Sport (`public_catalog_facets` esperado `cb9ce0a4`,
+baseline producía otro valor). Recuperado el SQL exacto del
+`statements[1]` de `supabase_migrations.schema_migrations` de Taiwy
+Sport (versión `20260831215728`) y versionado como
+`20260918000001_public_catalog_facets_by_category.sql`. **Solo la
+parte de `public_catalog_facets`** — el bloque de `public_catalog_list`
+del statement original se descarta porque `20260918000000` ya reescribió
+esa función con un shape más completo. Aplicado a celulares-carmen; hash
+coincide con Taiwy Sport. **Regla formalizada en `CONTEXT-POS.md §0.5`**:
+toda migración MCP se versiona en el mismo commit.
+
+### Deriva Taiwy Sport en 4 funciones del release 2C+D (2026-10-14)
+
+Durante el diff estricto celulares-carmen vs Taiwy Sport vs Solcraft se
+confirmó deriva cosmética en Taiwy Sport sobre `close_shift`,
+`create_adjustment`, `verify_adjustment_accounting_integrity` y
+`verify_credit_integrity`: `prosrc` reformateado (whitespace comprimido,
+alias `AS X` ausentes en SELECT, 2 mensajes de `RAISE EXCEPTION`
+levemente acortados). Lógica idéntica — guards de rol, secuencia SQL,
+cálculos WAC y comportamiento de retorno son byte-por-byte iguales al
+repo canónico. Origen probable: aplicación manual de los scripts desde
+SQL Editor del Dashboard con reformato propio durante el aprovisionamiento
+inicial (2026-08-25-26), sin registro de intervención. **Decisión
+Esteban 2026-10-14**: Taiwy Sport NO se toca por diferencias cosméticas.
+Solo se corregiría si un diff estricto futuro encuentra diferencia de
+lógica, y con aprobación explícita.
+
+### Decisiones adicionales (reanudación en-sesión 2026-10-13)
+
+- **Multi-tenant (Bloque D)**: **DISEÑO PRIMERO, SIN CÓDIGO.** No se
+  implementa hasta que Esteban lo pida explícitamente. El plan de 4
+  fases queda como documento vivo; la primera fase ejecutable
+  (`tenant_id` + RLS) requiere pedido explícito aparte.
+- **IA para celulares (Bloque C)**: **DESPUÉS del aprovisionamiento**.
+  El cliente arranca por el importador de Excel. El perfil de rubro
+  (prompt, campos extraídos, etiquetas UI, categorías semilla) se
+  diseña e implementa **por rama + preview + smoke**, no por
+  configuración in-prod ni por hotfix.
+- **DB password del proyecto Supabase**: **no se genera ni se
+  almacena**. `create_project` del Management API no la acepta y la
+  app no se conecta por `postgres://...` (todo via PostgREST/Auth).
+  Si en el futuro se necesita acceso directo (`psql`, `pg_dump`),
+  se resetea desde Dashboard → Settings → Database en ese momento y
+  se descarta tras uso. **Runbook §1.1 actualizado.**
 
 ### Pendientes, en orden
 

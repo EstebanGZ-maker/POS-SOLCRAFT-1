@@ -34,7 +34,23 @@ antes de ejecutarla.
      `GRANT EXECUTE … TO authenticated, service_role`**. Supabase
      otorga EXECUTE a anon por default privileges — `REVOKE FROM
      PUBLIC` solo no alcanza (ver nota en runbook §2.2).
-4. **Nada se borra ni se sobrescribe sin rastro** — quién, cuándo,
+4. **Todo script SQL del repo se aplica extrayendo el bloque del
+   ARCHIVO**, nunca reescribiéndolo a mano en el chat. Si se requiere
+   fragmentar (p.ej. aplicar solo 2 de las 3 funciones del script 18),
+   se extraen las líneas exactas del archivo y se concatenan como texto
+   literal; nunca se tipea el SQL de cero. Reescribir SQL introduce
+   divergencia silenciosa con el repo (ver deriva Taiwy Sport
+   documentada en `ESTADO-PENDIENTES.md`). Regla adoptada 2026-10-14.
+5. **Toda migración aplicada por MCP se versiona en
+   `supabase/migrations/` en el MISMO commit**. Aplicar un
+   `apply_migration` suelto crea deriva: la DB queda con la función
+   nueva pero una instancia aprovisionada después desde el repo nace
+   sin ese cambio (ver `catalog_facets_by_category` del 2026-08-31
+   aplicada a Solcraft y Taiwy Sport sin versionar, recuperada el
+   2026-10-14 como migración `20260918000001`). Flujo correcto:
+   crear archivo versionado → `apply_migration` desde ese archivo →
+   commit del archivo en el mismo PR. Regla adoptada 2026-10-14.
+6. **Nada se borra ni se sobrescribe sin rastro** — quién, cuándo,
    por qué. Se anula, no se borra (ej. `status='voided'` +
    `voided_by/voided_at/void_reason`). Con el cliente operando, no se
    borra data a mano. Toda intervención manual en producción
@@ -2610,8 +2626,15 @@ sin re-derivar nada.
 **Lo que queda abierto** (ver `ESTADO-PENDIENTES.md §0` para detalle):
 
 - Aprovisionar `celulares-carmen` (datos y decisiones ya cerrados).
-- Diseño de perfil de rubro por instancia (Bloque C).
-- Docs multi-tenant con 7 correcciones acordadas (Bloque D).
+- **Perfil de rubro para celulares (Bloque C)**: **DESPUÉS del
+  aprovisionamiento**. Cliente arranca por importador Excel; perfil
+  de rubro se implementa por **rama + preview + smoke**, no por
+  configuración in-prod. Decidido 2026-10-13.
+- **Multi-tenant (Bloque D)**: **DISEÑO PRIMERO, SIN CÓDIGO** — no se
+  implementa hasta pedido explícito de Esteban. Decidido 2026-10-13.
+- **DB password de proyectos Supabase nuevos**: **no se genera** —
+  `create_project` MCP no la toma, la app no la usa, se resetea
+  desde Dashboard solo si hace falta `psql`. Decidido 2026-10-13.
 - Alineación de los 4 guards + trazabilidad de anulaciones + rotación
   de claves — todos pendientes ALTA sin arrancar.
 
