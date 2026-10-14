@@ -33,7 +33,9 @@
 | 2026-10-12 ~23:00 UTC | `nxszaxwsrtlofqimbfig` + `aapchdjwpqhwsquffnxn` | `apply_migration` MCP → migración `revoke_anon_from_definer_rpcs_with_guards` (versionada en `supabase/migrations/20261012000001_...sql`), aplicada en ambas instancias | Cerrar EXECUTE a `anon`/`PUBLIC` sobre 5 DEFINER con guard interno (`list_orphan_product_media` sin guard; `dispatch_transfer_atomic`, `import_products_bulk_atomic`, `receive_transfer`, `reconcile_transfer` con guard — defensa en profundidad). Verificado con `has_function_privilege` en ambas. | Esteban |
 | ~2026-08-26 16:51 UTC (retroactivo) | `aapchdjwpqhwsquffnxn` (Taiwy Sport) | `INSERT INTO customers (name) VALUES ('Consumidor final');` antes del script 15. Timestamp aproximado tomado del `created_at` real de la fila walk-in en esa instancia. | Precondición no documentada del script `15_credit_sales_phase1.sql`: el bootstrap del walk-in (`UPDATE ... WHERE name='Consumidor final'`) + la verificación abortiva D12 (`v_count<>1 THEN RAISE EXCEPTION`) exigen esa fila presente. El runbook ponía el INSERT en §5.3 (Fase 5), después de los scripts 15-18 (§2.3), creando dependencia circular. Resuelto 2026-10-13 moviendo el paso a §2.3. | **Autorización: no consta; reconstruido el 2026-10-13.** |
 | 2026-10-13 ~22:58 UTC | `lmuuilicckgderapyxma` (celulares-carmen) | `INSERT INTO customers (name) SELECT 'Consumidor final' WHERE NOT EXISTS (SELECT 1 FROM customers WHERE name='Consumidor final') RETURNING customer_id, name, created_at;` → `customer_id=2356442f-abee-4a3c-8e4f-361d23978fba`. | Precondición del script 15 (ver fila anterior). Cumplimiento del nuevo §2.3 del runbook, aplicado antes de ejecutar scripts 15-18 en la nueva instancia. INSERT idempotente (`WHERE NOT EXISTS`) para que una re-aplicación no cree duplicados. | Esteban |
-| 2026-10-14 (sesión) | `lmuuilicckgderapyxma` (celulares-carmen) | Fase 5 del runbook, bloque único transaccional: `INSERT INTO price_lists` ('General', default), `INSERT INTO sites` (CEN/CC1/CC2, 3 filas), `INSERT INTO warehouses` (Tránsito+Principal en CEN, Principal en CC1, Principal en CC2 — 4 filas, todas `is_public=false`), `INSERT INTO adjustment_counters` (3), `INSERT INTO site_counters` (3), `INSERT INTO categories` (10 — FUNDAS/CARGADORES/AUDIFONOS/VIDRIOS/CABLES/POWERBANKS/SOPORTES/PARLANTES/RELOJES/ACCESORIOS), `INSERT INTO business_settings` (business_name='Celulares Carmen', regime='No responsable de IVA', WhatsApp/COD/Wompi/pickup/delivery todos false). | Datos semilla iniciales de la instancia. Replica estructura de Taiwy Sport verificada en la base. verify_provisioning.sql 39/39 PASS tras aplicar. | Esteban |
+| 2026-10-14 ~22:50 UTC | `lmuuilicckgderapyxma` + `nxszaxwsrtlofqimbfig` + `aapchdjwpqhwsquffnxn` | `apply_migration` MCP → migración `20261014000000_add_business_settings_rubro` (versionada en `supabase/migrations/`), aplicada canario en orden: celulares-carmen → Solcraft → Taiwy Sport. Agrega `business_settings.rubro TEXT NOT NULL DEFAULT 'ropa'` + `CHECK (rubro IN ('ropa','tecnologia'))`. Verificado en cada una: `rubro='ropa'` + constraint `business_settings_rubro_check` presente. | Base del perfil IA de `/central` por instancia (s29). Preserva comportamiento ropa en instancias existentes. UPDATE a `'tecnologia'` para celulares-carmen va aparte como intervención manual separada (ver próxima fila cuando se aplique). | Esteban |
+| 2026-10-14 ~19:10 UTC | `lmuuilicckgderapyxma` (celulares-carmen) | `UPDATE user_profiles SET role='admin', is_active=TRUE WHERE email='esteban@solcraftsas.com';` → `id=780adc04-108b-4a22-b153-af508d0b9dab`, `role='admin'`, `site_id=NULL`, `is_active=true`, 0 filas en `user_sites`. Admin creado previamente por Esteban desde Dashboard → Authentication → Add user; trigger `on_auth_user_created` había insertado la fila con `role='vendedor'`. | Alta del admin inicial de la instancia celulares-carmen. Convención de admin con site_id=NULL + 0 user_sites (acceso global por rol, replicando el patrón de Taiwy Sport verificado por Esteban). | Esteban |
+| 2026-10-14 15:58:35 UTC | `lmuuilicckgderapyxma` (celulares-carmen) | Fase 5 del runbook, bloque único transaccional: `INSERT INTO price_lists` ('General', default), `INSERT INTO sites` (CEN/CC1/CC2, 3 filas), `INSERT INTO warehouses` (Tránsito+Principal en CEN, Principal en CC1, Principal en CC2 — 4 filas, todas `is_public=false`), `INSERT INTO adjustment_counters` (3), `INSERT INTO site_counters` (3), `INSERT INTO categories` (10 — FUNDAS/CARGADORES/AUDIFONOS/VIDRIOS/CABLES/POWERBANKS/SOPORTES/PARLANTES/RELOJES/ACCESORIOS), `INSERT INTO business_settings` (business_name='Celulares Carmen', regime='No responsable de IVA', WhatsApp/COD/Wompi/pickup/delivery todos false). | Datos semilla iniciales de la instancia. Replica estructura de Taiwy Sport verificada en la base. verify_provisioning.sql 39/39 PASS tras aplicar. | Esteban |
 
 > **Reglas de la tabla**:
 > - **No se borran filas** — una intervención antigua que se revierte se
@@ -358,10 +360,26 @@ lógica, y con aprobación explícita.
      (`apply_customer_credit`, `create_adjustment`, `create_sale`,
      `void_adjustment`): adoptar la versión de Taiwy Sport,
      `CREATE OR REPLACE` sin `DROP` (preserva REVOKE a anon). SQL no
-     escrito ni aplicado.
+     escrito ni aplicado. **Requisito al aplicar**: la migración debe
+     usar las versiones del REPO (idénticas a celulares-carmen HOY),
+     no las de Taiwy Sport. En consecuencia los `prosrc` normalizados
+     NO van a cambiar en CC/TS/SC post-migración vs el baseline actual
+     del gate, así que `scripts/verify_provisioning.sql` NO requiere
+     actualización. **Verificar re-ejecutando el gate contra las 3
+     instancias tras aplicar — si cualquier `md5_norm` cambia respecto
+     a los baselines, actualizar los hashes referencia del script.**
    - Trazabilidad de anulaciones (`voided_by`, `voided_at`,
      `void_reason` + vista "Anulados"). Alcance primera pasada:
-     ajustes. Diseño aprobado; migración no aplicada.
+     ajustes. Diseño aprobado; migración no aplicada. **Requisito al
+     aplicar**: la migración reescribe `void_adjustment` para asentar
+     los nuevos campos, cambiando su `prosrc`. Esto rompe el baseline
+     del gate `verify_provisioning.sql §33b md5_norm_void_adjustment`
+     (hoy `58c2918a...`). En el MISMO commit que aplica la migración:
+     (i) correr el gate contra celulares-carmen para capturar el nuevo
+     md5 normalizado de `void_adjustment`, (ii) actualizar el baseline
+     del script, (iii) verificar que CC, TS y SC post-migración dan el
+     mismo md5. Si TS o SC quedan en el valor viejo, documentar como
+     deriva nueva en el registro.
    - Rotación anon key en Solcraft (`nxszaxwsrtlofqimbfig`) y
      `SUPABASE_SERVICE_ROLE_KEY`: siguen pendientes, sin fecha.
 
