@@ -1,11 +1,11 @@
 # ESTADO-PENDIENTES.md
 
 > **Propósito**: dump de estado para que una instancia nueva de Claude sin
-> memoria pueda retomar sin perder nada. Última actualización: **2026-10-13**
-> (s28 cierre: endurecimiento SECDEF aplicado y verificado +
-> `scripts/verify_provisioning.sql` como gate obligatorio del runbook +
-> datos y decisiones de `celulares-carmen` listos para arrancar Bloque B
-> en la próxima sesión). `main` @ `e94279f`. Ver `git log` para el detalle.
+> memoria pueda retomar sin perder nada. Última actualización: **2026-10-14**
+> (celulares-carmen aprovisionado Fases 1-2-5 + admin + migración
+> `business_settings.rubro` versionada aplicada en las 3 instancias + UPDATE
+> a `'tecnologia'` en celulares-carmen; código del perfil IA pendiente).
+> `main` @ `afdd603`. Ver `git log` para el detalle.
 
 ---
 
@@ -33,6 +33,7 @@
 | 2026-10-12 ~23:00 UTC | `nxszaxwsrtlofqimbfig` + `aapchdjwpqhwsquffnxn` | `apply_migration` MCP → migración `revoke_anon_from_definer_rpcs_with_guards` (versionada en `supabase/migrations/20261012000001_...sql`), aplicada en ambas instancias | Cerrar EXECUTE a `anon`/`PUBLIC` sobre 5 DEFINER con guard interno (`list_orphan_product_media` sin guard; `dispatch_transfer_atomic`, `import_products_bulk_atomic`, `receive_transfer`, `reconcile_transfer` con guard — defensa en profundidad). Verificado con `has_function_privilege` en ambas. | Esteban |
 | ~2026-08-26 16:51 UTC (retroactivo) | `aapchdjwpqhwsquffnxn` (Taiwy Sport) | `INSERT INTO customers (name) VALUES ('Consumidor final');` antes del script 15. Timestamp aproximado tomado del `created_at` real de la fila walk-in en esa instancia. | Precondición no documentada del script `15_credit_sales_phase1.sql`: el bootstrap del walk-in (`UPDATE ... WHERE name='Consumidor final'`) + la verificación abortiva D12 (`v_count<>1 THEN RAISE EXCEPTION`) exigen esa fila presente. El runbook ponía el INSERT en §5.3 (Fase 5), después de los scripts 15-18 (§2.3), creando dependencia circular. Resuelto 2026-10-13 moviendo el paso a §2.3. | **Autorización: no consta; reconstruido el 2026-10-13.** |
 | 2026-10-13 ~22:58 UTC | `lmuuilicckgderapyxma` (celulares-carmen) | `INSERT INTO customers (name) SELECT 'Consumidor final' WHERE NOT EXISTS (SELECT 1 FROM customers WHERE name='Consumidor final') RETURNING customer_id, name, created_at;` → `customer_id=2356442f-abee-4a3c-8e4f-361d23978fba`. | Precondición del script 15 (ver fila anterior). Cumplimiento del nuevo §2.3 del runbook, aplicado antes de ejecutar scripts 15-18 en la nueva instancia. INSERT idempotente (`WHERE NOT EXISTS`) para que una re-aplicación no cree duplicados. | Esteban |
+| 2026-10-14 ~22:59 UTC | `lmuuilicckgderapyxma` (celulares-carmen) | `UPDATE business_settings SET rubro='tecnologia' WHERE id=1;` → `rubro='tecnologia'`, `business_name='Celulares Carmen'`. **Nota**: `business_settings.updated_at` NO se refrescó automáticamente (la tabla no tiene trigger `update_updated_at_column`); se registra la hora UTC capturada por `NOW()` post-UPDATE. | Activar el perfil IA 'tecnologia' en celulares-carmen (s29). **Sin efecto operativo hasta que se mergee el código del perfil** (pendiente para sesión nueva — `lib/rubro-profiles.ts` + wiring en `/api/analyze-product` y `/components/central/ai-ingress-panel.tsx`). | Esteban |
 | 2026-10-14 ~22:50 UTC | `lmuuilicckgderapyxma` + `nxszaxwsrtlofqimbfig` + `aapchdjwpqhwsquffnxn` | `apply_migration` MCP → migración `20261014000000_add_business_settings_rubro` (versionada en `supabase/migrations/`), aplicada canario en orden: celulares-carmen → Solcraft → Taiwy Sport. Agrega `business_settings.rubro TEXT NOT NULL DEFAULT 'ropa'` + `CHECK (rubro IN ('ropa','tecnologia'))`. Verificado en cada una: `rubro='ropa'` + constraint `business_settings_rubro_check` presente. | Base del perfil IA de `/central` por instancia (s29). Preserva comportamiento ropa en instancias existentes. UPDATE a `'tecnologia'` para celulares-carmen va aparte como intervención manual separada (ver próxima fila cuando se aplique). | Esteban |
 | 2026-10-14 ~19:10 UTC | `lmuuilicckgderapyxma` (celulares-carmen) | `UPDATE user_profiles SET role='admin', is_active=TRUE WHERE email='esteban@solcraftsas.com';` → `id=780adc04-108b-4a22-b153-af508d0b9dab`, `role='admin'`, `site_id=NULL`, `is_active=true`, 0 filas en `user_sites`. Admin creado previamente por Esteban desde Dashboard → Authentication → Add user; trigger `on_auth_user_created` había insertado la fila con `role='vendedor'`. | Alta del admin inicial de la instancia celulares-carmen. Convención de admin con site_id=NULL + 0 user_sites (acceso global por rol, replicando el patrón de Taiwy Sport verificado por Esteban). | Esteban |
 | 2026-10-14 15:58:35 UTC | `lmuuilicckgderapyxma` (celulares-carmen) | Fase 5 del runbook, bloque único transaccional: `INSERT INTO price_lists` ('General', default), `INSERT INTO sites` (CEN/CC1/CC2, 3 filas), `INSERT INTO warehouses` (Tránsito+Principal en CEN, Principal en CC1, Principal en CC2 — 4 filas, todas `is_public=false`), `INSERT INTO adjustment_counters` (3), `INSERT INTO site_counters` (3), `INSERT INTO categories` (10 — FUNDAS/CARGADORES/AUDIFONOS/VIDRIOS/CABLES/POWERBANKS/SOPORTES/PARLANTES/RELOJES/ACCESORIOS), `INSERT INTO business_settings` (business_name='Celulares Carmen', regime='No responsable de IVA', WhatsApp/COD/Wompi/pickup/delivery todos false). | Datos semilla iniciales de la instancia. Replica estructura de Taiwy Sport verificada en la base. verify_provisioning.sql 39/39 PASS tras aplicar. | Esteban |
@@ -172,90 +173,207 @@ sobre datos limpios. Coordinar con Esteban cuándo hacer la pasada.
 
 ---
 
-## 0. LEE ESTO PRIMERO — estado tras sesión 2026-10-13 (s28 cierre SECDEF + verify_provisioning + preparación celulares-carmen)
+## 0. LEE ESTO PRIMERO — estado tras sesión 2026-10-14 (celulares-carmen aprovisionado + base perfil IA)
 
-**Estado de ramas**: `main` @ `e94279f`. Sin ramas de feature vivas.
+**Estado de ramas**: `main` @ `afdd603`. Sin ramas de feature vivas.
+Deploys production `pos-solcraft-1-a1x2` y `pos-taiwysport` **READY** del
+commit `afdd603`.
 
-### Cerrado en esta sesión
+### Instancias productivas (3)
 
-- **Endurecimiento de permisos SECDEF cerrado** (ambas instancias). 15
-  funciones internas sin `EXECUTE` para `anon`: migraciones
-  `20261012000000_revoke_anon_from_internal_rpcs` (10 RPCs) y
-  `20261012000001_revoke_anon_from_definer_rpcs_with_guards` (5
-  DEFINER con guard). Verificado con `has_function_privilege`. Smoke
-  reversible pasado: ajuste #1 anulado en Solcraft, ajuste #2 anulado
-  en Taiwy Sport, `verify_kardex_integrity` /
-  `verify_credit_integrity` / `verify_adjustment_accounting_integrity`
-  en 0 violaciones post-anulación. Commit `63880f8`.
-- **Auditoría de deriva** entre instancias (lectura). 57 funciones por
-  instancia, **0 huérfanas**, **0 deriva en triggers, índices y
-  policies RLS**. Deriva real solo en **4 guards de rol en Solcraft**
-  (`apply_customer_credit`, `create_adjustment`, `create_sale`,
-  `void_adjustment`): tienen el guard legacy
-  `IF v_role NOT IN (...)` que acepta `v_role = NULL`; Taiwy Sport ya
-  tiene la versión endurecida con `IF v_role IS NULL OR v_role NOT IN
-  (...)`. Las 3 funciones `void_sale`, `get_shift_balance` y
-  `register_payment` difieren solo en el `;` final después de `END`
-  del bloque PL/pgSQL (verificado byte-por-byte, sin efecto —
-  opcional en PL/pgSQL dentro de `AS $function$ ... $function$`). Las
-  otras 13 funciones con md5 distinto son solo comentarios +
-  whitespace. **Repo correcto** (scripts 15 a 18 ya tienen las
-  versiones endurecidas); un tercer cliente aprovisionado via runbook
-  §2.3 nace con los guards correctos.
-- **Reglas de sesión y registro de intervenciones manuales**
-  formalizados en `CONTEXT-POS.md §0` y `ESTADO-PENDIENTES.md § "Registro
-  de intervenciones manuales en producción"` (commits `2b6b298` y
-  `63880f8`).
-- **Bloque A: `scripts/verify_provisioning.sql`** (commit `e94279f`,
-  2026-10-13). Script SOLO LECTURA con 37 chequeos que validan toda
-  instancia recién aprovisionada: 15 anon-false (internas) + 10
-  anon-true (storefront) + 2 buckets + 2 triggers + 29 RPCs del
-  release 2C+D + Tránsito única + bodegas primaries + 10 `md5_logic`
-  vs baseline Taiwy Sport (con detección automática de "GUARD DÉBIL"
-  en los 4 guards) + 3 integridades en 0 + `business_settings`.
-  Validado 37/37 PASS en Taiwy Sport, 8 fails esperados en Solcraft
-  (4 guards + 4 cosméticos — todos ya documentados como pendientes
-  ALTA). Agregado al runbook como §6.1 "Verificación automática
-  post-smoke — GATE OBLIGATORIO".
+| cliente | Supabase ref | Vercel project id |
+|---|---|---|
+| Solcraft | `nxszaxwsrtlofqimbfig` | `prj_vpWz8de8VIziMknXIaqZhlQKJGl6` |
+| Taiwy Sport | `aapchdjwpqhwsquffnxn` | `prj_x9tjLwW4RXltN4P2FfXRWeycNLTo` |
+| celulares-carmen | `lmuuilicckgderapyxma` | `prj_aEMbFXOf1UGzanQFJEqXxpfPdoy4` |
 
-### Decisiones del cliente `celulares-carmen` (próxima sesión arranca por acá)
+Team Vercel: `team_NYfI1cmi7rmw2rG6BEP7Ws2p`.
 
-Instancia aislada (Camino A), subdominio
-`celulares-carmen.app-solcraft.com`. Datos recibidos:
-- **Negocio**: Celulares Carmen (`business_name` editable desde
-  `/settings/receipt`).
-- **Admin inicial**: `esteban@solcraftsas.com` (minúsculas, como siempre).
-- **Sedes**: Bodega Central (`is_central=TRUE`, virtual, recibe y
-  distribuye) + "Celulares carmen 1" + "Celulares carmen 2" (ambas de
-  venta, `is_central=FALSE`). Todas con `is_public=false`.
-  - **Códigos de sede propuestos**: `CEN`, `CC1`, `CC2`. PENDIENTES de
-    aprobación de Esteban antes de ejecutar Fase 3 del runbook.
-- **Sin IVA**: `products.tax_rate` default 0.
-- **Rubro**: celulares, accesorios y tecnología. Venta por referencia,
-  sin IMEI.
-- **Alcance**: solo POS presencial. **Sin** catálogo público, WhatsApp
-  ni Wompi. `PRODUCT_DELETE_OWNER_EMAIL` NO configurar (igual que
-  Taiwy Sport).
-- **Panel IA de ingreso**: NO usarlo hasta tener el perfil de rubro
-  (Bloque C). Carga inicial es por el importador de Excel.
-- **Categorías semilla (10, lista final)**: FUNDAS, CARGADORES,
-  AUDIFONOS, VIDRIOS, CABLES, POWERBANKS (corregido desde
-  "POWEBANKS"), SOPORTES, PARLANTES, RELOJES, ACCESORIOS. **Sin**
-  CELULARES, TABLETS ni LAPTOPS por decisión de Esteban. **Nota
-  crítica al registro**: sin categoría CELULARES el importador de
-  Excel rechazará filas de celulares hasta que se cree esa categoría
-  desde `/inventory/management`.
-- **Verificación pendiente (sin implementar)**: existencia de
-  pantalla para renombrar sedes y categorías. Si no existe, proponer
-  alcance.
-- **Costo del proyecto Supabase**: Esteban autoriza sobre el importe
-  real que muestre la confirmación de costos al crear el proyecto. La
-  referencia previa fue USD 10/mes por proyecto adicional en plan
-  Team/Pro (no USD 25). Pedir confirmación de costo antes de crear.
-- **Proyecto Vercel**: lo crea Esteban desde el dashboard sobre el
-  mismo repo, con rama de producción `main` igual que Taiwy Sport.
-- **`service_role` key**: la carga Esteban en Vercel desde el
-  dashboard. **NO viaja por chat.**
+### Cerrado y verificado al 2026-10-14
+
+- **Endurecimiento SECDEF**: 15 funciones sin EXECUTE para anon en
+  Solcraft y Taiwy Sport (migraciones `20261012000000` + `20261012000001`,
+  verificado con `has_function_privilege`). Smoke reversible pasado en
+  ambas (ajuste #1 anulado + 3 integridades en 0).
+- **Auditoría de deriva, reglas de sesión y registro de intervenciones
+  manuales** formalizados (`CONTEXT-POS.md §0`, tabla "Registro de
+  intervenciones manuales en producción"). Diff estricto confirmó que la
+  única diferencia LÓGICA entre instancias era el guard débil de los 4
+  guards de Solcraft (resto cosmético).
+- **celulares-carmen** aprovisionado:
+  - **Fase 1** (crear proyecto, USD 10/mes, sa-east-1, `ACTIVE_HEALTHY`).
+  - **Fase 2**: 36 tablas, 57 funciones, 98 policies, 123 índices, 6
+    triggers. Paridad con Taiwy Sport salvo 4 funciones cosméticas
+    documentadas. Scripts 15/16/17a/17b/17c_v2/17e/18 PARCIAL +
+    10 migraciones versionadas (incluye las 2 de 20261012 REVOKE anon +
+    20260918000001 `catalog_facets_by_category` recuperada).
+  - **Fase 5**: sedes CEN (central), CC1, CC2; 10 categorías (FUNDAS,
+    CARGADORES, AUDIFONOS, VIDRIOS, CABLES, POWERBANKS, SOPORTES,
+    PARLANTES, RELOJES, ACCESORIOS); Tránsito única; lista `General`
+    default; contadores por sede; `business_settings` con
+    `business_name='Celulares Carmen'`, `regime='No responsable de IVA'`,
+    comercio apagado (WhatsApp/COD/Wompi/pickup/delivery todos false).
+  - **Admin inicial**: `esteban@solcraftsas.com` con `role='admin'`,
+    `site_id=NULL`, `is_active=TRUE`, 0 filas en `user_sites` (replica
+    convención Taiwy Sport verificada por Esteban).
+  - **Proyecto Vercel** `pos-celulares-carmen` creado con deploy READY.
+- **Gate `scripts/verify_provisioning.sql`**: 53 chequeos (01-15
+  anon_internal, 16-25 anon_public, 26-27 buckets, 28-29 triggers,
+  30 RPCs 2C+D, 31 Tránsito única, 32 primarias, 33a guard endurecido
+  × 4, 33b md5 norm × 10 vs baseline del repo, 34-36 integridades,
+  37 business_settings, 38-39 walk-in, 40 conteos globales).
+  **53/53 PASS en celulares-carmen; 49/53 PASS en Taiwy Sport** (4
+  cosméticas conocidas del 33b: `close_shift`,
+  `create_adjustment`, `verify_adjustment_accounting_integrity`,
+  `verify_credit_integrity`).
+- **Migración 20260918000001** (`public_catalog_facets`) versionada:
+  antes solo existía como migración MCP suelta aplicada 2026-08-31
+  a Solcraft y Taiwy Sport, sin archivo en el repo. Recuperada desde
+  `statements[1]` de `schema_migrations` de TS.
+- **Migración 20261014000000** (`business_settings.rubro TEXT NOT NULL
+  DEFAULT 'ropa' CHECK IN ('ropa','tecnologia')`): aplicada canario en
+  las 3 instancias el 2026-10-14 ~22:50 UTC. Commit `afdd603`. UPDATE a
+  `'tecnologia'` en celulares-carmen aplicado y verificado
+  (~22:59 UTC en el registro de intervenciones). Solcraft y Taiwy Sport
+  siguen en `'ropa'`. **El código del perfil IA NO se ha escrito.**
+- **Hallazgos corregidos**:
+  - Policies son **98** (no 97) — también en Taiwy Sport. Actualizado en
+    runbook §2.2.1 y en gate.
+  - Supabase Vault v0.3.1 YA está instalado — rehacer decisión Wompi
+    con credenciales **cifradas por tenant en Vault**, no env vars.
+  - `Consumidor final` es **precondición del script 15** (bootstrap del
+    walk-in + verificación abortiva D12). Movido en runbook §2.3 ANTES
+    de scripts 15-18. §5.3 queda cumplido por §2.3.
+- **Reglas de sesión formalizadas** (`CONTEXT-POS.md §0`):
+  - #4: SQL se **extrae del archivo**, nunca se reescribe de memoria.
+  - #5: Toda migración MCP se **versiona en `supabase/migrations/`** en
+    el mismo commit.
+
+### Pendientes de celulares-carmen (en orden)
+
+1. **Dominio** `celulares-carmen.app-solcraft.com` en Vercel: hoy solo
+   responde con URLs `vercel.app`. Agregar al proyecto + CNAME DNS.
+2. **Segundo admin NO planificado**: `sebitas542010@hotmail.com` apareció
+   en `user_profiles`. Confirmar quién es antes de modificar nada.
+3. **Verificación de Auth** (`Site URL`, `Redirect URLs`, `Confirm email`
+   OFF) y **Storage global upload size limit en 100 MB**: Esteban dijo
+   "ya quedó ok" sin verificación formal — pendiente de validar.
+4. **Env vars en PREVIEW** del proyecto Vercel `pos-celulares-carmen`:
+   verificar que las 4 estén en target Preview además de Production:
+   `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`,
+   `SUPABASE_SERVICE_ROLE_KEY`, `NEXT_PUBLIC_APP_URL`. **El MCP no
+   puede listarlas (403 forbidden)** — lo verifica Esteban en dashboard.
+5. **Smoke real con el cliente**: venta en cada local, traslado
+   Central→local con recepción, cierre de turno. Alta de encargados y
+   vendedores. Backups diarios activos.
+6. **Carga inicial** de productos por importador Excel con las 10
+   categorías (sin CELULARES/TABLETS/LAPTOPS por decisión).
+
+### Perfil de rubro IA — diseño aprobado, código pendiente (va por rama)
+
+**Base**: `lib/rubro-profiles.ts` con 2 perfiles `ropa` y `tecnologia`.
+`getRubroProfile(rubro)` **falla con excepción** si el valor no matchea
+(sin fallback a 'ropa'). Perfiles 100% aislados: perfil `ropa` se mueve
+TAL CUAL desde `app/api/analyze-product/route.ts` y
+`components/central/ai-ingress-panel.tsx` **sin reescribir** (preserva
+prompt, schema con `size` obligatorio fallback 'M', `suggested_price` +
+`suggested_cost`, etiquetas CA=Camisa/PA=Pantalón..., formato
+descripción, `allowCreateCategory=true` como hoy). Perfil `tecnologia`
+con prompt/schema/etiquetas **propios sin fragmentos compartidos con
+ropa**, `allowCreateCategory=false`, categorías leídas de la base en
+cada solicitud (SELECT name FROM categories). Si la IA no devuelve una
+categoría del whitelist dinámico, el campo queda vacío y el usuario
+elige. Si la imagen no es del rubro (p.ej. una prenda en tecnología) →
+aviso **"no corresponde al rubro"** con campos vacíos (regla NO
+aplica al perfil ropa).
+
+**Convención `tecnologia`**: código `MARCA-REFERENCIA-PRECIO(miles)-NN`.
+- Prefijo marca: RM Redmi, IP iPhone, SA Samsung, HO Honor, OP Oppo,
+  IN Infinix, TE Tecno. Marcas fuera de esa lista = 2 primeras letras.
+- Referencia:
+  - **Fundas, vidrios, cables**: modelo del EQUIPO al que corresponden
+    (p.ej. funda iPhone 17 Pro Max → `IP-17PM-...`).
+  - **Accesorios con marca propia** (parlantes, audífonos, powerbanks,
+    relojes): nombre comercial del modelo, mayúsculas, sin espacios
+    (`TUNE520BT`, `FLIP6`, `CHARGE5`, `MIBAND8`).
+  - **Si el empaque no muestra el modelo**: referencia **vacía**; UI
+    bloquea Guardar hasta completarla (evita `IP--35-00`).
+  - **La IA NO asigna compatibilidad que el empaque no muestre** (un
+    cable Lightning sin indicar iPhone compatible → referencia vacía).
+- Abreviaturas de modelos: `Pro=P`, `Pro Max=PM`, `Ultra=U`, `Plus=PL`,
+  `Lite=LT`, `Mini=M`, `Note=N`, `Reno=R`, `Flip=FL`, `Fold=FD`. Nada
+  de caracteres especiales.
+- Lista de modelos del prompt = **ejemplos ilustrativos**, no cerrada.
+  El prompt genera por regla modelos nuevos.
+- **Capacidad** (almacenamiento/RAM) va en `name` + `description`,
+  **nunca** en `size` ni `type_prefix`.
+- **Precio y costo**: los carga el usuario — se **quitan** del esquema
+  de tecnología (`suggested_price` y `suggested_cost`).
+- Colores en español. Descripción corta sin inventar datos.
+
+**Verificación obligatoria antes del merge**:
+a. **Test de instantánea** del perfil ropa carácter-por-carácter vs el
+   código actual (prompt, schema JSON, labels).
+b. **Regresión de ropa en preview**: foto de ropa → SOLO ANÁLISIS, no
+   guardar; shape de salida idéntico al actual. Esteban descarta con
+   "Quitar".
+c. **Smoke tecnología en celulares-carmen** con 5 fotos de fundas + 1
+   foto de prenda que debe devolver el aviso "no corresponde al rubro".
+d. **Merge solo si a + b + c pasan**.
+
+**Otras tareas del mismo bloque**:
+- La action de `/settings/receipt` **no puede dejar `rubro` nulo** ni
+  pisarlo accidentalmente — actualizar solo los campos que conoce.
+- **Seed del runbook §5.5** debe incluir `rubro`.
+- **Chequeo de `rubro`** en `scripts/verify_provisioning.sql` (ej.:
+  fila con `rubro IN ('ropa','tecnologia')` NOT NULL).
+
+### Pendientes ALTA, sin tocar
+
+- **Alineación de los 4 guards de Solcraft** (`apply_customer_credit`,
+  `create_adjustment`, `create_sale`, `void_adjustment`) con la versión
+  del repo. **Requisito**: reutiliza versiones del repo (= CC HOY), no
+  las de TS. Si algún `md5_norm` cambia respecto al baseline del gate
+  tras aplicar, actualizar baseline.
+- **Trazabilidad de anulaciones** (`voided_by`, `voided_at`,
+  `void_reason` + vista "Anulados"). Primero ajustes. **Requisito**:
+  la migración reescribe `void_adjustment` → rompe baseline
+  `33b md5_norm_void_adjustment` (hoy `58c2918a...`); en el mismo
+  commit actualizar baseline del gate.
+- **Rotación anon key y service_role de Solcraft**: pendiente sin fecha.
+- **Verificar consumo del AI Gateway con créditos pagos**: evaluar en
+  docs de Vercel si permite atribuir consumo por usuario/tag.
+
+### Plan comercial — multi-tenant con diseño primero (SIN CÓDIGO)
+
+**6 clientes esperan**, rubro celulares y tecnología, sin DIAN por
+ahora. Camino A industrializado. Multi-tenant **sin código** hasta que
+Esteban lo pida explícitamente.
+
+**Archivos de diseño pendientes de crear** (no existen todavía en el
+repo): `docs/CAMINO-B-MULTITENANT.md` y
+`docs/PLAN-IMPLEMENTACION-CLIENTES.md`. Cuando se escriban, deben
+incorporar las 7 correcciones acordadas:
+
+1. **36 tablas** en `public` (no 29). La suite de aislamiento debe
+   recorrer el catálogo entero y fallar si aparece una tabla sin
+   `tenant_id`.
+2. **Secretos por tenant cifrados en Supabase Vault v0.3.1**, no en
+   env vars por slug ni en texto plano.
+3. **IA usa AI Gateway con créditos pagos** (NO `GOOGLE_GENERATIVE_AI_API_KEY`
+   ni API directa de Google). Verificar atribución por usuario/tag.
+4. **El rubro es por instancia, no por tenant**: `business_settings.rubro`
+   ya existe; no depende de la tabla `tenants` (cuando exista).
+5. **Benchmark de `current_tenant()`** contra `tenant_id` como claim JWT
+   y contra `(SELECT current_tenant())` en policies, en staging, ANTES
+   de comprometer la reescritura de las 98 policies.
+6. **RPCs públicos**: `p_tenant_id` NO es frontera de seguridad (la
+   anon key es pública). Definir qué expone y qué valida cada RPC
+   público (tenant activo, tienda habilitada, anti-spam).
+7. **Auth**: comodín de redirect URLs `*.app-solcraft.com` + JWT secret
+   compartido como riesgos. **Evaluar si Vercel permite fijar rama de
+   producción por proyecto** → propuesta: `main` para Solcraft, rama
+   `release` para clientes promoviendo tras smoke en Solcraft + piloto.
 
 ### Migración MCP suelta `catalog_facets_by_category` recuperada (2026-10-14)
 

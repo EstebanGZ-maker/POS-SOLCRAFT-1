@@ -1,6 +1,6 @@
 # CONTEXT-POS.md
 
-Contexto denso de POS-SOLCRAFT para pasar a otra instancia de Claude sin acceso al repo. Estado al **2026-10-13**. Última sesión documentada acá: **§7.21** (s28 cierre: endurecimiento SECDEF aplicado en ambas instancias + `scripts/verify_provisioning.sql` como gate obligatorio del runbook + preparación cliente `celulares-carmen`). Detalle operativo actualizado siempre en `docs/ESTADO-PENDIENTES.md §0`.
+Contexto denso de POS-SOLCRAFT para pasar a otra instancia de Claude sin acceso al repo. Estado al **2026-10-14**. Última sesión documentada acá: **§7.22** (celulares-carmen aprovisionado completo Fases 1-2-5 + admin + migración `business_settings.rubro` versionada aplicada en las 3 instancias + UPDATE a `'tecnologia'` en celulares-carmen; código del perfil IA pendiente). `main` @ `afdd603`. Detalle operativo actualizado siempre en `docs/ESTADO-PENDIENTES.md §0`.
 
 ## 0. Reglas de sesión (obligatorias — leer antes de tocar nada)
 
@@ -2625,7 +2625,12 @@ sin re-derivar nada.
 
 **Lo que queda abierto** (ver `ESTADO-PENDIENTES.md §0` para detalle):
 
-- Aprovisionar `celulares-carmen` (datos y decisiones ya cerrados).
+- `celulares-carmen`: Fases 1-2-5 aplicadas, admin creado, migración
+  `business_settings.rubro` versionada aplicada en las 3 instancias,
+  UPDATE a `'tecnologia'` hecho. Pendiente: dominio, segundo admin
+  inesperado, env vars PREVIEW, Auth/Storage, smoke real, carga Excel.
+  Código del perfil IA pendiente — va por rama con test de instantánea
+  del perfil ropa (sin regresión).
 - **Perfil de rubro para celulares (Bloque C)**: **DESPUÉS del
   aprovisionamiento**. Cliente arranca por importador Excel; perfil
   de rubro se implementa por **rama + preview + smoke**, no por
