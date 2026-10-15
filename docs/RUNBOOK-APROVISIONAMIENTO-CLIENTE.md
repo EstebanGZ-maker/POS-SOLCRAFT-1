@@ -97,6 +97,24 @@ En `Authentication → Providers → Email`:
   de confirmación. Si el cliente después quiere cambiar el email a uno
   suyo, hace el flujo normal desde el panel.
 
+En `Authentication → Settings` (o `Authentication → Providers → Email`
+según versión del dashboard):
+
+- **Allow new users to sign up**: **OFF**. **Crítico de seguridad.**
+  Dejarlo en ON permite que cualquiera cree una cuenta desde
+  `/login` y, como 25 tablas tienen policy de SELECT `USING(true)`
+  para `authenticated`, lea datos operativos del negocio (clientes,
+  pagos, movimientos de caja, créditos, stock, etc.). `admin_create_user`
+  no depende de este interruptor — inserta directo en `auth.users`
+  con rol admin — así que apagarlo NO rompe el alta operativa de
+  usuarios.
+
+> ⚠️ **El gate automático (`scripts/verify_provisioning.sql`) NO
+> puede comprobar `Site URL`, `Redirect URLs` ni `Allow new users
+> to sign up`**: son configuración del dashboard de Supabase, no
+> viven en Postgres. Esteban los verifica manualmente al cerrar
+> la fase de Auth.
+
 ### 1.4 Configurar CORS (si aplica)
 
 Supabase por defecto acepta requests de cualquier origen con la anon key

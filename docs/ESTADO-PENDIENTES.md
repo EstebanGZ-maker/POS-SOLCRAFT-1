@@ -258,7 +258,24 @@ Team Vercel: `team_NYfI1cmi7rmw2rG6BEP7Ws2p`.
    2026-10-14 18:59:26 UTC, `verified=true`, responde 200 por HTTPS.
    Nombre interno `celulares-carmen` se mantiene como handle de
    instancia/proyecto; el subdominio no coincide con él y es correcto.
-2. **Pendiente de Esteban (post-dominio)** — infra que yo no toco:
+2. **(ALTA, nuevo 2026-10-15) Supabase Auth "Allow new users to sign up"
+   ACTIVADO en celulares-carmen**: verificado por el asistente (sin
+   tocar nada). Con `Confirm email` apagado, un registro público desde
+   `tecnologia-accesorios.app-solcraft.com/login` crea un `auth.users`
+   + un `user_profiles` vía trigger `handle_new_user()` (rol
+   `vendedor`, `is_active=true`). **25 tablas tienen policy de SELECT
+   con `USING(true)` para `authenticated`** (`customers`,
+   `sale_payments`, `cash_movements`, `customer_credits`,
+   `stock_movements`, `transfers`, `suspended_sales`, etc.), por lo
+   que una cuenta anónima autoregistrada **ve datos del negocio en
+   crudo**. La RPC `admin_create_user` inserta directamente en
+   `auth.users` con `role='service_role'` + guard de rol admin: NO
+   depende del interruptor, apagar el signup no la rompe. **Esteban
+   apaga el interruptor en Dashboard → Authentication → Settings
+   del proyecto `lmuuilicckgderapyxma`.** Falta verificar en Solcraft
+   (`nxszaxwsrtlofqimbfig`) y Taiwy Sport (`aapchdjwpqhwsquffnxn`) —
+   Esteban manda capturas.
+3. **Pendiente de Esteban (post-dominio)** — infra que yo no toco:
    - `NEXT_PUBLIC_APP_URL=https://tecnologia-accesorios.app-solcraft.com`
      en Vercel proyecto `pos-celulares-carmen`, targets **Production
      + Preview**, + redeploy.
@@ -268,18 +285,22 @@ Team Vercel: `team_NYfI1cmi7rmw2rG6BEP7Ws2p`.
      de Production: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`,
      `SUPABASE_SERVICE_ROLE_KEY`, `NEXT_PUBLIC_APP_URL`. **El MCP no
      puede listarlas (403 forbidden)** — lo verifica Esteban en dashboard.
-3. **Cuenta `sebitas542010@hotmail.com`**: confirmada por Esteban el
+   - Revisar cuentas inesperadas en Solcraft (`admin@solcraft.dev`,
+     `admin@taiwy.com` sin perfil, `qa.multisede@solcraft.dev` y
+     tres administradores Gmail): verificar si corresponden,
+     desactivar / borrar las que no.
+4. **Cuenta `sebitas542010@hotmail.com`**: confirmada por Esteban el
    2026-10-14 como cuenta del cliente (dueño o colaborador). Rol
    `admin` vigente; el rol definitivo (admin si es el dueño, encargado
    con sede si es colaborador) queda por confirmar con el cliente. **No
    modificar la fila.**
-4. **Verificación de Auth** (`Confirm email` OFF) y **Storage global
+5. **Verificación de Auth** (`Confirm email` OFF) y **Storage global
    upload size limit en 100 MB**: Esteban dijo "ya quedó ok" sin
    verificación formal — pendiente de validar.
-5. **Smoke real con el cliente**: venta en cada local, traslado
+6. **Smoke real con el cliente**: venta en cada local, traslado
    Central→local con recepción, cierre de turno. Alta de encargados y
    vendedores. Backups diarios activos.
-6. **Carga inicial** de productos por importador Excel con las 10
+7. **Carga inicial** de productos por importador Excel con las 10
    categorías (sin CELULARES/TABLETS/LAPTOPS por decisión).
 
 ### Perfil de rubro IA — diseño aprobado, código pendiente (va por rama)
@@ -393,6 +414,17 @@ repo): `docs/CAMINO-B-MULTITENANT.md` y
 `docs/PLAN-IMPLEMENTACION-CLIENTES.md`. Cuando se escriban, deben
 incorporar las 7 correcciones acordadas:
 
+0. **Supuesto implícito a romper**: hoy 25 tablas tienen policy de
+   SELECT `USING(true)` para `authenticated` — depende de que
+   **solo el personal interno** tenga cuenta en el proyecto Supabase.
+   Esto se sostiene mientras: (a) "Allow new users to sign up" esté
+   **OFF** en los 3 proyectos (verificado por Esteban), (b) las
+   altas pasen por `admin_create_user` que inyecta rol/sede. Cualquier
+   diseño multi-tenant que permita signup público desde el storefront
+   tiene que reemplazar esos `USING(true)` por policies con `tenant_id`
+   + rol **antes** de habilitar el signup abierto; de lo contrario
+   un cliente final autoregistrado del storefront lee datos operativos
+   del negocio.
 1. **36 tablas** en `public` (no 29). La suite de aislamiento debe
    recorrer el catálogo entero y fallar si aparece una tabla sin
    `tenant_id`.
