@@ -1,0 +1,1 @@
+Sube fotos de las prendas. La IA detecta el tipo, la descripción, la talla y sugiere el precio y costo. Cada producto recibe un código único como CA-M-95-00.

@@ -1,0 +1,62 @@
+[
+  {
+    "label": "Nombre del producto",
+    "component": "Input",
+    "placeholder": "Ej: Camisa manga larga",
+    "maxLength": null
+  },
+  {
+    "label": "Tipo (prefijo)",
+    "component": "Input",
+    "placeholder": "CA",
+    "maxLength": 4
+  },
+  {
+    "label": "Categoría",
+    "component": "Input",
+    "placeholder": "Camisas",
+    "maxLength": null
+  },
+  {
+    "label": "Talla",
+    "component": "Input",
+    "placeholder": "M",
+    "maxLength": null
+  },
+  {
+    "label": "Color",
+    "component": "Input",
+    "placeholder": "Azul",
+    "maxLength": null
+  },
+  {
+    "label": "Precio de venta (COP)",
+    "component": "MoneyInput",
+    "placeholder": "95.000",
+    "maxLength": null
+  },
+  {
+    "label": "Costo de adquisición (COP)",
+    "component": "MoneyInput",
+    "placeholder": "45.000",
+    "maxLength": null
+  },
+  {
+    "label": "Cantidad a ingresar",
+    "component": "Input",
+    "placeholder": "1",
+    "maxLength": null
+  },
+  {
+    "label": "Código de identificación",
+    "component": "Input",
+    "placeholder": "Automático: ${…}",
+    "maxLength": null
+  },
+  {
+    "label": "Descripción",
+    "component": "Textarea",
+    "placeholder": "Material, estilo, detalles…",
+    "maxLength": null
+  }
+]

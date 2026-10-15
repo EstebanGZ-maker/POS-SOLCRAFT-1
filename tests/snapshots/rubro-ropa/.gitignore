@@ -1,0 +1,5 @@
+# Directorios de trabajo del script. Se crean y borran dentro de run.mjs;
+# listados acá para que no se trackeen si una ejecución falla antes del
+# cleanup final.
+_tmp/
+_verify/

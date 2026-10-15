@@ -1,0 +1,17 @@
+{
+  "status": 200,
+  "contentType": "application/json",
+  "body": {
+    "product": {
+      "name": "Camisa manga larga a cuadros",
+      "type_prefix": "CA",
+      "category": "Camisas",
+      "description": "Camisa manga larga a cuadros azul y rojo",
+      "size": "M",
+      "color": "azul",
+      "suggested_price": 95000,
+      "suggested_cost": 45000,
+      "quantity": 1
+    }
+  }
+}
