@@ -30,7 +30,10 @@ gestor de passwords, entrada nueva para el cliente):
 
 - Nombre comercial del negocio (`business_name`, ej: "Taiwysport").
 - Nombre legal + NIT + régimen tributario + dirección + teléfono + email.
-- Subdominio deseado (formato: `<slug>.app-solcraft.com`).
+- Subdominio deseado (formato: `<slug>.app-solcraft.com`). El subdominio
+  se elige por cliente y **no tiene que coincidir** con el nombre interno
+  de la instancia/proyecto (ej. instancia `celulares-carmen` → subdominio
+  `tecnologia-accesorios.app-solcraft.com`).
 - Email del admin inicial (el dueño del negocio).
 - Contraseña temporal para ese admin (el dueño la cambia al primer login).
 - Wompi: sandbox o prod, y si prod: `public_key`, `private_key`,
@@ -814,8 +817,11 @@ de continuar.
 
 - **Cliente**: Celulares Carmen
 - **Fecha de aprovisionamiento**: 2026-10-13 (Fases 0-2) + 2026-10-14 (Fase 5).
-- **Subdominio**: `celulares-carmen.app-solcraft.com` (Vercel: pendiente,
-  lo crea Esteban desde el dashboard).
+- **Subdominio oficial**: `tecnologia-accesorios.app-solcraft.com`
+  (agregado por Esteban al proyecto Vercel `pos-celulares-carmen` el
+  2026-10-14 18:59:26 UTC, `verified=true`, responde 200 por HTTPS).
+  Nombre interno de instancia/proyecto `celulares-carmen` se mantiene; el
+  subdominio no tiene que coincidir con él.
 - **Supabase project ref**: `lmuuilicckgderapyxma` (dashboard:
   `https://supabase.com/dashboard/project/lmuuilicckgderapyxma`)
 - **Supabase region**: sa-east-1 (São Paulo).

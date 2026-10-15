@@ -37,6 +37,8 @@
 | 2026-10-14 ~22:50 UTC | `lmuuilicckgderapyxma` + `nxszaxwsrtlofqimbfig` + `aapchdjwpqhwsquffnxn` | `apply_migration` MCP → migración `20261014000000_add_business_settings_rubro` (versionada en `supabase/migrations/`), aplicada canario en orden: celulares-carmen → Solcraft → Taiwy Sport. Agrega `business_settings.rubro TEXT NOT NULL DEFAULT 'ropa'` + `CHECK (rubro IN ('ropa','tecnologia'))`. Verificado en cada una: `rubro='ropa'` + constraint `business_settings_rubro_check` presente. | Base del perfil IA de `/central` por instancia (s29). Preserva comportamiento ropa en instancias existentes. UPDATE a `'tecnologia'` para celulares-carmen va aparte como intervención manual separada (ver próxima fila cuando se aplique). | Esteban |
 | 2026-10-14 ~19:10 UTC | `lmuuilicckgderapyxma` (celulares-carmen) | `UPDATE user_profiles SET role='admin', is_active=TRUE WHERE email='esteban@solcraftsas.com';` → `id=780adc04-108b-4a22-b153-af508d0b9dab`, `role='admin'`, `site_id=NULL`, `is_active=true`, 0 filas en `user_sites`. Admin creado previamente por Esteban desde Dashboard → Authentication → Add user; trigger `on_auth_user_created` había insertado la fila con `role='vendedor'`. | Alta del admin inicial de la instancia celulares-carmen. Convención de admin con site_id=NULL + 0 user_sites (acceso global por rol, replicando el patrón de Taiwy Sport verificado por Esteban). | Esteban |
 | 2026-10-14 15:58:35 UTC | `lmuuilicckgderapyxma` (celulares-carmen) | Fase 5 del runbook, bloque único transaccional: `INSERT INTO price_lists` ('General', default), `INSERT INTO sites` (CEN/CC1/CC2, 3 filas), `INSERT INTO warehouses` (Tránsito+Principal en CEN, Principal en CC1, Principal en CC2 — 4 filas, todas `is_public=false`), `INSERT INTO adjustment_counters` (3), `INSERT INTO site_counters` (3), `INSERT INTO categories` (10 — FUNDAS/CARGADORES/AUDIFONOS/VIDRIOS/CABLES/POWERBANKS/SOPORTES/PARLANTES/RELOJES/ACCESORIOS), `INSERT INTO business_settings` (business_name='Celulares Carmen', regime='No responsable de IVA', WhatsApp/COD/Wompi/pickup/delivery todos false). | Datos semilla iniciales de la instancia. Replica estructura de Taiwy Sport verificada en la base. verify_provisioning.sql 39/39 PASS tras aplicar. | Esteban |
+| 2026-10-14 18:59:26 UTC | Vercel proyecto `pos-celulares-carmen` (`prj_aEMbFXOf1UGzanQFJEqXxpfPdoy4`) | Dominio `tecnologia-accesorios.app-solcraft.com` agregado por Esteban al proyecto `pos-celulares-carmen`; es el dominio oficial. `verified=true` (zone `app-solcraft.com` corre en nameservers de Vercel, el registro se crea solo). | Dominio oficial de la instancia celulares-carmen. El nombre interno `celulares-carmen` se mantiene como handle de instancia/proyecto; el subdominio se eligió por el cliente y no tiene que coincidir con él. | Esteban |
+| 2026-10-14 19:27:59 UTC | `lmuuilicckgderapyxma` (celulares-carmen), `auth.users` + `user_profiles` | Cuenta `sebitas542010@hotmail.com` creada con rol `admin` (vía trigger `on_auth_user_created` + alta en Dashboard → Authentication → Add user). | Cuenta del cliente confirmada por Esteban el 2026-10-14. Rol definitivo (admin si es el dueño, encargado con sede si es colaborador) queda por confirmar con el cliente — no modificar la fila. | Esteban (confirmación 2026-10-14) |
 
 > **Reglas de la tabla**:
 > - **No se borran filas** — una intervención antigua que se revierte se
@@ -251,18 +253,29 @@ Team Vercel: `team_NYfI1cmi7rmw2rG6BEP7Ws2p`.
 
 ### Pendientes de celulares-carmen (en orden)
 
-1. **Dominio** `celulares-carmen.app-solcraft.com` en Vercel: hoy solo
-   responde con URLs `vercel.app`. Agregar al proyecto + CNAME DNS.
-2. **Segundo admin NO planificado**: `sebitas542010@hotmail.com` apareció
-   en `user_profiles`. Confirmar quién es antes de modificar nada.
-3. **Verificación de Auth** (`Site URL`, `Redirect URLs`, `Confirm email`
-   OFF) y **Storage global upload size limit en 100 MB**: Esteban dijo
-   "ya quedó ok" sin verificación formal — pendiente de validar.
-4. **Env vars en PREVIEW** del proyecto Vercel `pos-celulares-carmen`:
-   verificar que las 4 estén en target Preview además de Production:
-   `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`,
-   `SUPABASE_SERVICE_ROLE_KEY`, `NEXT_PUBLIC_APP_URL`. **El MCP no
-   puede listarlas (403 forbidden)** — lo verifica Esteban en dashboard.
+1. **Dominio oficial** `tecnologia-accesorios.app-solcraft.com`: ✅
+   agregado por Esteban al proyecto Vercel `pos-celulares-carmen` el
+   2026-10-14 18:59:26 UTC, `verified=true`, responde 200 por HTTPS.
+   Nombre interno `celulares-carmen` se mantiene como handle de
+   instancia/proyecto; el subdominio no coincide con él y es correcto.
+2. **Pendiente de Esteban (post-dominio)** — infra que yo no toco:
+   - `NEXT_PUBLIC_APP_URL=https://tecnologia-accesorios.app-solcraft.com`
+     en Vercel proyecto `pos-celulares-carmen`, targets **Production
+     + Preview**, + redeploy.
+   - Supabase Auth del proyecto `lmuuilicckgderapyxma`: `Site URL` y
+     `Redirect URLs` actualizados al dominio oficial.
+   - Verificar que las 4 env vars estén en target **Preview** además
+     de Production: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`,
+     `SUPABASE_SERVICE_ROLE_KEY`, `NEXT_PUBLIC_APP_URL`. **El MCP no
+     puede listarlas (403 forbidden)** — lo verifica Esteban en dashboard.
+3. **Cuenta `sebitas542010@hotmail.com`**: confirmada por Esteban el
+   2026-10-14 como cuenta del cliente (dueño o colaborador). Rol
+   `admin` vigente; el rol definitivo (admin si es el dueño, encargado
+   con sede si es colaborador) queda por confirmar con el cliente. **No
+   modificar la fila.**
+4. **Verificación de Auth** (`Confirm email` OFF) y **Storage global
+   upload size limit en 100 MB**: Esteban dijo "ya quedó ok" sin
+   verificación formal — pendiente de validar.
 5. **Smoke real con el cliente**: venta en cada local, traslado
    Central→local con recepción, cierre de turno. Alta de encargados y
    vendedores. Backups diarios activos.
