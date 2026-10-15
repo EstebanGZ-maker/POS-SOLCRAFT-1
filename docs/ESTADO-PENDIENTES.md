@@ -356,6 +356,18 @@ d. **Merge solo si a + b + c pasan**.
 - **Rotación anon key y service_role de Solcraft**: pendiente sin fecha.
 - **Verificar consumo del AI Gateway con créditos pagos**: evaluar en
   docs de Vercel si permite atribuir consumo por usuario/tag.
+- **(MEDIA) Campo `debug` del error de `/api/analyze-product` expone
+  mensaje interno**: el `catch` de `app/api/analyze-product/route.ts`
+  devuelve en el body `{ error, debug: error?.message || String(error) }`
+  con status 500. `debug` puede incluir texto propagado del AI Gateway
+  o de la provider (rate limit, "invalid api key", etc.). **Fix** en el
+  mismo commit que cierre la auth del endpoint — eliminar `debug` del
+  body público y loguearlo solo en server-side con `console.error`.
+  **No corregir dentro del refactor del perfil IA**: el fixture
+  mecánico (`tests/snapshots/rubro-ropa/outputs/response-gemini-throws.json`)
+  preserva el shape actual byte a byte para que el refactor sea una
+  identidad verificable; el fix queda como commit aparte que regenera
+  esa captura a propósito.
 - **Endpoint `/api/analyze-product` sin autenticación**: hoy acepta
   POST anónimos y consume créditos del AI Gateway. Verificado por
   lectura de código el 2026-10-15 (sin llamadas reales a producción):
