@@ -356,6 +356,19 @@ d. **Merge solo si a + b + c pasan**.
 - **Rotación anon key y service_role de Solcraft**: pendiente sin fecha.
 - **Verificar consumo del AI Gateway con créditos pagos**: evaluar en
   docs de Vercel si permite atribuir consumo por usuario/tag.
+- **Endpoint `/api/analyze-product` sin autenticación**: hoy acepta
+  POST anónimos y consume créditos del AI Gateway. Verificado por
+  lectura de código el 2026-10-15 (sin llamadas reales a producción):
+  el repo no tiene `middleware.ts` y `app/api/analyze-product/route.ts`
+  no llama `requireRole` ni lee sesión. Riesgo acotado hoy a saldo de
+  AI Gateway (no toca DB). **Fix** en commit propio (no mezclar con
+  el refactor del perfil IA): guard de sesión en la ruta, 401 explícito
+  sin cookie válida, prueba automática (401 anónimo + 200 con sesión).
+  En el refactor del perfil IA, la lectura de `business_settings.rubro`
+  debe ejecutarse **antes** de `generateObject` — así una llamada sin
+  sesión falla sin gastar créditos aunque el guard explícito aún no
+  esté. Riesgo inherente mientras no se mergee: cualquiera con la URL
+  pública puede quemar créditos del tenant.
 
 ### Plan comercial — multi-tenant con diseño primero (SIN CÓDIGO)
 
