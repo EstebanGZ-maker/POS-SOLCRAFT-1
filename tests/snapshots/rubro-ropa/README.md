@@ -79,6 +79,37 @@ Scope del escaneo cruzado: `instructions` + `messageTemplate` + todos
 los `description` del schema + `ui.labels[].{label,placeholder}` +
 `ui.hero` + valores string de `ui.constants`.
 
+## Bugs del extractor regex-based (fix 2026-10-16)
+
+El primer commit de este directorio (`ddf42dc`) usaba un extractor
+regex para `client-fallbacks.json`. Dos bugs quedaron en el fixture:
+
+1. **`initial.{type_prefix,size,color,price,cost}` todos `null`** — el
+   regex `/const newItem: IngressItem = \{([\s\S]*?)\n\s{6}\}/` tomó
+   la **primera** aparición en `panel.tsx`, que es la de
+   `duplicateItem()` (`...original` spread + solo 6 campos). La
+   función real es `handleFiles()` con los 10+ defaults. El extractor
+   se saltó la real.
+2. **`analyze.type_prefix` truncado** — el regex `[^,\n]+` corta en la
+   primera coma. La expresión `(product.type_prefix ?? "XX").toUpperCase().slice(0, 4)`
+   quedó cortada en `.slice(0`.
+
+**Fix aplicado**: extractor por AST + `node.getText()` para capturar
+expresiones completas. Localiza `handleFiles` y `analyze` por nombre
+exacto (no por primera coincidencia regex) y falla duro si no
+encuentra exactamente un match por bloque. Audita además
+`<Label` y `placeholder=` del source vs entradas de `ui-labels.json`.
+Serializa `ui-constants` con orden canónico (alfabético) para
+protegerse de insertion-order drift.
+
+**Alcance del fix**: solo `outputs/client-fallbacks.json` cambia. Los
+otros 17 archivos siguen idénticos byte a byte al commit original.
+
+Historial: el fix viene antes del refactor del perfil (Y.1). El
+refactor consume `getRubroProfile('ropa').ui.clientFallbacks` que
+devuelve datos limpios equivalentes a lo que ahora produce el
+extractor AST corregido.
+
 ## Advertencia — error de género en la plantilla de usuario del perfil ropa
 
 El mensaje al usuario del route actual (main @ 1aff84b) contiene un error

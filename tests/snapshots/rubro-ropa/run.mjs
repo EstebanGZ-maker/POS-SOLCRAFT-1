@@ -388,39 +388,113 @@ function captureUIFromPanel(outDir) {
   }
   visitHero(sf)
 
-  const initMatch = src.match(/const newItem: IngressItem = \{([\s\S]*?)\n\s{6}\}/)
-  const initBlock = initMatch ? initMatch[1] : ""
-  const analyzeMatch = src.match(/async function analyze[\s\S]*?update\(id,\s*\{([\s\S]*?)\n\s{6}\}\)/)
-  const analyzeBlock = analyzeMatch ? analyzeMatch[1] : ""
-  const extractField = (block, name) => {
-    const m = block.match(new RegExp(`\\b${name}:\\s*([^,\\n]+)`))
-    return m ? m[1].trim() : null
+  // ---------- Extractor por AST (fix 2026-10-16, ver README §bugs) --------
+  // Captura `clientFallbacks` desde los dos bloques de `panel.tsx` usando
+  // AST + node.getText(), no regex. Elige la función exacta por nombre y
+  // falla duro si no encuentra EXACTAMENTE un match por bloque. Antes de
+  // este fix el extractor era regex-based y cargaba dos bugs: tomaba la
+  // primera coincidencia de `const newItem: IngressItem` (que es la de
+  // `duplicateItem()`, no la de `handleFiles()`) y truncaba expresiones
+  // en la primera coma interna (ej. `.slice(0, 4)` quedaba cortado a
+  // `.slice(0`). Ver `README.md` para el detalle.
+  const INITIAL_KEYS = ["type_prefix", "size", "color", "quantity", "price", "cost"]
+  const ANALYZE_KEYS = ["name", "type_prefix", "category", "description", "size", "color", "price", "cost", "quantity"]
+
+  function findFunction(sf, name) {
+    const hits = []
+    function walk(node) {
+      if (ts.isFunctionDeclaration(node) && node.name && node.name.text === name) {
+        hits.push(node)
+      }
+      ts.forEachChild(node, walk)
+    }
+    walk(sf)
+    if (hits.length !== 1) {
+      throw new Error(`AST extractor: esperaba 1 función "${name}", encontró ${hits.length}`)
+    }
+    return hits[0]
   }
 
+  function findNewItemObjectIn(fnNode) {
+    const hits = []
+    function walk(node) {
+      if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === "newItem" && node.initializer && ts.isObjectLiteralExpression(node.initializer)) {
+        hits.push(node.initializer)
+      }
+      ts.forEachChild(node, walk)
+    }
+    walk(fnNode)
+    if (hits.length !== 1) {
+      throw new Error(`AST extractor: esperaba 1 "const newItem" dentro de "${fnNode.name?.text}", encontró ${hits.length}`)
+    }
+    return hits[0]
+  }
+
+  function findUpdateCallObjectIn(fnNode) {
+    const hits = []
+    function walk(node) {
+      if (
+        ts.isCallExpression(node) &&
+        ts.isIdentifier(node.expression) &&
+        node.expression.text === "update" &&
+        node.arguments.length === 2 &&
+        ts.isObjectLiteralExpression(node.arguments[1])
+      ) {
+        hits.push(node.arguments[1])
+      }
+      ts.forEachChild(node, walk)
+    }
+    walk(fnNode)
+    // analyze() tiene DOS update(id, {...}): el feliz y el del catch con
+    // solo status/errorMsg. Elegimos el que tiene las claves de analyze.
+    const matches = hits.filter((obj) => obj.properties.some((p) => ts.isPropertyAssignment(p) && ts.isIdentifier(p.name) && p.name.text === "name"))
+    if (matches.length !== 1) {
+      throw new Error(`AST extractor: esperaba 1 "update(id, {...})" con propiedad "name" dentro de "${fnNode.name?.text}", encontró ${matches.length} (total updates: ${hits.length})`)
+    }
+    return matches[0]
+  }
+
+  function textOfProperty(objLit, key) {
+    for (const p of objLit.properties) {
+      if (!ts.isPropertyAssignment(p)) continue
+      if (!ts.isIdentifier(p.name) || p.name.text !== key) continue
+      return p.initializer.getText(sf)
+    }
+    throw new Error(`AST extractor: propiedad "${key}" no encontrada en el object literal`)
+  }
+
+  const handleFilesFn = findFunction(sf, "handleFiles")
+  const analyzeFn = findFunction(sf, "analyze")
+  const newItemObj = findNewItemObjectIn(handleFilesFn)
+  const updateObj = findUpdateCallObjectIn(analyzeFn)
+
+  const initial = Object.fromEntries(INITIAL_KEYS.map((k) => [k, textOfProperty(newItemObj, k)]))
+  const analyze = Object.fromEntries(ANALYZE_KEYS.map((k) => [k, textOfProperty(updateObj, k)]))
+
+  // Auditoría independiente: cantidad de <Label en el source vs entradas
+  // en el array `pairs`. Falla si no coinciden.
+  const labelCount = (src.match(/<Label\b/g) || []).length
+  if (pairs.length !== labelCount) {
+    throw new Error(`AST extractor: ${labelCount} <Label en panel.tsx vs ${pairs.length} entradas en ui-labels. Mismatch.`)
+  }
+  const placeholderCount = (src.match(/\bplaceholder=/g) || []).length
+  const pairsWithPlaceholder = pairs.filter((p) => p.placeholder !== null).length
+  if (pairsWithPlaceholder !== placeholderCount) {
+    throw new Error(`AST extractor: ${placeholderCount} placeholder= en panel.tsx vs ${pairsWithPlaceholder} entradas con placeholder en ui-labels.`)
+  }
+
+  // Orden canónico para ui-constants: alfabético. Preserva el orden que el
+  // visitor accidentalmente produjo (AI_MIN_INTERVAL_MS, PREFIX_HINTS) y
+  // garantiza determinismo si el perfil post-refactor cambia la insertion
+  // order del object literal.
+  const canonicalConstants = Object.fromEntries(
+    Object.keys(constants).sort().map((k) => [k, constants[k]]),
+  )
+
   writeJSON(path.join(outDir, "ui-labels.json"), pairs)
-  writeJSON(path.join(outDir, "ui-constants.json"), constants)
+  writeJSON(path.join(outDir, "ui-constants.json"), canonicalConstants)
   writeText(path.join(outDir, "ui-hero.txt"), hero || "")
-  writeJSON(path.join(outDir, "client-fallbacks.json"), {
-    initial: {
-      type_prefix: extractField(initBlock, "type_prefix"),
-      size: extractField(initBlock, "size"),
-      color: extractField(initBlock, "color"),
-      quantity: extractField(initBlock, "quantity"),
-      price: extractField(initBlock, "price"),
-      cost: extractField(initBlock, "cost"),
-    },
-    analyze: {
-      name: extractField(analyzeBlock, "name"),
-      type_prefix: extractField(analyzeBlock, "type_prefix"),
-      category: extractField(analyzeBlock, "category"),
-      description: extractField(analyzeBlock, "description"),
-      size: extractField(analyzeBlock, "size"),
-      color: extractField(analyzeBlock, "color"),
-      price: extractField(analyzeBlock, "price"),
-      cost: extractField(analyzeBlock, "cost"),
-      quantity: extractField(analyzeBlock, "quantity"),
-    },
-  })
+  writeJSON(path.join(outDir, "client-fallbacks.json"), { initial, analyze })
 }
 
 // ---------- Captura desde el perfil (post-refactor) ------------------
