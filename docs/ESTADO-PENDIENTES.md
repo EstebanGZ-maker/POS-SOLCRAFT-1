@@ -181,6 +181,43 @@ sobre datos limpios. Coordinar con Esteban cuándo hacer la pasada.
 Deploys production `pos-solcraft-1-a1x2` y `pos-taiwysport` **READY** del
 commit `afdd603`.
 
+### Y.1 — perfil IA (ropa/tecnología): WIP local sin revisión (2026-10-17)
+
+- Rama `feat/ia-rubro-perfil` con commit **WIP local** de Y.1 (perfil IA
+  ropa/tecnología), **sin revisión de Esteban**: **no commitear ni
+  mergear** nada encima. Al reanudar, el próximo paso es que Esteban
+  pegue los diffs desde la terminal para revisarlos.
+- Pasan todos los tests del fixture: `--source=profile --verify` y
+  `--source=route --verify` (18 archivos byte-idénticos), `--isolation`
+  20/20, `--behavior` 25/25.
+- Fix del fixture ya mergeado en `71791a5` (extractor AST en vez del
+  regex buggy; solo `outputs/client-fallbacks.json` + `run.mjs` +
+  README cambiaron, los otros 17 outputs quedaron idénticos).
+- Perfil de tecnología aprobado con 7 correcciones aplicadas (marca del
+  EQUIPO en fundas/vidrios/cables; category como lista inyectada por
+  request; REJECTION_RULE como constante propia; español sin voseo;
+  `typePrefixMaxLength` por perfil; sufijos sin abreviatura literal en
+  mayúsculas). Accesorios universales (cable/cargador sin modelo):
+  `reference` vacía y el operador la escribe; la UI bloquea Guardar
+  hasta completarla.
+- La ruta `/api/analyze-product` tras merge pasa a exigir **sesión
+  implícita** (status 401 `rubro_missing` sin sesión por la lectura
+  de `business_settings.rubro`) en las 3 instancias, con una lectura
+  extra a `business_settings` (y a `categories` solo en modo tecnología)
+  y un nuevo modo de falla 503 `rubro_read_error` si Supabase falla al
+  leer. **Falta su commit propio de endurecimiento**: guard 401
+  explícito y fix del campo `debug` que expone el mensaje interno del
+  AI Gateway.
+- **Pendientes abiertos tras Y.1**:
+  - **Y.2** — UI de tecnología (Select de categoría poblado desde DB,
+    sin precio/costo sugeridos, Guardar bloqueado si falta `marca` **o**
+    `referencia`; el servidor ya rechaza con `validateItemForRubro`).
+  - **Y.3** — reemplazar la etiqueta hardcoded "Talla" por la del
+    perfil en el formulario manual de productos
+    (`app/inventory/products/`), el importador de Excel y la landing
+    del catálogo público. Celulares-carmen carga por Excel → el label
+    debe decir "Referencia" para `rubro='tecnologia'`.
+
 ### Instancias productivas (3)
 
 | cliente | Supabase ref | Vercel project id |

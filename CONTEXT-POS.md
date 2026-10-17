@@ -57,6 +57,19 @@ antes de ejecutarla.
    (SQL ejecutado contra DB sin pasar por migración versionada) se
    registra inmediatamente en `docs/ESTADO-PENDIENTES.md §
    "Registro de intervenciones manuales en producción"`.
+7. **Reglas de economía de reportes y revisión** (permanentes):
+   - Reportes de **máximo 15 líneas**, en tablas de pasa/falla. **No**
+     pegar código ni diffs salvo que Esteban pida un archivo concreto.
+   - **Una tarea por mensaje**; no re-explicar contexto que ya está en
+     `docs/`.
+   - Revisar con comandos acotados (`git diff --stat`, `grep -n`,
+     `sed -n`), no con `cat` de archivos enteros.
+   - Verificar **una sola vez** al final de cada tarea; los despliegues
+     se verifican **solo cuando entra código**.
+   - Preguntas solo si cambian el resultado, con tu recomendación;
+     **máximo 3**.
+   - **No iniciar tareas** por tu cuenta. Al terminar: qué se hizo, qué
+     falta y qué necesitás de Esteban.
 
 ## 1. Stack y versiones
 
