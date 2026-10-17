@@ -402,6 +402,42 @@ d. **Merge solo si a + b + c pasan**.
   sesión falla sin gastar créditos aunque el guard explícito aún no
   esté. Riesgo inherente mientras no se mergee: cualquiera con la URL
   pública puede quemar créditos del tenant.
+- **Cambios de comportamiento del endpoint tras merge de Y.1 (perfil
+  IA)** — anotar para las 3 instancias cuando `feat/ia-rubro-perfil`
+  se mergee a main:
+  - **Nuevo requisito de sesión implícito**: `POST /api/analyze-product`
+    ahora lee `business_settings.rubro` con la sesión del usuario antes
+    de llamar al modelo. **Sin sesión → status 401** (`rubro_missing`),
+    sin invocar `generateObject`. Es el 401 que reemplaza al signup
+    anónimo que hoy quema créditos. Esto cierra el flanco de AI Gateway
+    de facto, pero NO reemplaza al guard explícito pendiente arriba
+    (sigue haciendo falta un `requireRole` del lado del route para los
+    casos donde la lectura de `business_settings` no fuera suficiente
+    como gate; p.ej. si una RLS futura abre esa tabla).
+  - **Nueva lectura server-side**: `business_settings.rubro` en cada
+    request + (solo tecnología) `categories.name ORDER BY name`.
+    Latencia extra ~1 round-trip Supabase antes del modelo. Para
+    tecnología se agrega una segunda round-trip (categorías).
+  - **Nuevo modo de falla 503** (`rubro_read_error`): si Supabase
+    devuelve `error` al leer `business_settings` → status 503,
+    `{error, code: "rubro_read_error"}`, modelo NO invocado. No es un
+    error del usuario; es "configuración del negocio no disponible,
+    reintentá".
+  - **Modo de falla 500** (`rubro_invalid`): si `business_settings.rubro`
+    tiene un valor que no está en el whitelist `('ropa','tecnologia')`
+    → 500 sin invocar modelo. No debería pasar (hay CHECK en la columna),
+    pero el guard existe en el route por defensa en profundidad.
+  - **Pendientes separados que se abren con este merge**:
+    (a) commit propio del guard 401 explícito con `requireRole` o lectura
+    directa de `auth.uid()`;
+    (b) commit propio del fix del campo `debug` que expone el mensaje
+    interno del AI Gateway (ver bullet MEDIA arriba);
+    (c) nota en el runbook de aprovisionamiento: cualquier instancia
+    nueva necesita `business_settings` sembrado con un `rubro` válido
+    antes de que `/central` del cliente funcione (ya está cubierto por
+    la migración `20261014000000_add_business_settings_rubro` con
+    DEFAULT 'ropa' + CHECK, pero sumarlo al runbook como paso
+    verificable del gate `verify_provisioning.sql` chequeo 41).
 
 ### Plan comercial — multi-tenant con diseño primero (SIN CÓDIGO)
 
