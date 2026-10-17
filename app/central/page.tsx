@@ -23,6 +23,8 @@ import { useToast } from "@/hooks/use-toast"
 import { formatCurrency } from "@/lib/utils"
 import { getProductsWithStock, getCategories, createBulkTransfer, receiveMerchandise, updateWholesalePrices } from "@/lib/inventory-actions"
 import { getSitesWithWarehouses, getCentralWarehouse } from "@/lib/site-actions"
+import { getBusinessRubro } from "@/lib/business-settings-actions"
+import { tryGetRubroUIBundle } from "@/lib/rubro-ui"
 import { Send, PackagePlus, Search, Filter, Plus, Trash2, Warehouse, Sparkles, BarChart3, RefreshCw, ImageOff } from "lucide-react"
 import { ProductPicker } from "@/components/inventory/product-picker"
 import { AiIngressPanel } from "@/components/central/ai-ingress-panel"
@@ -34,6 +36,16 @@ export default function CentralPage() {
   const { mutate } = useSWRConfig()
   const centralWarehouseId = central?.warehouse_id ?? null
   const centralSiteId = central?.site?.site_id ?? null
+
+  // Fetch del rubro independiente del warehouse: si falla, SOLO afecta
+  // al panel de ingreso con IA. Las demás tabs (receive, send, finance)
+  // siguen cargando desde sus propias queries. Un error de rubro NO
+  // bloquea /central como página.
+  const { data: rubro, error: rubroErrorRaw, isLoading: rubroLoading } = useSWR("business-rubro", getBusinessRubro)
+  const rubroError = rubroErrorRaw ? String(rubroErrorRaw?.message || rubroErrorRaw) : null
+  const uiProfileResult = tryGetRubroUIBundle(rubro ?? null)
+  const uiProfile = "bundle" in uiProfileResult ? uiProfileResult.bundle : null
+  const uiProfileError = "error" in uiProfileResult && rubro ? uiProfileResult.error : null
 
   return (
     <div className="p-6 max-w-7xl mx-auto space-y-6">
@@ -75,6 +87,9 @@ export default function CentralPage() {
               centralWarehouseId={centralWarehouseId!}
               centralSiteId={centralSiteId!}
               onIngressed={() => mutate(["central-products", centralWarehouseId])}
+              rubro={rubro ?? null}
+              uiProfile={uiProfile}
+              rubroError={rubroError || uiProfileError}
             />
           </TabsContent>
           <TabsContent value="receive">

@@ -40,6 +40,7 @@ const args = Object.fromEntries(
 const MODE_SOURCE = args.source || "route"
 const DO_VERIFY = !!args.verify
 const DO_ISOLATION = !!args.isolation
+const DO_BEHAVIOR = !!args.behavior
 
 // ---------- Captura: variantes y valores deterministas ---------------
 const DUMMY_DATAURL_IMAGE = "data:image/jpeg;base64,FAKE"
@@ -95,6 +96,22 @@ export const TECNOLOGIA_MARKERS = [
 // "prenda" o "ropa" en el texto de rechazo. Se verifica aparte.
 export const REJECTION_PHRASE_TECNOLOGIA = "no corresponde al rubro"
 
+// Literales exclusivos de ropa que NO deben aparecer hardcoded en
+// `components/central/ai-ingress-panel.tsx` tras el refactor. Si queda
+// uno, el panel está consumiendo strings propios del rubro en vez de
+// leerlos del perfil. Escaneo literal (incluye tildes y mayúsculas).
+export const PANEL_ROPA_LITERALS = [
+  '"Talla"',
+  '"Tipo (prefijo)"',
+  '"Camisas"',
+  '"Ej: Camisa manga larga"',
+  '"CA=Camisa',
+  '"Material, estilo, detalles',
+  'CA-M-95-00',
+  '"Sube fotos de las prendas',
+  '"La IA detecta el tipo, la descripción, la talla',
+]
+
 // ---------- Utilitarios ----------------------------------------------
 const rmrf = (p) => fs.rmSync(p, { recursive: true, force: true })
 const mkd = (p) => fs.mkdirSync(p, { recursive: true })
@@ -123,14 +140,45 @@ function transpileToMjs(tsSource, { importRewrites = {}, jsx = false } = {}) {
   return out
 }
 
+// ---------- Transpilador de la cadena @/lib/rubro-* ------------------
+// Transpila rubro-ui + rubro-profiles (en ese orden, por dependencia) y
+// devuelve las URLs file:// de los .mjs resultantes para rewrites y para
+// `import()`.
+function buildRubroChain(cacheBuster = "") {
+  const uiSrc = fs.readFileSync(path.join(REPO_ROOT, "lib/rubro-ui.ts"), "utf8")
+  const uiTranspiled = transpileToMjs(uiSrc)
+  const uiPath = path.join(TMP_DIR, `rubro-ui.generated.mjs`)
+  fs.writeFileSync(uiPath, uiTranspiled)
+  const uiHref = url.pathToFileURL(uiPath).href
+
+  const profSrc = fs.readFileSync(path.join(REPO_ROOT, "lib/rubro-profiles.ts"), "utf8")
+  const profTranspiled = transpileToMjs(profSrc, { importRewrites: { "@/lib/rubro-ui": uiHref } })
+  const profPath = path.join(TMP_DIR, `rubro-profiles.generated.mjs`)
+  fs.writeFileSync(profPath, profTranspiled)
+  const profHref = url.pathToFileURL(profPath).href
+  return { uiHref, profHref, cacheBuster }
+}
+
+async function loadProfileModule(cacheBuster = "") {
+  const { profHref } = buildRubroChain(cacheBuster)
+  const q = cacheBuster ? `?t=${cacheBuster}` : ""
+  return import(profHref + q)
+}
+
 // ---------- Loader del route transpilado ----------------------------
 async function loadRouteWithMocks(cacheBuster = "") {
+  const { profHref } = buildRubroChain(cacheBuster)
   const routeSrc = fs.readFileSync(path.join(REPO_ROOT, "app/api/analyze-product/route.ts"), "utf8")
   const aiMock = url.pathToFileURL(path.join(MOCKS_DIR, "ai.mjs")).href
   const nextMock = url.pathToFileURL(path.join(MOCKS_DIR, "next-server.mjs")).href
   const supaMock = url.pathToFileURL(path.join(MOCKS_DIR, "supabase-server.mjs")).href
   const transpiled = transpileToMjs(routeSrc, {
-    importRewrites: { "ai": aiMock, "next/server": nextMock, "@/lib/supabase/server": supaMock },
+    importRewrites: {
+      "ai": aiMock,
+      "next/server": nextMock,
+      "@/lib/supabase/server": supaMock,
+      "@/lib/rubro-profiles": profHref,
+    },
   })
   const genPath = path.join(TMP_DIR, "route.generated.mjs")
   fs.writeFileSync(genPath, transpiled)
@@ -142,6 +190,9 @@ function resetAiGlobals() {
   globalThis.__ropa_ai_mode = "capture"
   globalThis.__ropa_ai_result = {}
   delete globalThis.__ropa_ai_error_message
+  globalThis.__ROPA_FIXTURE_RUBRO = "ropa"
+  globalThis.__ROPA_FIXTURE_SUPABASE_ERROR = false
+  globalThis.__ROPA_FIXTURE_CATEGORIES = []
 }
 
 // Fixed deterministic "complete object" for response-full capture. Nueve
@@ -292,11 +343,81 @@ async function captureFromRoute(outDir) {
   await captureMediaNormalization(outDir, routeMod)
 }
 
-// ---------- Captura UI desde panel.tsx (pre-refactor) ----------------
-function captureUIFromPanel(outDir) {
-  const panelPath = path.join(REPO_ROOT, "components/central/ai-ingress-panel.tsx")
-  const src = fs.readFileSync(panelPath, "utf8")
-  const sf = ts.createSourceFile(panelPath, src, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
+// ---------- Captura UI desde el perfil (opción 1, post-refactor) ----
+// Templates de las expresiones del callback `analyze()` por campo.
+// Deben matchear BYTE-A-BYTE el extractor AST que generó el fixture
+// corregido en el commit 71791a5 — ese fixture es la fuente de verdad.
+// La función `applyAnalysisToItem(product, "ropa")` del módulo
+// `lib/apply-analysis.ts` implementa EL MISMO comportamiento que estas
+// expresiones; el gate `--behavior` lo verifica evaluando el oráculo.
+const ANALYZE_EXPR = {
+  name:        (f) => `product.name ?? ${JSON.stringify(f)}`,
+  type_prefix: (f) => `(product.type_prefix ?? ${JSON.stringify(f)}).toUpperCase().slice(0, 4)`,
+  category:    (f) => `product.category ?? ${JSON.stringify(f)}`,
+  description: (f) => `product.description ?? ${JSON.stringify(f)}`,
+  size:        (f) => `(product.size ?? ${JSON.stringify(f)}).toUpperCase()`,
+  color:       (f) => `product.color ?? ${JSON.stringify(f)}`,
+  price:       (f) => `Math.round(product.suggested_price ?? ${f})`,
+  cost:        (f) => `Math.round(product.suggested_cost ?? ${f})`,
+  quantity:    (f) => `product.quantity ?? ${f}`,
+}
+const serializeInitial = (v) => (typeof v === "string" ? JSON.stringify(v) : String(v))
+
+async function captureUIFromProfile(outDir) {
+  const mod = await loadProfileModule()
+  const profile = mod.getRubroProfile("ropa")
+  const ui = profile.ui
+
+  // ui-labels / ui-hero: salen directo del perfil.
+  writeJSON(path.join(outDir, "ui-labels.json"), ui.labels)
+  writeText(path.join(outDir, "ui-hero.txt"), ui.hero)
+
+  // ui-constants: orden canónico (alfabético) para blindaje contra
+  // insertion-order drift del object literal en TypeScript.
+  const canonicalConstants = Object.fromEntries(
+    Object.keys(ui.constants).sort().map((k) => [k, ui.constants[k]]),
+  )
+  writeJSON(path.join(outDir, "ui-constants.json"), canonicalConstants)
+
+  // client-fallbacks: serializa cada valor como el fixture committed los
+  // tiene (strings tipo "XX" quedan como `"\"XX\""`, números como `"0"`),
+  // y aplica el template de expresión por campo para `analyze`.
+  const INITIAL_KEYS = ["type_prefix", "size", "color", "quantity", "price", "cost"]
+  const ANALYZE_KEYS = ["name", "type_prefix", "category", "description", "size", "color", "price", "cost", "quantity"]
+  const initial = Object.fromEntries(
+    INITIAL_KEYS.map((k) => [k, serializeInitial(ui.clientFallbacks.initial[k])]),
+  )
+  const analyze = Object.fromEntries(
+    ANALYZE_KEYS.map((k) => {
+      const tmpl = ANALYZE_EXPR[k]
+      if (!tmpl) throw new Error(`captureUIFromProfile: campo "${k}" sin template en ANALYZE_EXPR.`)
+      const fb = ui.clientFallbacks.analyze[k]
+      return [k, tmpl(fb)]
+    }),
+  )
+  writeJSON(path.join(outDir, "client-fallbacks.json"), { initial, analyze })
+}
+
+// ---------- Captura UI desde panel.tsx @ 1aff84b (oráculo independiente) ----
+// `--source=route` extrae desde el panel ORIGINAL (git show 1aff84b),
+// NO desde el panel refactorizado (que ya no tiene literales). Es un
+// extractor independiente del perfil: si en el futuro alguien rompe el
+// perfil para que ya no refleje el design original, `--source=route`
+// sigue dando los bytes de la fuente de verdad histórica. Mismos bytes
+// que `--source=profile` → confirma que el refactor fue identity-preserving.
+import { execSync as execSyncForPanel } from "node:child_process"
+const PANEL_ANCHOR = "1aff84b"
+
+function captureUIFromPanelOracle(outDir) {
+  // Panel original — nunca cambia (commit congelado).
+  try {
+    execSyncForPanel(`git cat-file -e ${PANEL_ANCHOR}:components/central/ai-ingress-panel.tsx`, { stdio: "pipe" })
+  } catch {
+    console.error(`[fixture] --source=route: el commit ancla ${PANEL_ANCHOR} no es accesible. Usar --source=profile o verificar que el repo no sea shallow.`)
+    process.exit(2)
+  }
+  const src = execSyncForPanel(`git show ${PANEL_ANCHOR}:components/central/ai-ingress-panel.tsx`).toString("utf8")
+  const sf = ts.createSourceFile("ai-ingress-panel.tsx", src, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
 
   const constants = {}
   const pairs = []
@@ -364,7 +485,6 @@ function captureUIFromPanel(outDir) {
   }
   visit(sf)
 
-  // Hero paragraph: <p className="max-w-xl ...">...</p>
   let hero = null
   function visitHero(node) {
     if (hero) return
@@ -388,143 +508,67 @@ function captureUIFromPanel(outDir) {
   }
   visitHero(sf)
 
-  // ---------- Extractor por AST (fix 2026-10-16, ver README §bugs) --------
-  // Captura `clientFallbacks` desde los dos bloques de `panel.tsx` usando
-  // AST + node.getText(), no regex. Elige la función exacta por nombre y
-  // falla duro si no encuentra EXACTAMENTE un match por bloque. Antes de
-  // este fix el extractor era regex-based y cargaba dos bugs: tomaba la
-  // primera coincidencia de `const newItem: IngressItem` (que es la de
-  // `duplicateItem()`, no la de `handleFiles()`) y truncaba expresiones
-  // en la primera coma interna (ej. `.slice(0, 4)` quedaba cortado a
-  // `.slice(0`). Ver `README.md` para el detalle.
-  const INITIAL_KEYS = ["type_prefix", "size", "color", "quantity", "price", "cost"]
-  const ANALYZE_KEYS = ["name", "type_prefix", "category", "description", "size", "color", "price", "cost", "quantity"]
-
-  function findFunction(sf, name) {
+  // AST independiente para initial/analyze — mismo algoritmo del fix 71791a5.
+  function findFn(name) {
     const hits = []
     function walk(node) {
-      if (ts.isFunctionDeclaration(node) && node.name && node.name.text === name) {
-        hits.push(node)
-      }
+      if (ts.isFunctionDeclaration(node) && node.name && node.name.text === name) hits.push(node)
       ts.forEachChild(node, walk)
     }
     walk(sf)
-    if (hits.length !== 1) {
-      throw new Error(`AST extractor: esperaba 1 función "${name}", encontró ${hits.length}`)
-    }
+    if (hits.length !== 1) throw new Error(`AST oracle: esperaba 1 "${name}" en panel @ ${PANEL_ANCHOR}, encontró ${hits.length}`)
     return hits[0]
   }
-
-  function findNewItemObjectIn(fnNode) {
+  function findNewItem(fnNode) {
     const hits = []
     function walk(node) {
-      if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === "newItem" && node.initializer && ts.isObjectLiteralExpression(node.initializer)) {
-        hits.push(node.initializer)
-      }
+      if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === "newItem" && node.initializer && ts.isObjectLiteralExpression(node.initializer)) hits.push(node.initializer)
       ts.forEachChild(node, walk)
     }
     walk(fnNode)
-    if (hits.length !== 1) {
-      throw new Error(`AST extractor: esperaba 1 "const newItem" dentro de "${fnNode.name?.text}", encontró ${hits.length}`)
-    }
+    if (hits.length !== 1) throw new Error(`AST oracle: esperaba 1 "newItem" en ${fnNode.name?.text}, encontró ${hits.length}`)
     return hits[0]
   }
-
-  function findUpdateCallObjectIn(fnNode) {
+  function findUpdate(fnNode) {
     const hits = []
     function walk(node) {
-      if (
-        ts.isCallExpression(node) &&
-        ts.isIdentifier(node.expression) &&
-        node.expression.text === "update" &&
-        node.arguments.length === 2 &&
-        ts.isObjectLiteralExpression(node.arguments[1])
-      ) {
-        hits.push(node.arguments[1])
-      }
+      if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "update" && node.arguments.length === 2 && ts.isObjectLiteralExpression(node.arguments[1])) hits.push(node.arguments[1])
       ts.forEachChild(node, walk)
     }
     walk(fnNode)
-    // analyze() tiene DOS update(id, {...}): el feliz y el del catch con
-    // solo status/errorMsg. Elegimos el que tiene las claves de analyze.
     const matches = hits.filter((obj) => obj.properties.some((p) => ts.isPropertyAssignment(p) && ts.isIdentifier(p.name) && p.name.text === "name"))
-    if (matches.length !== 1) {
-      throw new Error(`AST extractor: esperaba 1 "update(id, {...})" con propiedad "name" dentro de "${fnNode.name?.text}", encontró ${matches.length} (total updates: ${hits.length})`)
-    }
+    if (matches.length !== 1) throw new Error(`AST oracle: esperaba 1 update() con "name" en ${fnNode.name?.text}, encontró ${matches.length}`)
     return matches[0]
   }
-
-  function textOfProperty(objLit, key) {
-    for (const p of objLit.properties) {
+  function textOf(obj, key) {
+    for (const p of obj.properties) {
       if (!ts.isPropertyAssignment(p)) continue
       if (!ts.isIdentifier(p.name) || p.name.text !== key) continue
       return p.initializer.getText(sf)
     }
-    throw new Error(`AST extractor: propiedad "${key}" no encontrada en el object literal`)
+    throw new Error(`AST oracle: propiedad "${key}" no encontrada`)
   }
 
-  const handleFilesFn = findFunction(sf, "handleFiles")
-  const analyzeFn = findFunction(sf, "analyze")
-  const newItemObj = findNewItemObjectIn(handleFilesFn)
-  const updateObj = findUpdateCallObjectIn(analyzeFn)
+  const INITIAL_KEYS = ["type_prefix", "size", "color", "quantity", "price", "cost"]
+  const ANALYZE_KEYS = ["name", "type_prefix", "category", "description", "size", "color", "price", "cost", "quantity"]
+  const handleFilesFn = findFn("handleFiles")
+  const analyzeFn = findFn("analyze")
+  const initial = Object.fromEntries(INITIAL_KEYS.map((k) => [k, textOf(findNewItem(handleFilesFn), k)]))
+  const analyze = Object.fromEntries(ANALYZE_KEYS.map((k) => [k, textOf(findUpdate(analyzeFn), k)]))
 
-  const initial = Object.fromEntries(INITIAL_KEYS.map((k) => [k, textOfProperty(newItemObj, k)]))
-  const analyze = Object.fromEntries(ANALYZE_KEYS.map((k) => [k, textOfProperty(updateObj, k)]))
-
-  // Auditoría independiente: cantidad de <Label en el source vs entradas
-  // en el array `pairs`. Falla si no coinciden.
+  // Auditoría independiente de cuentas.
   const labelCount = (src.match(/<Label\b/g) || []).length
-  if (pairs.length !== labelCount) {
-    throw new Error(`AST extractor: ${labelCount} <Label en panel.tsx vs ${pairs.length} entradas en ui-labels. Mismatch.`)
-  }
+  if (pairs.length !== labelCount) throw new Error(`AST oracle: ${labelCount} <Label vs ${pairs.length} pairs`)
   const placeholderCount = (src.match(/\bplaceholder=/g) || []).length
-  const pairsWithPlaceholder = pairs.filter((p) => p.placeholder !== null).length
-  if (pairsWithPlaceholder !== placeholderCount) {
-    throw new Error(`AST extractor: ${placeholderCount} placeholder= en panel.tsx vs ${pairsWithPlaceholder} entradas con placeholder en ui-labels.`)
-  }
+  const pairsWithPh = pairs.filter((p) => p.placeholder !== null).length
+  if (pairsWithPh !== placeholderCount) throw new Error(`AST oracle: ${placeholderCount} placeholder= vs ${pairsWithPh} entries`)
 
-  // Orden canónico para ui-constants: alfabético. Preserva el orden que el
-  // visitor accidentalmente produjo (AI_MIN_INTERVAL_MS, PREFIX_HINTS) y
-  // garantiza determinismo si el perfil post-refactor cambia la insertion
-  // order del object literal.
-  const canonicalConstants = Object.fromEntries(
-    Object.keys(constants).sort().map((k) => [k, constants[k]]),
-  )
+  const canonicalConstants = Object.fromEntries(Object.keys(constants).sort().map((k) => [k, constants[k]]))
 
   writeJSON(path.join(outDir, "ui-labels.json"), pairs)
   writeJSON(path.join(outDir, "ui-constants.json"), canonicalConstants)
   writeText(path.join(outDir, "ui-hero.txt"), hero || "")
   writeJSON(path.join(outDir, "client-fallbacks.json"), { initial, analyze })
-}
-
-// ---------- Captura desde el perfil (post-refactor) ------------------
-async function captureFromProfile(outDir) {
-  const profilePath = path.join(REPO_ROOT, "lib/rubro-profiles.ts")
-  if (!fs.existsSync(profilePath)) {
-    console.error("[fixture] --source=profile pero lib/rubro-profiles.ts no existe. Corré con --source=route o aplicá el refactor.")
-    process.exit(2)
-  }
-  // Prompts + responses + media vienen de ejercitar el route refactorizado,
-  // que ya consume el perfil internamente. UI/schema/client-fallbacks los
-  // leemos directo del perfil para probar que sus bytes coinciden con lo
-  // que el AST extrae en pre-refactor.
-  const routeMod = await loadRouteWithMocks()
-  await capturePrompts(outDir, routeMod)
-  await captureResponses(outDir, routeMod)
-  await captureMediaNormalization(outDir, routeMod)
-
-  const src = fs.readFileSync(profilePath, "utf8")
-  const transpiled = transpileToMjs(src)
-  const genPath = path.join(TMP_DIR, "rubro-profiles.generated.mjs")
-  fs.writeFileSync(genPath, transpiled)
-  const mod = await import(url.pathToFileURL(genPath).href)
-  const profile = mod.getRubroProfile("ropa")
-
-  const ui = profile.ui
-  writeJSON(path.join(outDir, "ui-labels.json"), ui.labels)
-  writeJSON(path.join(outDir, "ui-constants.json"), ui.constants)
-  writeText(path.join(outDir, "ui-hero.txt"), ui.hero)
-  writeJSON(path.join(outDir, "client-fallbacks.json"), ui.clientFallbacks)
 }
 
 // ---------- --verify byte a byte -------------------------------------
@@ -577,6 +621,223 @@ function verifyByteByByte() {
   console.log(`[verify] OK — ${expected.length} archivo(s) idéntico(s) byte a byte.`)
 }
 
+// ---------- --behavior -----------------------------------------------
+// Oráculo: evalúa las expresiones del `analyze()` ORIGINAL (del main
+// pre-refactor, git show 1aff84b) con `new Function` sobre entradas de
+// muestra. Compara con `applyAnalysisToItem` del módulo nuevo. Verifica
+// equivalencia byte-a-byte en runtime (no textual). Idem para
+// tecnología: todos los campos deben caer a vacíos, nunca XX ni M.
+// Mutación: parchea en memoria la implementación de apply-analysis y
+// comprueba que la prueba FALLA, luego la revierte.
+import { execSync } from "node:child_process"
+
+async function runBehavior() {
+  const results = { pass: [], fail: [] }
+  const check = (name, cond, extra = "") => {
+    (cond ? results.pass : results.fail).push(name)
+    console.log(`  ${cond ? "✓" : "✗"} ${name}${extra ? ` — ${extra}` : ""}`)
+  }
+
+  // ---------- 1. Oráculo: extraer expresiones del panel @ 1aff84b ----
+  // Verificamos que el commit existe antes de leerlo (shallow clone →
+  // --behavior falla visible, no silencioso).
+  const ANCHOR = "1aff84b"
+  try {
+    execSync(`git cat-file -e ${ANCHOR}:components/central/ai-ingress-panel.tsx`, { stdio: "pipe" })
+  } catch {
+    console.error(`[behavior] FATAL — el commit ancla ${ANCHOR} no es accesible (shallow clone?). Abortado.`)
+    process.exit(2)
+  }
+  const originalPanelSrc = execSync(`git show ${ANCHOR}:components/central/ai-ingress-panel.tsx`).toString("utf8")
+  const sf = ts.createSourceFile("ai-ingress-panel.tsx", originalPanelSrc, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
+
+  // AST walk para encontrar handleFiles.newItem y analyze.update object literals.
+  function findFunctionByName(name) {
+    const hits = []
+    function walk(node) {
+      if (ts.isFunctionDeclaration(node) && node.name && node.name.text === name) hits.push(node)
+      ts.forEachChild(node, walk)
+    }
+    walk(sf)
+    if (hits.length !== 1) throw new Error(`behavior: esperaba 1 función "${name}" en el panel original, encontró ${hits.length}`)
+    return hits[0]
+  }
+  function findNewItemObj(fnNode) {
+    const hits = []
+    function walk(node) {
+      if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === "newItem" && node.initializer && ts.isObjectLiteralExpression(node.initializer)) hits.push(node.initializer)
+      ts.forEachChild(node, walk)
+    }
+    walk(fnNode)
+    if (hits.length !== 1) throw new Error(`behavior: esperaba 1 "const newItem" en ${fnNode.name?.text}, encontró ${hits.length}`)
+    return hits[0]
+  }
+  function findAnalyzeUpdateObj(fnNode) {
+    const hits = []
+    function walk(node) {
+      if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "update" && node.arguments.length === 2 && ts.isObjectLiteralExpression(node.arguments[1])) hits.push(node.arguments[1])
+      ts.forEachChild(node, walk)
+    }
+    walk(fnNode)
+    const matches = hits.filter((obj) => obj.properties.some((p) => ts.isPropertyAssignment(p) && ts.isIdentifier(p.name) && p.name.text === "name"))
+    if (matches.length !== 1) throw new Error(`behavior: esperaba 1 update() con propiedad "name" en ${fnNode.name?.text}, encontró ${matches.length}`)
+    return matches[0]
+  }
+  function textOfProp(obj, key) {
+    for (const p of obj.properties) {
+      if (!ts.isPropertyAssignment(p)) continue
+      if (!ts.isIdentifier(p.name) || p.name.text !== key) continue
+      return p.initializer.getText(sf)
+    }
+    throw new Error(`behavior: propiedad "${key}" no encontrada en el object literal`)
+  }
+  const handleFilesFn = findFunctionByName("handleFiles")
+  const analyzeFn = findFunctionByName("analyze")
+  const newItemObj = findNewItemObj(handleFilesFn)
+  const updateObj = findAnalyzeUpdateObj(analyzeFn)
+
+  const ANALYZE_FIELDS = ["name", "type_prefix", "category", "description", "size", "color", "price", "cost", "quantity"]
+  const INITIAL_FIELDS = ["type_prefix", "size", "color", "quantity", "price", "cost"]
+
+  // Construye función oráculo que evalúa todo el object literal con `product` como input.
+  function buildOracle(obj, fields) {
+    const entries = fields.map((f) => `${f}: (${textOfProp(obj, f)})`).join(", ")
+    return new Function("product", `return ({ ${entries} })`)
+  }
+  const oracleAnalyze = buildOracle(updateObj, ANALYZE_FIELDS)
+  // Oracle inicial no toma `product` — es el bloque de defaults.
+  const initialOracle = new Function(`return ({ ${INITIAL_FIELDS.map((f) => `${f}: (${textOfProp(newItemObj, f)})`).join(", ")} })`)()
+
+  // ---------- 2. Cargar apply-analysis + rubro-ui transpilados -------
+  async function loadApplyAnalysis(mutator) {
+    const uiSrc = fs.readFileSync(path.join(REPO_ROOT, "lib/rubro-ui.ts"), "utf8")
+    let applySrc = fs.readFileSync(path.join(REPO_ROOT, "lib/apply-analysis.ts"), "utf8")
+    if (mutator) applySrc = mutator(applySrc)
+    const uiTranspiled = transpileToMjs(uiSrc)
+    const uiPath = path.join(TMP_DIR, `rubro-ui.behavior.${Date.now()}.mjs`)
+    fs.writeFileSync(uiPath, uiTranspiled)
+    const uiHref = url.pathToFileURL(uiPath).href
+    const applyTranspiled = transpileToMjs(applySrc, { importRewrites: { "@/lib/rubro-ui": uiHref } })
+    const applyPath = path.join(TMP_DIR, `apply-analysis.behavior.${Date.now()}.mjs`)
+    fs.writeFileSync(applyPath, applyTranspiled)
+    return import(url.pathToFileURL(applyPath).href + `?t=${Date.now()}`)
+  }
+  const applyMod = await loadApplyAnalysis(null)
+
+  // ---------- 3. Samples (ropa) --------------------------------------
+  const ROPA_SAMPLES = [
+    ["respuesta vacía",              {}],
+    ["parcial (name)",               { name: "Camisa" }],
+    ["completa",                     FULL_AI_RESULT],
+    ["type_prefix >4 chars",         { type_prefix: "LARGO123" }],
+    ["size en minúscula",            { size: "m" }],
+    ["suggested_price decimales",    { suggested_price: 95000.75 }],
+    ["quantity ausente",             { name: "X", type_prefix: "CA" }],
+  ]
+
+  function deepEq(a, b) {
+    return JSON.stringify(a) === JSON.stringify(b)
+  }
+
+  // Verificación initial: createInitialItem(ropa) debe matchear el bloque
+  // de defaults de handleFiles.newItem.
+  const actualInit = applyMod.createInitialItem("ropa")
+  const expectedInit = initialOracle
+  const initKeys = Object.keys(expectedInit)
+  const initOk = initKeys.every((k) => deepEq(actualInit[k], expectedInit[k]))
+  check(
+    "createInitialItem(ropa) === defaults de handleFiles @ 1aff84b",
+    initOk,
+    initOk ? "" : `expected=${JSON.stringify(expectedInit)} actual=${JSON.stringify(Object.fromEntries(initKeys.map(k => [k, actualInit[k]])))}`,
+  )
+
+  // Verificación analyze para cada sample.
+  for (const [label, sample] of ROPA_SAMPLES) {
+    const expected = oracleAnalyze(sample)
+    const actual = applyMod.applyAnalysisToItem(sample, "ropa")
+    const ok = ANALYZE_FIELDS.every((f) => deepEq(actual[f], expected[f]))
+    check(
+      `applyAnalysisToItem(ropa) [${label}] === oráculo`,
+      ok,
+      ok ? "" : `expected=${JSON.stringify(expected)} actual=${JSON.stringify(actual)}`,
+    )
+  }
+
+  // ---------- 4. Samples tecnología ----------------------------------
+  // Los samples de tec usan los nombres de campo tecnológicos
+  // (brand_prefix, reference). Verificamos que normalizan a mayúsculas +
+  // alfanum + length cap, y que valores inválidos quedan en vacío —
+  // nunca "XX" ni "M".
+  const TEC_SAMPLES = [
+    ["respuesta vacía",            {}],
+    ["brand_prefix 'ip' lower",    { brand_prefix: "ip" },             { type_prefix: "IP", size: "" }],
+    ["reference '17 pm' espacio",  { reference: "17 pm" },             { type_prefix: "", size: "17PM" }],
+    ["brand_prefix 'SAMSUNG'",     { brand_prefix: "SAMSUNG" },        { type_prefix: "SA", size: "" }],
+    ["reference 'TUNE-520!'",      { reference: "TUNE-520!" },         { type_prefix: "", size: "TUNE520" }],
+    ["brand_prefix vacío",         { brand_prefix: "" },               { type_prefix: "", size: "" }],
+    ["reference vacía",            { reference: "" },                  { type_prefix: "", size: "" }],
+    ["name + partial",             { name: "Funda", brand_prefix: "sp" }, { type_prefix: "SP", size: "" }],
+  ]
+  for (const [label, sample, expectedPartial = {}] of TEC_SAMPLES) {
+    const actual = applyMod.applyAnalysisToItem(sample, "tecnologia")
+    // Nunca XX ni M.
+    const noFallbackLeak =
+      actual.type_prefix !== "XX" &&
+      actual.size !== "M" &&
+      actual.type_prefix !== "XX".toLowerCase() &&
+      actual.size !== "M".toLowerCase()
+    check(
+      `applyAnalysisToItem(tec) [${label}] — nunca cae a XX/M`,
+      noFallbackLeak,
+      noFallbackLeak ? "" : `type_prefix=${JSON.stringify(actual.type_prefix)} size=${JSON.stringify(actual.size)}`,
+    )
+    // Si viene con expectedPartial, verificar type_prefix/size concretos.
+    if (Object.keys(expectedPartial).length > 0) {
+      const partialOk = Object.entries(expectedPartial).every(([k, v]) => actual[k] === v)
+      check(
+        `applyAnalysisToItem(tec) [${label}] — normaliza correctamente`,
+        partialOk,
+        partialOk ? "" : `expected=${JSON.stringify(expectedPartial)} actual.type_prefix=${JSON.stringify(actual.type_prefix)} actual.size=${JSON.stringify(actual.size)}`,
+      )
+    }
+  }
+
+  // createInitialItem(tec) debe tener type_prefix: "", size: "", color: "".
+  const tecInit = applyMod.createInitialItem("tecnologia")
+  check(
+    "createInitialItem(tec) — type_prefix vacío, size vacío",
+    tecInit.type_prefix === "" && tecInit.size === "",
+    `type_prefix=${JSON.stringify(tecInit.type_prefix)} size=${JSON.stringify(tecInit.size)}`,
+  )
+
+  // ---------- 5. Mutación automática en memoria ----------------------
+  // Patch: Math.round → Math.ceil en la rama ropa de apply-analysis.
+  // Volvemos a cargar el módulo mutado, re-corremos el sample con
+  // decimales y verificamos que el oráculo detecta la diferencia (fail).
+  const mutApply = await loadApplyAnalysis((src) =>
+    src.replace(
+      "price: Math.round(typeof p.suggested_price === \"number\" ? p.suggested_price : 0),",
+      "price: Math.ceil(typeof p.suggested_price === \"number\" ? p.suggested_price : 0),",
+    ),
+  )
+  // 95000.3 → round=95000, ceil=95001 — mutación detectable.
+  const sampleDecimals = { suggested_price: 95000.3 }
+  const expectedDecimals = oracleAnalyze(sampleDecimals)
+  const mutatedActual = mutApply.applyAnalysisToItem(sampleDecimals, "ropa")
+  const mutationDetected = !deepEq(mutatedActual.price, expectedDecimals.price)
+  check(
+    "[behavior-mutation] OK — detectó la mutación Math.round→Math.ceil y falló como esperado",
+    mutationDetected,
+    `oracle.price=${expectedDecimals.price} mutated.price=${mutatedActual.price}`,
+  )
+
+  if (results.fail.length > 0) {
+    console.error(`[behavior] FAIL — ${results.fail.length} regla(s) rotas.`)
+    process.exit(1)
+  }
+  console.log(`[behavior] OK — ${results.pass.length} regla(s) satisfechas.`)
+}
+
 // ---------- --isolation ----------------------------------------------
 async function runIsolation() {
   const profilePath = path.join(REPO_ROOT, "lib/rubro-profiles.ts")
@@ -584,11 +845,7 @@ async function runIsolation() {
     console.log("[isolation] SKIPPED — lib/rubro-profiles.ts no existe (correr tras el refactor).")
     return
   }
-  const src = fs.readFileSync(profilePath, "utf8")
-  const transpiled = transpileToMjs(src)
-  const genPath = path.join(TMP_DIR, "rubro-profiles.generated.mjs")
-  fs.writeFileSync(genPath, transpiled)
-  const mod = await import(url.pathToFileURL(genPath).href + `?t=${Date.now()}`)
+  const mod = await loadProfileModule(String(Date.now()))
 
   const results = { pass: [], fail: [] }
   const check = (name, cond) => {
@@ -597,7 +854,11 @@ async function runIsolation() {
   }
 
   function scanTextOf(profile) {
-    const parts = [profile.instructions, profile.messageTemplate]
+    const parts = [
+      profile.buildInstructions({ categories: ["FUNDAS", "CARGADORES", "AUDIFONOS"] }),
+      profile.messageTemplate("imagen"),
+      profile.messageTemplate("video"),
+    ]
     for (const f of Object.values(profile.schema.shape)) if (f.description) parts.push(f.description)
     const ui = profile.ui || {}
     if (Array.isArray(ui.labels)) {
@@ -632,7 +893,16 @@ async function runIsolation() {
   }
   if (tecProfile) {
     const tecTextRaw = scanTextOf(tecProfile)
-    const tecText = tecTextRaw.replaceAll(stripAccents(REJECTION_PHRASE_TECNOLOGIA), "")
+    // La REGLA DE RUBRO (constante propia) menciona "prendas de vestir"
+    // y otros términos de ropa como ejemplos de qué rechazar. Esteban
+    // dejó dicho que el escaneo negativo la excluye COMPLETA (no solo
+    // la frase corta "no corresponde al rubro") y que una verificación
+    // aparte comprueba que existe. Para la exclusión usamos la constante
+    // exportada por el perfil.
+    const rejectionRuleStripped = stripAccents(mod.REJECTION_RULE_TECNOLOGIA || "")
+    const tecText = rejectionRuleStripped
+      ? tecTextRaw.replaceAll(rejectionRuleStripped, "")
+      : tecTextRaw.replaceAll(stripAccents(REJECTION_PHRASE_TECNOLOGIA), "")
     check("tecnologia.positive — ≥1 marcador TECNOLOGIA presente", TECNOLOGIA_MARKERS.some((t) => wordMatches(tecText, t)))
     const tecBadHits = ROPA_MARKERS.filter((t) => wordMatches(tecText, t))
     check(`tecnologia.negative — 0 marcadores ROPA (hits: ${tecBadHits.join(",") || "ninguno"})`, tecBadHits.length === 0)
@@ -644,45 +914,111 @@ async function runIsolation() {
   try { mod.getRubroProfile("desconocido") } catch { threw = true }
   check("getRubroProfile('desconocido') lanza excepción", threw)
 
-  // Fail-closed: si business_settings.rubro falla o viene vacío, la ruta
-  // debe fallar sin invocar generateObject. Solo corre si el route ya
-  // importa supabase (post-refactor).
+  // Fail-closed: si business_settings.rubro falla, viene vacío, o es
+  // inválido, la ruta debe fallar sin invocar generateObject. Solo corre
+  // si el route ya consume supabase + perfil (post-refactor).
   const routeSrc = fs.readFileSync(path.join(REPO_ROOT, "app/api/analyze-product/route.ts"), "utf8")
   const routeUsesSupabase = /createServerSupabaseClient|from\s+["']@\/lib\/supabase\/server["']/.test(routeSrc)
   if (routeUsesSupabase) {
-    const aiMock = url.pathToFileURL(path.join(MOCKS_DIR, "ai.mjs")).href
-    const nextMock = url.pathToFileURL(path.join(MOCKS_DIR, "next-server.mjs")).href
-    const supaMock = url.pathToFileURL(path.join(MOCKS_DIR, "supabase-server.mjs")).href
-    const transpiledRoute = transpileToMjs(routeSrc, {
-      importRewrites: { "ai": aiMock, "next/server": nextMock, "@/lib/supabase/server": supaMock },
-    })
-    const routeGen = path.join(TMP_DIR, "route.isolation.mjs")
-    fs.writeFileSync(routeGen, transpiledRoute)
-    const routeMod = await import(url.pathToFileURL(routeGen).href + `?t=${Date.now()}`)
-
+    const routeMod = await loadRouteWithMocks(String(Date.now()))
     const captures = []
     globalThis.__ropa_capture = (a) => captures.push(a)
+    const origErr = console.error
+    console.error = () => {}
 
-    // 1) Error de Supabase → NO cae a 'ropa', NO llama generateObject.
-    captures.length = 0
+    async function hit() {
+      captures.length = 0
+      const req = new Request("http://x/", { method: "POST", body: JSON.stringify({ dataUrl: DUMMY_DATAURL_IMAGE, mediaType: "image/jpeg" }) })
+      return routeMod.POST(req)
+    }
+
+    // (a) Error de Supabase → NO cae a 'ropa', NO llama generateObject.
+    resetAiGlobals()
     globalThis.__ROPA_FIXTURE_SUPABASE_ERROR = true
-    const req1 = new Request("http://x/", { method: "POST", body: JSON.stringify({ dataUrl: DUMMY_DATAURL_IMAGE, mediaType: "image/jpeg" }) })
-    const resp1 = await routeMod.POST(req1)
-    globalThis.__ROPA_FIXTURE_SUPABASE_ERROR = false
+    const r1 = await hit()
     check("fail-closed: error de business_settings NO llama generateObject", captures.length === 0)
-    check("fail-closed: error de business_settings devuelve status >= 400", resp1.status >= 400)
+    check("fail-closed: error de business_settings devuelve status >= 400", r1.status >= 400)
 
-    // 2) rubro null → NO cae a 'ropa', NO llama generateObject.
-    captures.length = 0
+    // (b) Sin sesión (rubro null, equivalente a RLS que bloquea el read).
+    resetAiGlobals()
     globalThis.__ROPA_FIXTURE_RUBRO = null
-    const req2 = new Request("http://x/", { method: "POST", body: JSON.stringify({ dataUrl: DUMMY_DATAURL_IMAGE, mediaType: "image/jpeg" }) })
-    const resp2 = await routeMod.POST(req2)
-    globalThis.__ROPA_FIXTURE_RUBRO = undefined
-    check("fail-closed: rubro null NO llama generateObject", captures.length === 0)
-    check("fail-closed: rubro null devuelve status >= 400", resp2.status >= 400)
+    const r2 = await hit()
+    check("no-session: rubro null NO llama generateObject", captures.length === 0)
+    check("no-session: rubro null devuelve status === 401", r2.status === 401)
+
+    // (c) Rubro inválido ("mascotas") → status 500 "rubro_invalid", NO
+    // llama al modelo. Nunca cae a 'ropa' por default.
+    resetAiGlobals()
+    globalThis.__ROPA_FIXTURE_RUBRO = "mascotas"
+    const r3 = await hit()
+    check("rubro inválido: NO llama generateObject", captures.length === 0)
+    check("rubro inválido: devuelve status >= 400", r3.status >= 400)
+
+    console.error = origErr
   } else {
     console.log("[isolation] fail-closed de business_settings: SKIPPED — route.ts aún no lee supabase.")
   }
+
+  // Scan de literales de ropa en el panel. Si queda alguno hardcoded tras
+  // el refactor, el panel está consumiendo strings propios del rubro en
+  // vez de leerlos del perfil.
+  const panelPath = path.join(REPO_ROOT, "components/central/ai-ingress-panel.tsx")
+  const panelSrc = fs.readFileSync(panelPath, "utf8")
+  const leaked = PANEL_ROPA_LITERALS.filter((lit) => panelSrc.includes(lit))
+  check(
+    `panel-literals-leak: 0 literales de ropa hardcoded (hits: ${leaked.join(" | ") || "ninguno"})`,
+    leaked.length === 0,
+  )
+
+  // Mutation proofs — demostramos que el gate rechaza una fuga cruzada.
+  // Modificamos la fuente del perfil EN MEMORIA (transpilamos un source
+  // mutado), re-cargamos el módulo y verificamos que la regla negativa
+  // ahora falla. Sin tocar el disco.
+  async function reloadMutated(mutator) {
+    const uiSrc = fs.readFileSync(path.join(REPO_ROOT, "lib/rubro-ui.ts"), "utf8")
+    const profSrc = fs.readFileSync(path.join(REPO_ROOT, "lib/rubro-profiles.ts"), "utf8")
+    const { uiSrc: mutUi, profSrc: mutProf } = mutator({ uiSrc, profSrc })
+    const uiTranspiled = transpileToMjs(mutUi)
+    const uiPath = path.join(TMP_DIR, `rubro-ui.mut.${Date.now()}.mjs`)
+    fs.writeFileSync(uiPath, uiTranspiled)
+    const uiHref = url.pathToFileURL(uiPath).href
+    const profTranspiled = transpileToMjs(mutProf, { importRewrites: { "@/lib/rubro-ui": uiHref } })
+    const profPath = path.join(TMP_DIR, `rubro-profiles.mut.${Date.now()}.mjs`)
+    fs.writeFileSync(profPath, profTranspiled)
+    return import(url.pathToFileURL(profPath).href + `?t=${Date.now()}`)
+  }
+
+  // Mutación 1: inyectar "talla" (marcador ROPA) en instrucciones de tec.
+  const mutTec = await reloadMutated(({ uiSrc, profSrc }) => ({
+    uiSrc,
+    // Agregamos "talla" al final del TECNOLOGIA_INSTRUCTIONS_BASE antes del
+    // último punto. Buscamos un string literal fácil de parchear.
+    profSrc: profSrc.replace(
+      '"CANTIDAD (`quantity`):',
+      '"TALLA: (campo residual inyectado por prueba de mutación) " + "CANTIDAD (`quantity`):',
+    ),
+  }))
+  const mutTecText = scanTextOf(mutTec.getRubroProfile("tecnologia")).replaceAll(stripAccents(REJECTION_PHRASE_TECNOLOGIA), "")
+  const mutTecBadHits = ROPA_MARKERS.filter((t) => wordMatches(mutTecText, t))
+  check(
+    `mutation(ropa→tec): la fuga introducida es detectada (hits esperados: talla; hits: ${mutTecBadHits.join(",") || "ninguno"})`,
+    mutTecBadHits.includes("talla"),
+  )
+
+  // Mutación 2: inyectar "funda" (marcador TECNOLOGIA) en instrucciones de ropa.
+  const mutRopa = await reloadMutated(({ uiSrc, profSrc }) => ({
+    uiSrc,
+    profSrc: profSrc.replace(
+      '"Si detectas una etiqueta de precio o talla en la imagen, úsala.',
+      '"Si detectas una funda (texto inyectado por prueba de mutación) o una etiqueta de precio o talla en la imagen, úsala.',
+    ),
+  }))
+  const mutRopaText = scanTextOf(mutRopa.getRubroProfile("ropa"))
+  const mutRopaBadHits = TECNOLOGIA_MARKERS.filter((t) => wordMatches(mutRopaText, t))
+  check(
+    `mutation(tec→ropa): la fuga introducida es detectada (hits esperados: funda; hits: ${mutRopaBadHits.join(",") || "ninguno"})`,
+    mutRopaBadHits.includes("funda"),
+  )
 
   if (results.fail.length > 0) {
     console.error(`[isolation] FAIL — ${results.fail.length} regla(s) rotas.`)
@@ -700,14 +1036,26 @@ if (DO_ISOLATION) {
   process.exit(0)
 }
 
+if (DO_BEHAVIOR) {
+  await runBehavior()
+  rmrf(TMP_DIR)
+  process.exit(0)
+}
+
 const outDir = DO_VERIFY ? VERIFY_DIR : OUT_DIR
 rmrf(outDir); mkd(outDir)
 
+// Post-refactor: dos extractores UI independientes. `--source=route`
+// extrae del panel ORIGINAL (git show 1aff84b) vía AST — oráculo
+// histórico. `--source=profile` extrae de `lib/rubro-profiles.ts` →
+// fuente de verdad actual del rubro. Ambos deben producir bytes
+// idénticos: si divergen, el perfil dejó de reflejar el diseño original.
+// Prompts/responses/media siempre vienen del route refactorizado con mocks.
+await captureFromRoute(outDir)
 if (MODE_SOURCE === "route") {
-  await captureFromRoute(outDir)
-  captureUIFromPanel(outDir)
+  captureUIFromPanelOracle(outDir)
 } else if (MODE_SOURCE === "profile") {
-  await captureFromProfile(outDir)
+  await captureUIFromProfile(outDir)
 } else {
   console.error(`[fixture] --source=${MODE_SOURCE} inválido. Usar 'route' | 'profile'.`)
   process.exit(2)

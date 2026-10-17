@@ -1,48 +1,91 @@
-// Mock de `@/lib/supabase/server` para el modo post-refactor.
-//
-// Pre-emptivo: el route de main @ 1aff84b NO lo importa. Lo dejamos
-// listo para que, tras el refactor, `createServerSupabaseClient()`
-// devuelva un stub determinista que el script controle vía globales:
+// Mock de `@/lib/supabase/server` controlable por globales:
 //
 //   globalThis.__ROPA_FIXTURE_RUBRO               -> 'ropa' por default
-//                                                    null simula fila vacía
+//                                                    null simula fila vacía / sin sesión
 //   globalThis.__ROPA_FIXTURE_SUPABASE_ERROR      -> true devuelve error
+//   globalThis.__ROPA_FIXTURE_CATEGORIES          -> array de categorías para
+//                                                    `.from('categories').select('name')`
 //
-// La cadena de llamadas `.from().select()...` se absorbe con un Proxy;
-// los métodos terminales (`maybeSingle` / `single`) resuelven con la
-// forma `{ data, error }` que usa supabase-js.
+// Soporta dos patrones de la cadena de supabase-js:
+//   (a) termina con `.maybeSingle()` o `.single()` → objeto `{data, error}`.
+//   (b) termina sin método terminal, se awaitea directo (p.ej.
+//       `.select('name').order('name')` → array thenable).
+// Ambas producen `{data, error}`. El shape del `data` depende de la tabla:
+//   business_settings → fila `{rubro}` (o null)
+//   categories        → array `[{name}]`
 
-function makeTerminal() {
-  const rubro = globalThis.__ROPA_FIXTURE_RUBRO ?? "ropa"
-  const simulatedError = globalThis.__ROPA_FIXTURE_SUPABASE_ERROR === true
-  return async () => {
-    if (simulatedError) {
-      return { data: null, error: { message: "simulated supabase failure" } }
-    }
-    if (rubro === null) {
-      return { data: null, error: null }
-    }
-    return { data: { rubro }, error: null }
+function terminalForTable(table) {
+  const err = globalThis.__ROPA_FIXTURE_SUPABASE_ERROR === true
+  if (err) return { data: null, error: { message: "simulated supabase failure" } }
+
+  if (table === "categories") {
+    const cats = globalThis.__ROPA_FIXTURE_CATEGORIES ?? []
+    return { data: cats.map((n) => ({ name: n })), error: null }
   }
+  // Default: business_settings. `??` NO sirve para diferenciar undefined
+  // de null, por eso usamos `=== undefined` explícito. `null` significa
+  // "no row" (RLS bloqueado / fila ausente / sin sesión), es un caso de
+  // prueba distinto del default.
+  const raw = globalThis.__ROPA_FIXTURE_RUBRO
+  const rubro = raw === undefined ? "ropa" : raw
+  if (rubro === null) return { data: null, error: null }
+  return { data: { rubro }, error: null }
+}
+
+function makeBuilder(table) {
+  // El builder es thenable: `await builder` resuelve con `terminalForTable(table)`.
+  // Los métodos no-terminales devuelven el builder (chain). Los métodos
+  // terminales `maybeSingle` / `single` devuelven una Promise con el
+  // mismo shape (para single, extrae .data si es array).
+  const builder = {}
+  const target = {}
+  const proxy = new Proxy(target, {
+    get(_t, prop) {
+      if (prop === "maybeSingle") {
+        return async () => {
+          const r = terminalForTable(table)
+          if (table === "categories") {
+            const data = Array.isArray(r.data) && r.data.length > 0 ? r.data[0] : null
+            return { data, error: r.error }
+          }
+          return r
+        }
+      }
+      if (prop === "single") {
+        return async () => {
+          const r = terminalForTable(table)
+          if (r.error) return r
+          if (table === "categories") {
+            const data = Array.isArray(r.data) && r.data.length > 0 ? r.data[0] : null
+            if (!data) return { data: null, error: { message: "no rows" } }
+            return { data, error: null }
+          }
+          if (!r.data) return { data: null, error: { message: "no rows" } }
+          return r
+        }
+      }
+      if (prop === "then") {
+        // Thenable: resuelve con el resultado terminal de la tabla.
+        return (resolve, reject) => {
+          try {
+            resolve(terminalForTable(table))
+          } catch (e) {
+            if (reject) reject(e)
+          }
+        }
+      }
+      if (prop === "catch" || prop === "finally") return undefined
+      // Default: método chainable, devuelve el mismo proxy.
+      return () => proxy
+    },
+  })
+  return proxy
 }
 
 export async function createServerSupabaseClient() {
-  const terminal = makeTerminal()
-  const builder = new Proxy(
-    {},
-    {
-      get(_target, prop) {
-        if (prop === "maybeSingle" || prop === "single") return terminal
-        if (prop === "then") return undefined // not a thenable
-        return () => builder
-      },
-    },
-  )
   return {
-    from: () => builder,
+    from: (table) => makeBuilder(table),
   }
 }
 
-// Export también `createServiceRoleSupabaseClient` por si el refactor
-// decide usarla; mismo comportamiento.
 export const createServiceRoleSupabaseClient = createServerSupabaseClient

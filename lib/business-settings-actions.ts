@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache"
 import { createServerSupabaseClient } from "@/lib/supabase/server"
 import { requireRole } from "@/lib/role-guard"
+import { RUBRO_IDS, type RubroId } from "@/lib/rubro-ui"
 
 export interface BusinessSettings {
   id: number
@@ -105,6 +106,29 @@ export async function updateBusinessSettings(updates: Partial<BusinessSettings>)
   revalidatePath("/settings/receipt")
   revalidatePath("/pos")
   return { success: true, message: "Configuración guardada." }
+}
+
+// Lee el rubro del tenant usando la sesión del usuario. Lanza si:
+// - no hay fila de business_settings (RLS sin sesión → data null),
+// - el rubro está vacío o no es un valor del whitelist,
+// - Supabase devuelve error.
+// La ruta `/api/analyze-product` consume esto antes de llamar a
+// `generateObject` — así una llamada sin sesión falla sin gastar
+// créditos del AI Gateway aunque todavía no haya guard 401 explícito.
+export async function getBusinessRubro(): Promise<RubroId> {
+  const supabase = await createServerSupabaseClient()
+  const { data, error } = await supabase.from("business_settings").select("rubro").eq("id", 1).maybeSingle()
+  if (error) {
+    throw new Error(`No se pudo leer el rubro del negocio: ${error.message}`)
+  }
+  const rubro = data?.rubro
+  if (!rubro || typeof rubro !== "string") {
+    throw new Error("No se pudo leer el rubro del negocio: configuración no disponible")
+  }
+  if (!(RUBRO_IDS as readonly string[]).includes(rubro)) {
+    throw new Error(`Rubro inválido en business_settings: "${rubro}". Esperado: ${RUBRO_IDS.join(" | ")}`)
+  }
+  return rubro as RubroId
 }
 
 // Datos completos para imprimir un recibo/factura

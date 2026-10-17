@@ -1773,7 +1773,17 @@ export async function reorderProductImages(productId: string, orderedIds: string
 }
 
 // Resolve a category by name, creating it if it does not exist.
-async function resolveCategoryId(supabase: any, name?: string | null) {
+async function resolveCategoryId(
+  supabase: any,
+  name?: string | null,
+  opts?: { allowCreate?: boolean },
+) {
+  // `allowCreate` default `true` para preservar el comportamiento de
+  // ropa: `ingressNewProduct` crea la categoría on-the-fly si no existe.
+  // Con `allowCreate=false` (tecnología) se busca por `ilike` match y
+  // devuelve null si no está en la lista — el caller decide si rechazar
+  // la ingesta o guardar con category_id null (ver `ingressNewProduct`).
+  const allowCreate = opts?.allowCreate ?? true
   const clean = (name || "").trim()
   if (!clean) return null
   const { data: existing } = await supabase
@@ -1783,6 +1793,7 @@ async function resolveCategoryId(supabase: any, name?: string | null) {
     .limit(1)
     .maybeSingle()
   if (existing) return existing.category_id
+  if (!allowCreate) return null
   const { data: created } = await supabase
     .from("categories")
     .insert({ name: clean })
@@ -1811,8 +1822,38 @@ export async function ingressNewProduct(input: IngressItemInput, warehouse_id: s
   await requireRole("admin", "encargado")
   const supabase = await createServerSupabaseClient()
   try {
-    const prefix = (input.type_prefix || "XX").trim().toUpperCase().slice(0, 4)
-    const size = (input.size || "U").trim().toUpperCase()
+    // Lee el rubro del tenant con la sesión del usuario. El perfil
+    // determina (a) si allowCreateCategory para resolveCategoryId, (b)
+    // normalización y shape de (prefix, size) — para tecnología, prefix
+    // es 2 alfanuméricos (marca) y size es 1-20 alfanuméricos
+    // (referencia). Se valida en el SERVIDOR, nunca se confía en el
+    // cliente ni en el modelo para armar el código.
+    const { getBusinessRubro } = await import("@/lib/business-settings-actions")
+    const { getRubroUIBundle } = await import("@/lib/rubro-ui")
+    const { validateItemForRubro } = await import("@/lib/apply-analysis")
+    let rubro: "ropa" | "tecnologia"
+    let allowCreateCategory: boolean
+    try {
+      rubro = await getBusinessRubro()
+      allowCreateCategory = getRubroUIBundle(rubro).allowCreateCategory
+    } catch (e: any) {
+      return { success: false, message: "No se pudo leer el rubro del negocio: " + (e?.message || String(e)) }
+    }
+
+    // Normalización del prefijo y la talla / referencia según rubro.
+    let prefix: string
+    let size: string
+    if (rubro === "tecnologia") {
+      prefix = (input.type_prefix || "").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 2)
+      size = (input.size || "").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 20)
+      const violation = validateItemForRubro({ type_prefix: prefix, size }, rubro)
+      if (violation) {
+        return { success: false, message: violation }
+      }
+    } else {
+      prefix = (input.type_prefix || "XX").trim().toUpperCase().slice(0, 4)
+      size = (input.size || "U").trim().toUpperCase()
+    }
     const priceThousands = Math.round((input.price || 0) / 1000)
 
     let code = input.code?.trim().toUpperCase() || ""
@@ -1841,7 +1882,18 @@ export async function ingressNewProduct(input: IngressItemInput, warehouse_id: s
       code = gen as string
     }
 
-    const category_id = await resolveCategoryId(supabase, input.category)
+    const category_id = await resolveCategoryId(supabase, input.category, {
+      allowCreate: allowCreateCategory,
+    })
+    // Para rubros que no permiten crear categorías (tecnología), si el
+    // usuario escribió una categoría pero no está en la lista, rechazamos
+    // la ingesta: evita silent-store con category_id null.
+    if (!allowCreateCategory && (input.category || "").trim() !== "" && category_id === null) {
+      return {
+        success: false,
+        message: `La categoría "${input.category}" no existe en el listado del negocio. Elegí una de la lista o pedile a un admin que la cree.`,
+      }
+    }
 
     const descParts = [input.description, input.color ? `Color: ${input.color}` : null].filter(Boolean)
 

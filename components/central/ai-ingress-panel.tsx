@@ -13,13 +13,13 @@ import { useToast } from "@/hooks/use-toast"
 import { formatCurrency } from "@/lib/utils"
 import { ingressNewProduct } from "@/lib/inventory-actions"
 import { uploadProductImageClient } from "@/lib/storage-client"
-import { Sparkles, Camera, Loader2, Trash2, Check, ImageIcon, RefreshCw, Clock, Copy } from "lucide-react"
+import { createInitialItem, applyAnalysisToItem } from "@/lib/apply-analysis"
+import type { RubroId, RubroUIBundle } from "@/lib/rubro-ui"
+import { Sparkles, Camera, Loader2, Trash2, Check, ImageIcon, RefreshCw, Clock, Copy, AlertTriangle } from "lucide-react"
 
-// Espaciado obligatorio entre requests a /api/analyze-product. Responde al
-// límite del free tier de Google Gemini 2.5 Flash: ~10 RPM (una cada 6s).
-// Usamos 6500 ms para dejar 500 ms de colchón por drift de reloj/latencia y
-// no rozar el techo. Ajustar SOLO si Google publica una cuota distinta.
-const AI_MIN_INTERVAL_MS = 6500
+// Espaciado obligatorio entre requests a /api/analyze-product. Valor del
+// perfil (`uiProfile.ui.constants.AI_MIN_INTERVAL_MS`). Hoy ambos rubros
+// usan 6500 ms (rate limit del AI Gateway, independiente del rubro).
 
 type ItemStatus = "queued" | "analyzing" | "ready" | "saving" | "done" | "error"
 
@@ -32,19 +32,16 @@ type IngressItem = {
   errorMsg?: string
   // editable fields
   name: string
-  type_prefix: string
+  type_prefix: string  // Ropa: tipo de prenda. Tec: marca.
   category: string
   description: string
-  size: string
+  size: string          // Ropa: talla. Tec: referencia.
   color: string
   price: number
   cost: number
   quantity: number
   code: string // manual override; empty = auto
 }
-
-const PREFIX_HINTS =
-  "CA=Camisa · PA=Pantalón · CH=Chaqueta · VE=Vestido · FA=Falda · BL=Blusa · BU=Buzo · SU=Suéter · SH=Short · ZA=Zapato · AC=Accesorio"
 
 function fileToDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -66,21 +63,115 @@ export function AiIngressPanel({
   centralWarehouseId,
   centralSiteId,
   onIngressed,
+  rubro,
+  uiProfile,
+  rubroError,
 }: {
   centralWarehouseId: string
   centralSiteId: string
   onIngressed?: () => void
+  rubro: RubroId | null
+  uiProfile: RubroUIBundle | null
+  rubroError?: string | null
+}) {
+  // Compuerta: sin rubro no se habilita subir ni se muestran defaults.
+  // Nunca cae a ropa.
+  if (rubroError) {
+    return (
+      <Card className="border-destructive/40 bg-destructive/5">
+        <CardContent className="flex items-start gap-3 py-6">
+          <AlertTriangle className="h-5 w-5 shrink-0 text-destructive" />
+          <div>
+            <h3 className="font-semibold text-foreground">No se pudo cargar la configuración del negocio</h3>
+            <p className="text-sm text-muted-foreground">{rubroError}</p>
+            <p className="mt-2 text-xs text-muted-foreground">
+              El panel de ingreso con IA no está disponible hasta que la configuración se recupere.
+            </p>
+          </div>
+        </CardContent>
+      </Card>
+    )
+  }
+  if (!rubro || !uiProfile) {
+    return (
+      <Card>
+        <CardContent className="flex items-center gap-3 py-10 text-sm text-muted-foreground">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          Cargando configuración del negocio…
+        </CardContent>
+      </Card>
+    )
+  }
+  // Y.1: tecnología existe como perfil pero el formulario todavía no se
+  // renderiza. Y.2 agrega Select de categoría, validación de referencia
+  // y oculta precio/costo sugeridos. Hasta entonces el panel muestra un
+  // aviso explícito.
+  if (rubro === "tecnologia") {
+    return (
+      <Card className="border-primary/30 bg-primary/5">
+        <CardContent className="flex items-start gap-3 py-6">
+          <Sparkles className="h-5 w-5 shrink-0 text-primary" />
+          <div>
+            <h3 className="font-semibold text-foreground">Ingreso con IA — soporte pendiente para este rubro</h3>
+            <p className="text-sm text-muted-foreground">
+              El perfil de tecnología está activo en la configuración del negocio, pero el formulario de
+              ingreso con IA se habilita en la siguiente iteración (Y.2). Mientras tanto, usá el importador
+              de Excel o el formulario manual en Inventario → Productos.
+            </p>
+          </div>
+        </CardContent>
+      </Card>
+    )
+  }
+
+  return (
+    <AiIngressPanelRopa
+      centralWarehouseId={centralWarehouseId}
+      centralSiteId={centralSiteId}
+      onIngressed={onIngressed}
+      rubro={rubro}
+      uiProfile={uiProfile}
+    />
+  )
+}
+
+function AiIngressPanelRopa({
+  centralWarehouseId,
+  centralSiteId,
+  onIngressed,
+  rubro,
+  uiProfile,
+}: {
+  centralWarehouseId: string
+  centralSiteId: string
+  onIngressed?: () => void
+  rubro: RubroId
+  uiProfile: RubroUIBundle
 }) {
   const { toast } = useToast()
   const [items, setItems] = useState<IngressItem[]>([])
   const [savingAll, setSavingAll] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
-  // Cola secuencial para respetar el rate-limit de Google Gemini. Chain de
-  // promesas — cada nuevo request se encola detrás del anterior. `lastStartRef`
-  // guarda cuándo arrancó el request previo para calcular el sleep necesario.
-  // Concurrency = 1 por diseño: paralelizar simplifica la UI pero prácticamente
-  // garantiza pegarle al techo de RPM con lotes de 5+ fotos.
+  const AI_MIN_INTERVAL_MS = uiProfile.ui.constants.AI_MIN_INTERVAL_MS
+  const labels = uiProfile.ui.labels
+  // Lookup posicional del label array (10 entradas, mismo orden en ambos
+  // perfiles). Index 0=name, 1=type_prefix (marca/tipo), 2=category,
+  // 3=size (talla/referencia), 4=color, 5=price, 6=cost, 7=quantity,
+  // 8=code, 9=description.
+  const LBL = {
+    name: labels[0],
+    type_prefix: labels[1],
+    category: labels[2],
+    size: labels[3],
+    color: labels[4],
+    price: labels[5],
+    cost: labels[6],
+    quantity: labels[7],
+    code: labels[8],
+    description: labels[9],
+  }
+
   const queueRef = useRef<Promise<void>>(Promise.resolve())
   const lastStartRef = useRef<number>(0)
 
@@ -98,13 +189,6 @@ export function AiIngressPanel({
     })
   }
 
-  // Duplicar tarjeta ya analizada — evita re-llamar a Gemini para variantes
-  // de la misma prenda (misma foto, típicamente cambia solo la talla). Nace
-  // en estado "ready" directo, con code vacío para que el server autogenere
-  // sufijo NN distinto al original vía next_product_code. La imagen se
-  // hereda como referencia (mismo File y dataUrl); al guardar cada producto
-  // sube su propia copia al bucket product-media — semántica "cada producto
-  // tiene su galería propia" queda intacta.
   function duplicateItem(id: string) {
     setItems((prev) => {
       const idx = prev.findIndex((it) => it.id === id)
@@ -134,17 +218,13 @@ export function AiIngressPanel({
       const { product } = await res.json()
       update(id, {
         status: "ready",
-        name: product.name ?? "",
-        type_prefix: (product.type_prefix ?? "XX").toUpperCase().slice(0, 4),
-        category: product.category ?? "",
-        description: product.description ?? "",
-        size: (product.size ?? "M").toUpperCase(),
-        color: product.color ?? "",
-        price: Math.round(product.suggested_price ?? 0),
-        cost: Math.round(product.suggested_cost ?? 0),
-        quantity: product.quantity ?? 1,
+        ...applyAnalysisToItem(product, rubro),
       })
     } catch {
+      // Importante: en el catch NO reseteamos a defaults de ropa (XX/M);
+      // tecnología debe quedar con los valores vacíos que ya tiene el item.
+      // Para ropa, el item ya trae XX/M desde createInitialItem si vino sin
+      // análisis previo exitoso.
       update(id, {
         status: "ready",
         errorMsg: "La IA no pudo analizar el archivo. Completa los datos manualmente.",
@@ -152,9 +232,6 @@ export function AiIngressPanel({
     }
   }
 
-  // Guard pre-flight: coincide con MAX_IMAGE_BYTES del bucket product-media
-  // y del helper uploadProductImageClient. Toast amigable antes de crear
-  // la card, evita gastar upload + análisis IA en archivos imposibles.
   const MAX_UPLOAD_BYTES = 5 * 1024 * 1024 // 5 MB
 
   async function handleFiles(files: FileList | null) {
@@ -171,20 +248,13 @@ export function AiIngressPanel({
       }
       const dataUrl = await fileToDataUrl(file)
       const id = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
+      const defaults = createInitialItem(rubro)
       const newItem: IngressItem = {
         id,
         file,
         dataUrl,
         status: "queued",
-        name: "",
-        type_prefix: "XX",
-        category: "",
-        description: "",
-        size: "M",
-        color: "",
-        price: 0,
-        cost: 0,
-        quantity: 1,
+        ...defaults,
         code: "",
       }
       setItems((prev) => [...prev, newItem])
@@ -196,10 +266,6 @@ export function AiIngressPanel({
 
   async function saveItem(item: IngressItem): Promise<{ ok: boolean; code?: string }> {
     update(item.id, { status: "saving", errorMsg: undefined })
-    // Wrap try/catch: si uploadProductImageClient o ingressNewProduct
-    // throwean (network, auth, exception no-esperada del RPC), el ítem
-    // quedaba en "saving" permanente con spinner infinito y el toast
-    // global nunca se disparaba — silent failure real.
     try {
       let imageUrl: string | null = null
       const up = await uploadProductImageClient(item.file)
@@ -238,7 +304,6 @@ export function AiIngressPanel({
   async function ingressAll() {
     const pending = items.filter((it) => it.status === "ready" || it.status === "error")
     if (pending.length === 0) return
-    // validate
     const invalid = pending.find((it) => !it.name.trim() || it.price <= 0)
     if (invalid) {
       toast({
@@ -257,8 +322,6 @@ export function AiIngressPanel({
     setSavingAll(false)
     const ok = savedCodes.length
     const failed = pending.length - ok
-    // Preview de códigos: los primeros 3 completos y "…" si hay más, para
-    // que el usuario confirme visualmente qué se creó sin ir a validar.
     const codesPreview =
       savedCodes.length > 3
         ? `${savedCodes.slice(0, 3).join(", ")} y ${savedCodes.length - 3} más`
@@ -270,16 +333,12 @@ export function AiIngressPanel({
       })
       onIngressed?.()
     } else if (ok > 0 && failed > 0) {
-      // Fallo parcial: reporta ambos lados. Neutral (no destructive) porque
-      // parte tuvo éxito; el detalle por-ítem sigue en cada card en rojo.
       toast({
         title: `${ok} ingresado(s), ${failed} con error`,
         description: `Creados: ${codesPreview}. Revisa las tarjetas en rojo para el detalle de los fallidos.`,
       })
       onIngressed?.()
     } else {
-      // ok === 0: todos fallaron. Sin este toast global el usuario solo
-      // veía errorMsg inline en cada card y podía parecer "no pasó nada".
       toast({
         title: `No se pudo ingresar ${failed} producto(s)`,
         description: "Revisa cada tarjeta para ver el mensaje de error.",
@@ -300,11 +359,7 @@ export function AiIngressPanel({
             </div>
             <div>
               <h3 className="font-semibold text-foreground">Ingreso inteligente con IA</h3>
-              <p className="max-w-xl text-sm text-muted-foreground">
-                Sube fotos de las prendas. La IA detecta el tipo, la descripción, la talla y sugiere el precio
-                y costo. Cada producto recibe un código único como{" "}
-                <span className="font-mono font-medium text-foreground">CA-M-95-00</span>.
-              </p>
+              <p className="max-w-xl text-sm text-muted-foreground">{uiProfile.ui.hero}</p>
             </div>
           </div>
           <div className="flex shrink-0 gap-2">
@@ -332,7 +387,7 @@ export function AiIngressPanel({
               <ImageIcon className="h-7 w-7 text-muted-foreground" />
             </div>
             <p className="text-sm text-muted-foreground">
-              Aún no has subido fotos. Toma una foto de la prenda para comenzar.
+              Aún no has subido fotos. Toma una foto del producto para comenzar.
             </p>
           </CardContent>
         </Card>
@@ -352,7 +407,6 @@ export function AiIngressPanel({
             {items.map((item) => (
               <Card key={item.id} className={item.status === "done" ? "border-emerald-500/40 bg-emerald-500/5" : ""}>
                 <CardContent className="flex flex-col gap-4 py-4 lg:flex-row">
-                  {/* Media preview */}
                   <div className="relative h-40 w-full shrink-0 overflow-hidden rounded-lg bg-muted lg:h-44 lg:w-44">
                     {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img src={item.dataUrl || "/placeholder.svg"} alt={item.name || "Producto"} className="h-full w-full object-cover" />
@@ -362,7 +416,6 @@ export function AiIngressPanel({
                     </Badge>
                   </div>
 
-                  {/* Fields */}
                   <div className="min-w-0 flex-1">
                     {item.status === "queued" ? (
                       <div className="flex h-full items-center gap-2 text-sm text-muted-foreground">
@@ -393,73 +446,73 @@ export function AiIngressPanel({
                         )}
                         <div className="grid gap-3 sm:grid-cols-2">
                           <div className="sm:col-span-2">
-                            <Label className="text-xs">Nombre del producto</Label>
+                            <Label className="text-xs">{LBL.name.label}</Label>
                             <Input
                               value={item.name}
                               onChange={(e) => update(item.id, { name: e.target.value })}
-                              placeholder="Ej: Camisa manga larga"
+                              placeholder={LBL.name.placeholder ?? undefined}
                             />
                           </div>
                           <div>
-                            <Label className="text-xs">Tipo (prefijo)</Label>
+                            <Label className="text-xs">{LBL.type_prefix.label}</Label>
                             <Input
                               value={item.type_prefix}
-                              maxLength={4}
+                              maxLength={LBL.type_prefix.maxLength ?? undefined}
                               onChange={(e) => update(item.id, { type_prefix: e.target.value.toUpperCase() })}
-                              placeholder="CA"
+                              placeholder={LBL.type_prefix.placeholder ?? undefined}
                             />
                           </div>
                           <div>
-                            <Label className="text-xs">Categoría</Label>
+                            <Label className="text-xs">{LBL.category.label}</Label>
                             <Input
                               value={item.category}
                               onChange={(e) => update(item.id, { category: e.target.value })}
-                              placeholder="Camisas"
+                              placeholder={LBL.category.placeholder ?? undefined}
                             />
                           </div>
                           <div>
-                            <Label className="text-xs">Talla</Label>
+                            <Label className="text-xs">{LBL.size.label}</Label>
                             <Input
                               value={item.size}
                               onChange={(e) => update(item.id, { size: e.target.value.toUpperCase() })}
-                              placeholder="M"
+                              placeholder={LBL.size.placeholder ?? undefined}
                             />
                           </div>
                           <div>
-                            <Label className="text-xs">Color</Label>
+                            <Label className="text-xs">{LBL.color.label}</Label>
                             <Input
                               value={item.color}
                               onChange={(e) => update(item.id, { color: e.target.value })}
-                              placeholder="Azul"
+                              placeholder={LBL.color.placeholder ?? undefined}
                             />
                           </div>
                           <div>
-                            <Label className="text-xs">Precio de venta (COP)</Label>
+                            <Label className="text-xs">{LBL.price.label}</Label>
                             <MoneyInput
                               value={item.price}
                               onChange={(n) => update(item.id, { price: n ?? 0 })}
-                              placeholder="95.000"
+                              placeholder={LBL.price.placeholder ?? undefined}
                             />
                           </div>
                           <div>
-                            <Label className="text-xs">Costo de adquisición (COP)</Label>
+                            <Label className="text-xs">{LBL.cost.label}</Label>
                             <MoneyInput
                               value={item.cost}
                               onChange={(n) => update(item.id, { cost: n ?? 0 })}
-                              placeholder="45.000"
+                              placeholder={LBL.cost.placeholder ?? undefined}
                             />
                           </div>
                           <div>
-                            <Label className="text-xs">Cantidad a ingresar</Label>
+                            <Label className="text-xs">{LBL.quantity.label}</Label>
                             <Input
                               type="number"
                               value={item.quantity || ""}
                               onChange={(e) => update(item.id, { quantity: Number(e.target.value) })}
-                              placeholder="1"
+                              placeholder={LBL.quantity.placeholder ?? undefined}
                             />
                           </div>
                           <div className="sm:col-span-2">
-                            <Label className="text-xs">Código de identificación</Label>
+                            <Label className="text-xs">{LBL.code.label}</Label>
                             <Input
                               value={item.code}
                               onChange={(e) => update(item.id, { code: e.target.value.toUpperCase() })}
@@ -473,12 +526,12 @@ export function AiIngressPanel({
                           </div>
                         </div>
                         <div>
-                          <Label className="text-xs">Descripción</Label>
+                          <Label className="text-xs">{LBL.description.label}</Label>
                           <Textarea
                             value={item.description}
                             onChange={(e) => update(item.id, { description: e.target.value })}
                             rows={2}
-                            placeholder="Material, estilo, detalles…"
+                            placeholder={LBL.description.placeholder ?? undefined}
                           />
                         </div>
                         <div className="flex items-center justify-between">
@@ -527,7 +580,7 @@ export function AiIngressPanel({
               </Card>
             ))}
           </div>
-          <p className="text-center text-xs text-muted-foreground">{PREFIX_HINTS}</p>
+          <p className="text-center text-xs text-muted-foreground">{uiProfile.ui.constants.PREFIX_HINTS}</p>
         </>
       )}
     </div>
