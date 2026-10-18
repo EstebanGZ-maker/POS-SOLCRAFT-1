@@ -5,6 +5,10 @@
 //   globalThis.__ROPA_FIXTURE_SUPABASE_ERROR      -> true devuelve error
 //   globalThis.__ROPA_FIXTURE_CATEGORIES          -> array de categorías para
 //                                                    `.from('categories').select('name')`
+//   globalThis.__ROPA_FIXTURE_AUTH_USER           -> { id } por default admin
+//                                                    null simula sin sesión
+//   globalThis.__ROPA_FIXTURE_ROLE                -> 'admin' por default
+//   globalThis.__ROPA_FIXTURE_IS_ACTIVE           -> true por default
 //
 // Soporta dos patrones de la cadena de supabase-js:
 //   (a) termina con `.maybeSingle()` o `.single()` → objeto `{data, error}`.
@@ -13,6 +17,7 @@
 // Ambas producen `{data, error}`. El shape del `data` depende de la tabla:
 //   business_settings → fila `{rubro}` (o null)
 //   categories        → array `[{name}]`
+//   user_profiles     → fila `{role, is_active}` (o null)
 
 function terminalForTable(table) {
   const err = globalThis.__ROPA_FIXTURE_SUPABASE_ERROR === true
@@ -21,6 +26,14 @@ function terminalForTable(table) {
   if (table === "categories") {
     const cats = globalThis.__ROPA_FIXTURE_CATEGORIES ?? []
     return { data: cats.map((n) => ({ name: n })), error: null }
+  }
+  if (table === "user_profiles") {
+    const rawRole = globalThis.__ROPA_FIXTURE_ROLE
+    const role = rawRole === undefined ? "admin" : rawRole
+    const rawActive = globalThis.__ROPA_FIXTURE_IS_ACTIVE
+    const is_active = rawActive === undefined ? true : rawActive
+    if (role === null) return { data: null, error: null }
+    return { data: { role, is_active }, error: null }
   }
   // Default: business_settings. `??` NO sirve para diferenciar undefined
   // de null, por eso usamos `=== undefined` explícito. `null` significa
@@ -82,9 +95,22 @@ function makeBuilder(table) {
   return proxy
 }
 
+function authGetUser() {
+  const rawAuthErr = globalThis.__ROPA_FIXTURE_AUTH_ERROR
+  if (rawAuthErr === true) {
+    return { data: { user: null }, error: { message: "simulated auth failure" } }
+  }
+  const raw = globalThis.__ROPA_FIXTURE_AUTH_USER
+  const user = raw === undefined ? { id: "fixture-user-admin" } : raw
+  return { data: { user }, error: null }
+}
+
 export async function createServerSupabaseClient() {
   return {
     from: (table) => makeBuilder(table),
+    auth: {
+      getUser: async () => authGetUser(),
+    },
   }
 }
 

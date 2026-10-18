@@ -25,18 +25,55 @@ export async function POST(req: Request) {
     const rawType = (mediaType || "").toLowerCase()
     const normalizedMediaType = isVideo || GEMINI_IMAGE_TYPES.has(rawType) ? mediaType || "image/jpeg" : "image/jpeg"
 
-    // Lectura del rubro con la sesión del usuario ANTES de llamar al modelo.
-    // Si falla (sin sesión, rubro vacío, rubro inválido) la ruta cierra con
-    // error visible y no consume créditos del AI Gateway. Nunca cae a 'ropa'
-    // por default — el guard explícito 401 va en commit aparte (ver
-    // ESTADO-PENDIENTES §0 "/api/analyze-product sin autenticación").
+    // Guard explícito de sesión + rol ANTES de leer configuración o llamar
+    // al modelo. Sin esto, un POST sin cookies llegaba a `generateObject`
+    // y gastaba créditos del AI Gateway. Las mismas reglas que
+    // `ingressNewProduct`: admin o encargado. Otros roles → 403.
     const supabase = await createServerSupabaseClient()
+    const { data: authData, error: authError } = await supabase.auth.getUser()
+    if (authError || !authData?.user) {
+      if (authError) console.error("[analyze-product] auth.getUser error:", authError)
+      return NextResponse.json(
+        { error: "No autenticado.", code: "unauthenticated" },
+        { status: 401 },
+      )
+    }
+    const { data: profileRow, error: profileRowError } = await supabase
+      .from("user_profiles")
+      .select("role, is_active")
+      .eq("id", authData.user.id)
+      .maybeSingle()
+    if (profileRowError) {
+      console.error("[analyze-product] user_profiles read error:", profileRowError)
+      return NextResponse.json(
+        { error: "No se pudo verificar el usuario.", code: "profile_read_error" },
+        { status: 503 },
+      )
+    }
+    if (!profileRow || !profileRow.is_active) {
+      return NextResponse.json(
+        { error: "No autorizado.", code: "forbidden" },
+        { status: 403 },
+      )
+    }
+    if (profileRow.role !== "admin" && profileRow.role !== "encargado") {
+      return NextResponse.json(
+        { error: "No autorizado.", code: "forbidden" },
+        { status: 403 },
+      )
+    }
+
+    // Lectura del rubro con la sesión del usuario ANTES de llamar al modelo.
+    // Si falla (rubro vacío, rubro inválido) la ruta cierra con error
+    // visible y no consume créditos del AI Gateway. Nunca cae a 'ropa'
+    // por default.
     const { data: cfg, error: cfgError } = await supabase
       .from("business_settings")
       .select("rubro")
       .eq("id", 1)
       .maybeSingle()
     if (cfgError) {
+      console.error("[analyze-product] business_settings read error:", cfgError)
       return NextResponse.json(
         { error: "No se pudo leer la configuración del negocio.", code: "rubro_read_error" },
         { status: 503 },
@@ -45,16 +82,17 @@ export async function POST(req: Request) {
     const rubro = cfg?.rubro
     if (!rubro || typeof rubro !== "string") {
       return NextResponse.json(
-        { error: "La sesión no está autorizada o la configuración del negocio no está disponible.", code: "rubro_missing" },
-        { status: 401 },
+        { error: "La configuración del negocio no está disponible.", code: "rubro_missing" },
+        { status: 503 },
       )
     }
     let profile
     try {
       profile = getRubroProfile(rubro)
-    } catch {
+    } catch (e) {
+      console.error("[analyze-product] rubro inválido:", rubro, e)
       return NextResponse.json(
-        { error: `Rubro inválido configurado para este negocio: "${rubro}".`, code: "rubro_invalid" },
+        { error: "La configuración del negocio no es válida.", code: "rubro_invalid" },
         { status: 500 },
       )
     }
@@ -135,11 +173,10 @@ export async function POST(req: Request) {
 
     return NextResponse.json({ product: object })
   } catch (error: any) {
-    console.error("[v0] analyze-product error:", error?.message || error)
+    console.error("[analyze-product] error:", error?.message || error)
     return NextResponse.json(
       {
         error: "No se pudo analizar el archivo. Intenta con otra foto o completa los datos manualmente.",
-        debug: error?.message || String(error),
       },
       { status: 500 },
     )

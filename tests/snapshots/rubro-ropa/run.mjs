@@ -193,6 +193,12 @@ function resetAiGlobals() {
   globalThis.__ROPA_FIXTURE_RUBRO = "ropa"
   globalThis.__ROPA_FIXTURE_SUPABASE_ERROR = false
   globalThis.__ROPA_FIXTURE_CATEGORIES = []
+  // Sesión + rol de usuario autenticado por default: admin activo.
+  // Casos de 401/403 setean estos globals explícitamente.
+  globalThis.__ROPA_FIXTURE_AUTH_USER = { id: "fixture-user-admin" }
+  globalThis.__ROPA_FIXTURE_AUTH_ERROR = false
+  globalThis.__ROPA_FIXTURE_ROLE = "admin"
+  globalThis.__ROPA_FIXTURE_IS_ACTIVE = true
 }
 
 // Fixed deterministic "complete object" for response-full capture. Nueve
@@ -949,12 +955,14 @@ async function runIsolation() {
     check("fail-closed: error de business_settings NO llama generateObject", captures.length === 0)
     check("fail-closed: error de business_settings devuelve status >= 400", r1.status >= 400)
 
-    // (b) Sin sesión (rubro null, equivalente a RLS que bloquea el read).
+    // (b) Sin sesión (auth.getUser devuelve user=null) → 401
+    // "unauthenticated". No se consulta business_settings ni se llama al
+    // modelo.
     resetAiGlobals()
-    globalThis.__ROPA_FIXTURE_RUBRO = null
+    globalThis.__ROPA_FIXTURE_AUTH_USER = null
     const r2 = await hit()
-    check("no-session: rubro null NO llama generateObject", captures.length === 0)
-    check("no-session: rubro null devuelve status === 401", r2.status === 401)
+    check("no-session: user=null NO llama generateObject", captures.length === 0)
+    check("no-session: user=null devuelve status === 401", r2.status === 401)
 
     // (c) Rubro inválido ("mascotas") → status 500 "rubro_invalid", NO
     // llama al modelo. Nunca cae a 'ropa' por default.
@@ -963,6 +971,29 @@ async function runIsolation() {
     const r3 = await hit()
     check("rubro inválido: NO llama generateObject", captures.length === 0)
     check("rubro inválido: devuelve status >= 400", r3.status >= 400)
+
+    // (d) Rol no autorizado (vendedor) → 403 "forbidden". No se llama al
+    // modelo. Admin y encargado pasan; vendedor y contador no.
+    resetAiGlobals()
+    globalThis.__ROPA_FIXTURE_ROLE = "vendedor"
+    const r4 = await hit()
+    check("rol vendedor: NO llama generateObject", captures.length === 0)
+    check("rol vendedor: devuelve status === 403", r4.status === 403)
+
+    // (e) Usuario inactivo → 403 "forbidden".
+    resetAiGlobals()
+    globalThis.__ROPA_FIXTURE_IS_ACTIVE = false
+    const r5 = await hit()
+    check("usuario inactivo: NO llama generateObject", captures.length === 0)
+    check("usuario inactivo: devuelve status === 403", r5.status === 403)
+
+    // (f) Rubro null (RLS vacío con usuario autenticado) → 503
+    // "rubro_missing". NO 401, porque la autenticación ya pasó.
+    resetAiGlobals()
+    globalThis.__ROPA_FIXTURE_RUBRO = null
+    const r6 = await hit()
+    check("rubro null: NO llama generateObject", captures.length === 0)
+    check("rubro null: devuelve status === 503", r6.status === 503)
 
     console.error = origErr
   } else {
