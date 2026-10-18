@@ -115,7 +115,7 @@ export function AiIngressPanel({
             <h3 className="font-semibold text-foreground">Ingreso con IA — soporte pendiente para este rubro</h3>
             <p className="text-sm text-muted-foreground">
               El perfil de tecnología está activo en la configuración del negocio, pero el formulario de
-              ingreso con IA se habilita en la siguiente iteración (Y.2). Mientras tanto, usá el importador
+              ingreso con IA se habilita en la siguiente iteración (Y.2). Mientras tanto, usa el importador
               de Excel o el formulario manual en Inventario → Productos.
             </p>
           </div>
@@ -154,24 +154,18 @@ function AiIngressPanelRopa({
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const AI_MIN_INTERVAL_MS = uiProfile.ui.constants.AI_MIN_INTERVAL_MS
-  const labels = uiProfile.ui.labels
-  // Lookup posicional del label array (10 entradas, mismo orden en ambos
-  // perfiles). Index 0=name, 1=type_prefix (marca/tipo), 2=category,
-  // 3=size (talla/referencia), 4=color, 5=price, 6=cost, 7=quantity,
-  // 8=code, 9=description.
-  const LBL = {
-    name: labels[0],
-    type_prefix: labels[1],
-    category: labels[2],
-    size: labels[3],
-    color: labels[4],
-    price: labels[5],
-    cost: labels[6],
-    quantity: labels[7],
-    code: labels[8],
-    description: labels[9],
-  }
+  // Acceso por clave al bundle de labels del perfil. El bundle es
+  // `Record<UILabelKey, UILabelPair>` — las claves coinciden con los
+  // campos de IngressItem, no con posiciones (para que, p.ej., el label
+  // de "size" en tecnología sea realmente "Referencia" aun cuando aparezca
+  // en otro orden visual que ropa).
+  const LBL = uiProfile.ui.labels
 
+  // Cola secuencial para respetar el rate-limit de Google Gemini. Chain de
+  // promesas — cada nuevo request se encola detrás del anterior. `lastStartRef`
+  // guarda cuándo arrancó el request previo para calcular el sleep necesario.
+  // Concurrency = 1 por diseño: paralelizar simplifica la UI pero prácticamente
+  // garantiza pegarle al techo de RPM con lotes de 5+ fotos.
   const queueRef = useRef<Promise<void>>(Promise.resolve())
   const lastStartRef = useRef<number>(0)
 
@@ -189,6 +183,13 @@ function AiIngressPanelRopa({
     })
   }
 
+  // Duplicar tarjeta ya analizada — evita re-llamar a Gemini para variantes
+  // de la misma prenda (misma foto, típicamente cambia solo la talla). Nace
+  // en estado "ready" directo, con code vacío para que el server autogenere
+  // sufijo NN distinto al original vía next_product_code. La imagen se
+  // hereda como referencia (mismo File y dataUrl); al guardar cada producto
+  // sube su propia copia al bucket product-media — semántica "cada producto
+  // tiene su galería propia" queda intacta.
   function duplicateItem(id: string) {
     setItems((prev) => {
       const idx = prev.findIndex((it) => it.id === id)
@@ -232,6 +233,9 @@ function AiIngressPanelRopa({
     }
   }
 
+  // Guard pre-flight: coincide con MAX_IMAGE_BYTES del bucket product-media
+  // y del helper uploadProductImageClient. Toast amigable antes de crear
+  // la card, evita gastar upload + análisis IA en archivos imposibles.
   const MAX_UPLOAD_BYTES = 5 * 1024 * 1024 // 5 MB
 
   async function handleFiles(files: FileList | null) {
@@ -266,6 +270,10 @@ function AiIngressPanelRopa({
 
   async function saveItem(item: IngressItem): Promise<{ ok: boolean; code?: string }> {
     update(item.id, { status: "saving", errorMsg: undefined })
+    // Wrap try/catch: si uploadProductImageClient o ingressNewProduct
+    // throwean (network, auth, exception no-esperada del RPC), el ítem
+    // quedaba en "saving" permanente con spinner infinito y el toast
+    // global nunca se disparaba — silent failure real.
     try {
       let imageUrl: string | null = null
       const up = await uploadProductImageClient(item.file)
@@ -304,6 +312,7 @@ function AiIngressPanelRopa({
   async function ingressAll() {
     const pending = items.filter((it) => it.status === "ready" || it.status === "error")
     if (pending.length === 0) return
+    // validate
     const invalid = pending.find((it) => !it.name.trim() || it.price <= 0)
     if (invalid) {
       toast({
@@ -322,6 +331,8 @@ function AiIngressPanelRopa({
     setSavingAll(false)
     const ok = savedCodes.length
     const failed = pending.length - ok
+    // Preview de códigos: los primeros 3 completos y "…" si hay más, para
+    // que el usuario confirme visualmente qué se creó sin ir a validar.
     const codesPreview =
       savedCodes.length > 3
         ? `${savedCodes.slice(0, 3).join(", ")} y ${savedCodes.length - 3} más`
@@ -333,12 +344,16 @@ function AiIngressPanelRopa({
       })
       onIngressed?.()
     } else if (ok > 0 && failed > 0) {
+      // Fallo parcial: reporta ambos lados. Neutral (no destructive) porque
+      // parte tuvo éxito; el detalle por-ítem sigue en cada card en rojo.
       toast({
         title: `${ok} ingresado(s), ${failed} con error`,
         description: `Creados: ${codesPreview}. Revisa las tarjetas en rojo para el detalle de los fallidos.`,
       })
       onIngressed?.()
     } else {
+      // ok === 0: todos fallaron. Sin este toast global el usuario solo
+      // veía errorMsg inline en cada card y podía parecer "no pasó nada".
       toast({
         title: `No se pudo ingresar ${failed} producto(s)`,
         description: "Revisa cada tarjeta para ver el mensaje de error.",
@@ -407,6 +422,7 @@ function AiIngressPanelRopa({
             {items.map((item) => (
               <Card key={item.id} className={item.status === "done" ? "border-emerald-500/40 bg-emerald-500/5" : ""}>
                 <CardContent className="flex flex-col gap-4 py-4 lg:flex-row">
+                  {/* Media preview */}
                   <div className="relative h-40 w-full shrink-0 overflow-hidden rounded-lg bg-muted lg:h-44 lg:w-44">
                     {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img src={item.dataUrl || "/placeholder.svg"} alt={item.name || "Producto"} className="h-full w-full object-cover" />
@@ -416,6 +432,7 @@ function AiIngressPanelRopa({
                     </Badge>
                   </div>
 
+                  {/* Fields */}
                   <div className="min-w-0 flex-1">
                     {item.status === "queued" ? (
                       <div className="flex h-full items-center gap-2 text-sm text-muted-foreground">

@@ -368,7 +368,8 @@ async function captureUIFromProfile(outDir) {
   const profile = mod.getRubroProfile("ropa")
   const ui = profile.ui
 
-  // ui-labels / ui-hero: salen directo del perfil.
+  // ui-labels / ui-hero: salen directo del perfil (ya es un object
+  // keyed por campo del IngressItem — name, type_prefix, category…).
   writeJSON(path.join(outDir, "ui-labels.json"), ui.labels)
   writeText(path.join(outDir, "ui-hero.txt"), ui.hero)
 
@@ -565,7 +566,16 @@ function captureUIFromPanelOracle(outDir) {
 
   const canonicalConstants = Object.fromEntries(Object.keys(constants).sort().map((k) => [k, constants[k]]))
 
-  writeJSON(path.join(outDir, "ui-labels.json"), pairs)
+  // Convertir los pairs extraídos del AST (posicionales) a objeto keyed
+  // por campo del IngressItem — mismo shape que el que emite el perfil.
+  // El orden de los <Label> en el panel original @ 1aff84b es fijo:
+  const ROPA_FIELD_KEYS = ["name", "type_prefix", "category", "size", "color", "price", "cost", "quantity", "code", "description"]
+  if (pairs.length !== ROPA_FIELD_KEYS.length) {
+    throw new Error(`AST oracle: esperaba ${ROPA_FIELD_KEYS.length} pairs, encontró ${pairs.length}`)
+  }
+  const labelsByKey = Object.fromEntries(pairs.map((p, i) => [ROPA_FIELD_KEYS[i], p]))
+
+  writeJSON(path.join(outDir, "ui-labels.json"), labelsByKey)
   writeJSON(path.join(outDir, "ui-constants.json"), canonicalConstants)
   writeText(path.join(outDir, "ui-hero.txt"), hero || "")
   writeJSON(path.join(outDir, "client-fallbacks.json"), { initial, analyze })
@@ -861,10 +871,10 @@ async function runIsolation() {
     ]
     for (const f of Object.values(profile.schema.shape)) if (f.description) parts.push(f.description)
     const ui = profile.ui || {}
-    if (Array.isArray(ui.labels)) {
-      for (const p of ui.labels) {
-        if (p.label) parts.push(p.label)
-        if (typeof p.placeholder === "string") parts.push(p.placeholder)
+    if (ui.labels && typeof ui.labels === "object") {
+      for (const p of Object.values(ui.labels)) {
+        if (p && p.label) parts.push(p.label)
+        if (p && typeof p.placeholder === "string") parts.push(p.placeholder)
       }
     }
     if (ui.hero) parts.push(ui.hero)

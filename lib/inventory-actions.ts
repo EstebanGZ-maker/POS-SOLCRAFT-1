@@ -1786,10 +1786,14 @@ async function resolveCategoryId(
   const allowCreate = opts?.allowCreate ?? true
   const clean = (name || "").trim()
   if (!clean) return null
+  // Escapar wildcards de LIKE (\, %, _) antes del `.ilike`: sin esto
+  // un usuario que escriba "100%" o "a_b" matchea categorías no
+  // relacionadas por el patrón.
+  const escaped = clean.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_")
   const { data: existing } = await supabase
     .from("categories")
     .select("category_id")
-    .ilike("name", clean)
+    .ilike("name", escaped)
     .limit(1)
     .maybeSingle()
   if (existing) return existing.category_id
@@ -1837,15 +1841,20 @@ export async function ingressNewProduct(input: IngressItemInput, warehouse_id: s
       rubro = await getBusinessRubro()
       allowCreateCategory = getRubroUIBundle(rubro).allowCreateCategory
     } catch (e: any) {
-      return { success: false, message: "No se pudo leer el rubro del negocio: " + (e?.message || String(e)) }
+      console.error("[ingressNewProduct] getBusinessRubro falló:", e)
+      return { success: false, message: "No se pudo leer la configuración del negocio. Intenta de nuevo o contacta a soporte." }
     }
 
     // Normalización del prefijo y la talla / referencia según rubro.
+    // Tecnología: SOLO mayúsculas + strip no alfanumérico; el largo lo
+    // chequea validateItemForRubro contra el perfil (nunca truncamos
+    // en el servidor para evitar que un valor fuera de rango se guarde
+    // silenciosamente recortado).
     let prefix: string
     let size: string
     if (rubro === "tecnologia") {
-      prefix = (input.type_prefix || "").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 2)
-      size = (input.size || "").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 20)
+      prefix = (input.type_prefix || "").toUpperCase().replace(/[^A-Z0-9]/g, "")
+      size = (input.size || "").toUpperCase().replace(/[^A-Z0-9]/g, "")
       const violation = validateItemForRubro({ type_prefix: prefix, size }, rubro)
       if (violation) {
         return { success: false, message: violation }
@@ -1882,6 +1891,14 @@ export async function ingressNewProduct(input: IngressItemInput, warehouse_id: s
       code = gen as string
     }
 
+    // Tecnología: la categoría es obligatoria. Debe venir de la lista
+    // del tenant (no se crea on-the-fly) y no se admite vacía.
+    if (rubro === "tecnologia" && (input.category || "").trim() === "") {
+      return {
+        success: false,
+        message: "La categoría es obligatoria. Elige una de la lista del negocio.",
+      }
+    }
     const category_id = await resolveCategoryId(supabase, input.category, {
       allowCreate: allowCreateCategory,
     })

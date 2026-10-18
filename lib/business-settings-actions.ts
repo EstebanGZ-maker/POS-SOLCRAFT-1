@@ -119,14 +119,17 @@ export async function getBusinessRubro(): Promise<RubroId> {
   const supabase = await createServerSupabaseClient()
   const { data, error } = await supabase.from("business_settings").select("rubro").eq("id", 1).maybeSingle()
   if (error) {
-    throw new Error(`No se pudo leer el rubro del negocio: ${error.message}`)
+    console.error("[getBusinessRubro] supabase error:", error)
+    throw new Error("No se pudo leer la configuración del negocio.")
   }
   const rubro = data?.rubro
   if (!rubro || typeof rubro !== "string") {
-    throw new Error("No se pudo leer el rubro del negocio: configuración no disponible")
+    console.error("[getBusinessRubro] rubro vacío o no-string en business_settings:", { rubro })
+    throw new Error("No se pudo leer la configuración del negocio.")
   }
   if (!(RUBRO_IDS as readonly string[]).includes(rubro)) {
-    throw new Error(`Rubro inválido en business_settings: "${rubro}". Esperado: ${RUBRO_IDS.join(" | ")}`)
+    console.error("[getBusinessRubro] rubro inválido:", rubro, "esperado:", RUBRO_IDS)
+    throw new Error("No se pudo leer la configuración del negocio.")
   }
   return rubro as RubroId
 }

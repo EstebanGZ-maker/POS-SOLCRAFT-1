@@ -42,6 +42,7 @@ export interface RubroProfile {
   allowCreateCategory: boolean
   showSuggestedPrice: boolean
   typePrefixMaxLength: number
+  referenceMaxLength: number | null
   categoryIsSelect: boolean
 }
 
@@ -185,6 +186,7 @@ const ropaProfile: RubroProfile = {
   allowCreateCategory: ROPA_UI.allowCreateCategory,
   showSuggestedPrice: ROPA_UI.showSuggestedPrice,
   typePrefixMaxLength: ROPA_UI.typePrefixMaxLength,
+  referenceMaxLength: ROPA_UI.referenceMaxLength,
   categoryIsSelect: ROPA_UI.categoryIsSelect,
 }
 
@@ -211,6 +213,7 @@ const tecnologiaProfile: RubroProfile = {
   allowCreateCategory: TECNOLOGIA_UI.allowCreateCategory,
   showSuggestedPrice: TECNOLOGIA_UI.showSuggestedPrice,
   typePrefixMaxLength: TECNOLOGIA_UI.typePrefixMaxLength,
+  referenceMaxLength: TECNOLOGIA_UI.referenceMaxLength,
   categoryIsSelect: TECNOLOGIA_UI.categoryIsSelect,
 }
 

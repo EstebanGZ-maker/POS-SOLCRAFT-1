@@ -62,11 +62,27 @@ export async function POST(req: Request) {
     // Para rubros que lo requieren (tecnología) cargamos la lista de
     // categorías del tenant y la inyectamos al prompt. Comparación
     // case-insensitive la hace el modelo según la regla del prompt; nosotros
-    // solo le damos la whitelist.
+    // solo le damos la whitelist. Si la lectura falla o la lista queda
+    // vacía en tecnología, cerramos con 503 ANTES de llamar al modelo:
+    // sin whitelist la IA inventa categorías y el servidor termina
+    // rechazando la ingesta igual, con el gasto del AI Gateway de más.
     let categoriesList: string[] | undefined
     if (profile.needsCategoriesList) {
-      const { data: cats } = await supabase.from("categories").select("name").order("name")
+      const { data: cats, error: catsError } = await supabase.from("categories").select("name").order("name")
+      if (catsError) {
+        console.error("[analyze-product] error leyendo categorías:", catsError)
+        return NextResponse.json(
+          { error: "No se pudo leer la lista de categorías del negocio.", code: "categories_read_error" },
+          { status: 503 },
+        )
+      }
       categoriesList = (cats || []).map((c: any) => String(c.name))
+      if (categoriesList.length === 0) {
+        return NextResponse.json(
+          { error: "La lista de categorías del negocio está vacía. Pedile a un admin que agregue categorías antes de usar la IA.", code: "categories_read_error" },
+          { status: 503 },
+        )
+      }
     }
 
     const medium: "imagen" | "video" = isVideo ? "video" : "imagen"

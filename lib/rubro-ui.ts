@@ -20,6 +20,24 @@ export interface UILabelPair {
   maxLength: number | null
 }
 
+// Claves de los campos del IngressItem usadas para acceder a los labels
+// desde el panel. El orden canónico se preserva solo para el gate del
+// fixture (`--verify`), que itera `Object.values(ui.labels)` — a nivel
+// de código, el panel accede por clave.
+export type UILabelKey =
+  | "name"
+  | "type_prefix"
+  | "category"
+  | "size"
+  | "color"
+  | "price"
+  | "cost"
+  | "quantity"
+  | "code"
+  | "description"
+
+export type UILabels = Record<UILabelKey, UILabelPair>
+
 export interface UIConstants {
   PREFIX_HINTS: string
   AI_MIN_INTERVAL_MS: number
@@ -37,7 +55,7 @@ export interface ClientFallbacksBag {
 }
 
 export interface RubroUI {
-  labels: UILabelPair[]
+  labels: UILabels
   constants: UIConstants
   hero: string
   codeExample: string
@@ -50,9 +68,15 @@ export interface RubroUIBundle {
   ui: RubroUI
   allowCreateCategory: boolean
   showSuggestedPrice: boolean
-  // Longitud máxima del input del prefijo (campo type_prefix para ropa,
-  // brand_prefix para tecnologia). El panel lo toma del perfil, no un 4 fijo.
+  // Longitud máxima del prefijo (campo type_prefix para ropa,
+  // brand_prefix para tecnologia). Fuente única: lo consume el panel para
+  // el maxLength del Input, apply-analysis para el `.slice()` del
+  // normalizador, inventory-actions para la regex de validateItemForRubro.
   typePrefixMaxLength: number
+  // Longitud máxima del campo size (talla en ropa, referencia en tec).
+  // null = sin tope (ropa). Mismo rol que typePrefixMaxLength: fuente
+  // única para UI/apply-analysis/validate.
+  referenceMaxLength: number | null
   // Si true, la categoría se renderiza como <Select> con la lista de la
   // base. Si false, como <Input> libre con autocompletado flexible.
   categoryIsSelect: boolean
@@ -65,20 +89,21 @@ export const ROPA_UI: RubroUIBundle = {
   allowCreateCategory: true,
   showSuggestedPrice: true,
   typePrefixMaxLength: 4,
+  referenceMaxLength: null,
   categoryIsSelect: false,
   ui: {
-    labels: [
-      { label: "Nombre del producto",       component: "Input",       placeholder: "Ej: Camisa manga larga", maxLength: null },
-      { label: "Tipo (prefijo)",            component: "Input",       placeholder: "CA",                      maxLength: 4 },
-      { label: "Categoría",                 component: "Input",       placeholder: "Camisas",                 maxLength: null },
-      { label: "Talla",                     component: "Input",       placeholder: "M",                       maxLength: null },
-      { label: "Color",                     component: "Input",       placeholder: "Azul",                    maxLength: null },
-      { label: "Precio de venta (COP)",     component: "MoneyInput",  placeholder: "95.000",                  maxLength: null },
-      { label: "Costo de adquisición (COP)",component: "MoneyInput",  placeholder: "45.000",                  maxLength: null },
-      { label: "Cantidad a ingresar",       component: "Input",       placeholder: "1",                       maxLength: null },
-      { label: "Código de identificación",  component: "Input",       placeholder: "Automático: ${…}",        maxLength: null },
-      { label: "Descripción",               component: "Textarea",    placeholder: "Material, estilo, detalles…", maxLength: null },
-    ],
+    labels: {
+      name:        { label: "Nombre del producto",       component: "Input",       placeholder: "Ej: Camisa manga larga", maxLength: null },
+      type_prefix: { label: "Tipo (prefijo)",            component: "Input",       placeholder: "CA",                      maxLength: 4 },
+      category:    { label: "Categoría",                 component: "Input",       placeholder: "Camisas",                 maxLength: null },
+      size:        { label: "Talla",                     component: "Input",       placeholder: "M",                       maxLength: null },
+      color:       { label: "Color",                     component: "Input",       placeholder: "Azul",                    maxLength: null },
+      price:       { label: "Precio de venta (COP)",     component: "MoneyInput",  placeholder: "95.000",                  maxLength: null },
+      cost:        { label: "Costo de adquisición (COP)",component: "MoneyInput",  placeholder: "45.000",                  maxLength: null },
+      quantity:    { label: "Cantidad a ingresar",       component: "Input",       placeholder: "1",                       maxLength: null },
+      code:        { label: "Código de identificación",  component: "Input",       placeholder: "Automático: ${…}",        maxLength: null },
+      description: { label: "Descripción",               component: "Textarea",    placeholder: "Material, estilo, detalles…", maxLength: null },
+    },
     constants: {
       PREFIX_HINTS: "CA=Camisa · PA=Pantalón · CH=Chaqueta · VE=Vestido · FA=Falda · BL=Blusa · BU=Buzo · SU=Suéter · SH=Short · ZA=Zapato · AC=Accesorio",
       AI_MIN_INTERVAL_MS: 6500,
@@ -117,20 +142,21 @@ export const TECNOLOGIA_UI: RubroUIBundle = {
   allowCreateCategory: false,
   showSuggestedPrice: false,
   typePrefixMaxLength: 2,
+  referenceMaxLength: 20,
   categoryIsSelect: true,
   ui: {
-    labels: [
-      { label: "Nombre del producto",       component: "Input",       placeholder: "Ej: Funda iPhone 17 Pro Max", maxLength: null },
-      { label: "Marca (prefijo)",           component: "Input",       placeholder: "IP",                      maxLength: 2 },
-      { label: "Referencia",                component: "Input",       placeholder: "17PM",                     maxLength: null },
-      { label: "Categoría",                 component: "Select",      placeholder: null,                       maxLength: null },
-      { label: "Color",                     component: "Input",       placeholder: "Negro",                    maxLength: null },
-      { label: "Precio de venta (COP)",     component: "MoneyInput",  placeholder: "35.000",                   maxLength: null },
-      { label: "Costo de adquisición (COP)",component: "MoneyInput",  placeholder: "15.000",                   maxLength: null },
-      { label: "Cantidad a ingresar",       component: "Input",       placeholder: "1",                        maxLength: null },
-      { label: "Código de identificación",  component: "Input",       placeholder: "Automático: ${…}",         maxLength: null },
-      { label: "Descripción",               component: "Textarea",    placeholder: "Modelo, características visibles…", maxLength: null },
-    ],
+    labels: {
+      name:        { label: "Nombre del producto",       component: "Input",       placeholder: "Ej: Funda iPhone 17 Pro Max", maxLength: null },
+      type_prefix: { label: "Marca (prefijo)",           component: "Input",       placeholder: "IP",                      maxLength: 2 },
+      size:        { label: "Referencia",                component: "Input",       placeholder: "17PM",                     maxLength: 20 },
+      category:    { label: "Categoría",                 component: "Select",      placeholder: null,                       maxLength: null },
+      color:       { label: "Color",                     component: "Input",       placeholder: "Negro",                    maxLength: null },
+      price:       { label: "Precio de venta (COP)",     component: "MoneyInput",  placeholder: "35.000",                   maxLength: null },
+      cost:        { label: "Costo de adquisición (COP)",component: "MoneyInput",  placeholder: "15.000",                   maxLength: null },
+      quantity:    { label: "Cantidad a ingresar",       component: "Input",       placeholder: "1",                        maxLength: null },
+      code:        { label: "Código de identificación",  component: "Input",       placeholder: "Automático: ${…}",         maxLength: null },
+      description: { label: "Descripción",               component: "Textarea",    placeholder: "Modelo, características visibles…", maxLength: null },
+    },
     constants: {
       PREFIX_HINTS: "RM=Redmi · IP=iPhone · SA=Samsung · HO=Honor · OP=Oppo · IN=Infinix · TE=Tecno · Otras marcas: dos primeras letras",
       AI_MIN_INTERVAL_MS: 6500,

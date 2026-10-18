@@ -9,7 +9,7 @@
 // comparan la salida contra el oráculo evaluado del código pre-refactor
 // (git show 1aff84b:components/central/ai-ingress-panel.tsx).
 
-import { getRubroUIBundle, type RubroId } from "@/lib/rubro-ui"
+import { getRubroUIBundle, type RubroId, RUBRO_IDS } from "@/lib/rubro-ui"
 
 /**
  * Campos del IngressItem (sin `id/file/dataUrl/status/savedCode/errorMsg/code`
@@ -117,12 +117,13 @@ export function applyAnalysisToItem(
     }
   }
   if (rubro === "tecnologia") {
+    const bundle = getRubroUIBundle("tecnologia")
     return {
       name: typeof p.name === "string" ? p.name : "",
-      type_prefix: normalizeAlnum(p.brand_prefix, 2),
+      type_prefix: normalizeAlnum(p.brand_prefix, bundle.typePrefixMaxLength),
       category: typeof p.category === "string" ? p.category : "",
       description: typeof p.description === "string" ? p.description : "",
-      size: normalizeAlnum(p.reference, 20),
+      size: normalizeAlnum(p.reference, bundle.referenceMaxLength ?? Infinity),
       color: typeof p.color === "string" ? p.color : "",
       // No price / no cost: dejan los valores actuales del formulario
       // (los defaults de createInitialItem = 0).
@@ -149,15 +150,23 @@ export function validateItemForRubro(
     return null
   }
   if (rubro === "tecnologia") {
+    const bundle = getRubroUIBundle("tecnologia")
+    const brandMax = bundle.typePrefixMaxLength
+    const refMax = bundle.referenceMaxLength ?? 0
     const brand = (item.type_prefix || "").toUpperCase()
     const ref = (item.size || "").toUpperCase()
-    if (!/^[A-Z0-9]{2}$/.test(brand)) {
-      return "La marca (prefijo) debe tener exactamente 2 caracteres alfanuméricos en mayúsculas (ej: IP, SA, HO)."
+    const brandRe = new RegExp(`^[A-Z0-9]{${brandMax}}$`)
+    const refRe = new RegExp(`^[A-Z0-9]{1,${refMax}}$`)
+    if (!brandRe.test(brand)) {
+      return `La marca (prefijo) debe tener exactamente ${brandMax} caracteres alfanuméricos en mayúsculas (ej: IP, SA, HO).`
     }
-    if (!/^[A-Z0-9]{1,20}$/.test(ref)) {
-      return "La referencia debe tener entre 1 y 20 caracteres alfanuméricos en mayúsculas, sin espacios ni símbolos (ej: 17PM, TUNE520BT)."
+    if (!refRe.test(ref)) {
+      return `La referencia debe tener entre 1 y ${refMax} caracteres alfanuméricos en mayúsculas, sin espacios ni símbolos (ej: 17PM, TUNE520BT).`
     }
     return null
   }
-  return null
+  // Rubro desconocido: no se puede validar — se rechaza explícitamente.
+  // Antes devolvía null, lo que dejaba pasar valores que ingressNewProduct
+  // armaba sin schema conocido.
+  return `Rubro desconocido "${rubro as string}". Esperado: ${RUBRO_IDS.join(" | ")}.`
 }
