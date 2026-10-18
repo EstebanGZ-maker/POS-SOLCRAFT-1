@@ -46,6 +46,13 @@ export default function CentralPage() {
   const uiProfileResult = tryGetRubroUIBundle(rubro ?? null)
   const uiProfile = "bundle" in uiProfileResult ? uiProfileResult.bundle : null
   const uiProfileError = "error" in uiProfileResult && rubro ? uiProfileResult.error : null
+  // Categorías para el panel de IA. En tecnología son whitelist cerrada
+  // del Select; en ropa son referencia opcional de autocompletado.
+  const { data: aiCategoriesRaw = [] } = useSWR("categories", getCategories)
+  const aiCategories = (aiCategoriesRaw as any[]).map((c: any) => ({
+    category_id: c.category_id,
+    name: c.name,
+  }))
 
   return (
     <div className="p-6 max-w-7xl mx-auto space-y-6">
@@ -90,6 +97,7 @@ export default function CentralPage() {
               rubro={rubro ?? null}
               uiProfile={uiProfile}
               rubroError={rubroError || uiProfileError}
+              categories={aiCategories}
             />
           </TabsContent>
           <TabsContent value="receive">

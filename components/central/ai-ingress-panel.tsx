@@ -9,6 +9,13 @@ import { MoneyInput } from "@/components/ui/money-input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Badge } from "@/components/ui/badge"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import { useToast } from "@/hooks/use-toast"
 import { formatCurrency } from "@/lib/utils"
 import { ingressNewProduct } from "@/lib/inventory-actions"
@@ -52,11 +59,63 @@ function fileToDataUrl(file: File): Promise<string> {
   })
 }
 
-function codePreview(item: IngressItem) {
-  const prefix = (item.type_prefix || "XX").toUpperCase()
-  const size = (item.size || "U").toUpperCase()
+function codePreview(item: IngressItem, rubro: RubroId) {
   const thousands = Math.round((item.price || 0) / 1000)
+  if (rubro === "ropa") {
+    // Preserva el preview histórico de ropa (fallbacks XX / U) para que el
+    // placeholder del campo "Código" no cambie respecto a main.
+    const prefix = (item.type_prefix || "XX").toUpperCase()
+    const size = (item.size || "U").toUpperCase()
+    return `${prefix}-${size}-${thousands}-##`
+  }
+  // Tecnología: sin fallbacks de ropa — vacíos aparecen como "—" para
+  // que el operador vea que falta completar marca/referencia.
+  const prefix = (item.type_prefix || "").toUpperCase() || "—"
+  const size = (item.size || "").toUpperCase() || "—"
   return `${prefix}-${size}-${thousands}-##`
+}
+
+export interface AiCategoryOption {
+  category_id: string
+  name: string
+}
+
+// Valida un item en el cliente para habilitar/bloquear Guardar y mostrar
+// el motivo. El servidor sigue siendo la fuente de verdad
+// (`validateItemForRubro` + chequeos de `ingressNewProduct`); el cliente
+// anticipa el rechazo para dar feedback inmediato sin round-trip.
+function validateItemClient(
+  item: IngressItem,
+  uiProfile: RubroUIBundle,
+  categories: AiCategoryOption[],
+): string | null {
+  if (!item.name.trim()) {
+    return `Falta ${uiProfile.ui.labels.name.label.toLowerCase()}.`
+  }
+  if ((item.price || 0) <= 0) {
+    return `El ${uiProfile.ui.labels.price.label.toLowerCase()} debe ser mayor a 0.`
+  }
+  if (uiProfile.rubro === "tecnologia") {
+    const brandMax = uiProfile.typePrefixMaxLength
+    const refMax = uiProfile.referenceMaxLength ?? 0
+    const brand = (item.type_prefix || "").toUpperCase()
+    const ref = (item.size || "").toUpperCase()
+    if (!new RegExp(`^[A-Z0-9]{${brandMax}}$`).test(brand)) {
+      return `Falta la ${uiProfile.ui.labels.type_prefix.label.toLowerCase()}: ${brandMax} caracteres alfanuméricos (sin espacios ni símbolos).`
+    }
+    if (!new RegExp(`^[A-Z0-9]{1,${refMax}}$`).test(ref)) {
+      return `Falta la ${uiProfile.ui.labels.size.label.toLowerCase()}: entre 1 y ${refMax} caracteres alfanuméricos.`
+    }
+    const chosen = (item.category || "").trim()
+    if (!chosen) {
+      return `Falta elegir la ${uiProfile.ui.labels.category.label.toLowerCase()}.`
+    }
+    const exists = categories.some((c) => c.name.toLowerCase() === chosen.toLowerCase())
+    if (!exists) {
+      return `La ${uiProfile.ui.labels.category.label.toLowerCase()} elegida no está en la lista del negocio.`
+    }
+  }
+  return null
 }
 
 export function AiIngressPanel({
@@ -66,6 +125,7 @@ export function AiIngressPanel({
   rubro,
   uiProfile,
   rubroError,
+  categories,
 }: {
   centralWarehouseId: string
   centralSiteId: string
@@ -73,6 +133,10 @@ export function AiIngressPanel({
   rubro: RubroId | null
   uiProfile: RubroUIBundle | null
   rubroError?: string | null
+  // Lista de categorías del negocio. Para rubros con categoryIsSelect:true
+  // (hoy tecnología) es la whitelist del Select; para texto libre
+  // (ropa) solo se usa para autocompletar visualmente (no bloquea).
+  categories?: AiCategoryOption[]
 }) {
   // Compuerta: sin rubro no se habilita subir ni se muestran defaults.
   // Nunca cae a ropa.
@@ -102,51 +166,33 @@ export function AiIngressPanel({
       </Card>
     )
   }
-  // Y.1: tecnología existe como perfil pero el formulario todavía no se
-  // renderiza. Y.2 agrega Select de categoría, validación de referencia
-  // y oculta precio/costo sugeridos. Hasta entonces el panel muestra un
-  // aviso explícito.
-  if (rubro === "tecnologia") {
-    return (
-      <Card className="border-primary/30 bg-primary/5">
-        <CardContent className="flex items-start gap-3 py-6">
-          <Sparkles className="h-5 w-5 shrink-0 text-primary" />
-          <div>
-            <h3 className="font-semibold text-foreground">Ingreso con IA — soporte pendiente para este rubro</h3>
-            <p className="text-sm text-muted-foreground">
-              El perfil de tecnología está activo en la configuración del negocio, pero el formulario de
-              ingreso con IA se habilita en la siguiente iteración (Y.2). Mientras tanto, usa el importador
-              de Excel o el formulario manual en Inventario → Productos.
-            </p>
-          </div>
-        </CardContent>
-      </Card>
-    )
-  }
 
   return (
-    <AiIngressPanelRopa
+    <AiIngressPanelImpl
       centralWarehouseId={centralWarehouseId}
       centralSiteId={centralSiteId}
       onIngressed={onIngressed}
       rubro={rubro}
       uiProfile={uiProfile}
+      categories={categories ?? []}
     />
   )
 }
 
-function AiIngressPanelRopa({
+function AiIngressPanelImpl({
   centralWarehouseId,
   centralSiteId,
   onIngressed,
   rubro,
   uiProfile,
+  categories,
 }: {
   centralWarehouseId: string
   centralSiteId: string
   onIngressed?: () => void
   rubro: RubroId
   uiProfile: RubroUIBundle
+  categories: AiCategoryOption[]
 }) {
   const { toast } = useToast()
   const [items, setItems] = useState<IngressItem[]>([])
@@ -312,12 +358,15 @@ function AiIngressPanelRopa({
   async function ingressAll() {
     const pending = items.filter((it) => it.status === "ready" || it.status === "error")
     if (pending.length === 0) return
-    // validate
-    const invalid = pending.find((it) => !it.name.trim() || it.price <= 0)
-    if (invalid) {
+    // validate — en tecnología suma marca, referencia y categoría de la
+    // lista; en ropa mantiene la regla histórica de nombre + precio > 0.
+    const firstInvalid = pending
+      .map((it) => ({ it, msg: validateItemClient(it, uiProfile, categories) }))
+      .find((x) => x.msg !== null)
+    if (firstInvalid) {
       toast({
         title: "Datos incompletos",
-        description: "Cada producto necesita nombre y un precio mayor a 0.",
+        description: firstInvalid.msg ?? "",
         variant: "destructive",
       })
       return
@@ -363,6 +412,17 @@ function AiIngressPanelRopa({
   }
 
   const readyCount = items.filter((it) => it.status === "ready" || it.status === "error").length
+  // En tecnología la lista del Select es whitelist cerrada: sin
+  // categorías cargadas no se puede completar un ingreso válido.
+  const categoriesEmpty = uiProfile.categoryIsSelect && categories.length === 0
+  // Para habilitar "Ingresar todo" todos los items listos tienen que
+  // pasar la validación cliente — el servidor igualmente revalida.
+  const anyItemInvalid = items.some(
+    (it) =>
+      (it.status === "ready" || it.status === "error") &&
+      validateItemClient(it, uiProfile, categories) !== null,
+  )
+  const canSaveAll = readyCount > 0 && !categoriesEmpty && !anyItemInvalid
 
   return (
     <div className="space-y-6">
@@ -395,6 +455,20 @@ function AiIngressPanelRopa({
         </CardContent>
       </Card>
 
+      {categoriesEmpty && (
+        <Card className="border-amber-500/40 bg-amber-500/5">
+          <CardContent className="flex items-start gap-3 py-4">
+            <AlertTriangle className="h-5 w-5 shrink-0 text-amber-600 dark:text-amber-400" />
+            <div className="text-sm">
+              <p className="font-medium text-foreground">No hay categorías cargadas para este negocio.</p>
+              <p className="text-muted-foreground">
+                Un admin tiene que agregar las categorías del rubro antes de usar el ingreso con IA. Mientras tanto el botón "Ingresar todo" permanece deshabilitado.
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       {items.length === 0 ? (
         <Card>
           <CardContent className="flex flex-col items-center gap-3 py-14 text-center">
@@ -412,7 +486,7 @@ function AiIngressPanelRopa({
             <p className="text-sm text-muted-foreground">
               {items.length} archivo(s) · {readyCount} listo(s) para ingresar
             </p>
-            <Button onClick={ingressAll} disabled={savingAll || readyCount === 0}>
+            <Button onClick={ingressAll} disabled={savingAll || !canSaveAll}>
               {savingAll ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Check className="mr-2 h-4 w-4" />}
               Ingresar todo ({readyCount})
             </Button>
@@ -461,6 +535,15 @@ function AiIngressPanelRopa({
                             {item.errorMsg}
                           </p>
                         )}
+                        {(() => {
+                          const msg = validateItemClient(item, uiProfile, categories)
+                          if (!msg) return null
+                          return (
+                            <p className="rounded-md bg-amber-500/10 px-3 py-1.5 text-xs text-amber-700 dark:text-amber-300">
+                              {msg}
+                            </p>
+                          )
+                        })()}
                         <div className="grid gap-3 sm:grid-cols-2">
                           <div className="sm:col-span-2">
                             <Label className="text-xs">{LBL.name.label}</Label>
@@ -481,11 +564,29 @@ function AiIngressPanelRopa({
                           </div>
                           <div>
                             <Label className="text-xs">{LBL.category.label}</Label>
-                            <Input
-                              value={item.category}
-                              onChange={(e) => update(item.id, { category: e.target.value })}
-                              placeholder={LBL.category.placeholder ?? undefined}
-                            />
+                            {uiProfile.categoryIsSelect ? (
+                              <Select
+                                value={item.category || ""}
+                                onValueChange={(v) => update(item.id, { category: v })}
+                              >
+                                <SelectTrigger>
+                                  <SelectValue placeholder={LBL.category.placeholder ?? undefined} />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  {categories.map((c) => (
+                                    <SelectItem key={c.category_id} value={c.name}>
+                                      {c.name}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                            ) : (
+                              <Input
+                                value={item.category}
+                                onChange={(e) => update(item.id, { category: e.target.value })}
+                                placeholder={LBL.category.placeholder ?? undefined}
+                              />
+                            )}
                           </div>
                           <div>
                             <Label className="text-xs">{LBL.size.label}</Label>
@@ -533,11 +634,11 @@ function AiIngressPanelRopa({
                             <Input
                               value={item.code}
                               onChange={(e) => update(item.id, { code: e.target.value.toUpperCase() })}
-                              placeholder={`Automático: ${codePreview(item)}`}
+                              placeholder={`Automático: ${codePreview(item, rubro)}`}
                               className="font-mono"
                             />
                             <p className="mt-1 text-[11px] text-muted-foreground">
-                              Déjalo vacío para generarlo automáticamente ({codePreview(item)}). Este código será también
+                              Déjalo vacío para generarlo automáticamente ({codePreview(item, rubro)}). Este código será también
                               el código de barras del producto.
                             </p>
                           </div>

@@ -149,7 +149,7 @@ export const TECNOLOGIA_UI: RubroUIBundle = {
       name:        { label: "Nombre del producto",       component: "Input",       placeholder: "Ej: Funda iPhone 17 Pro Max", maxLength: null },
       type_prefix: { label: "Marca (prefijo)",           component: "Input",       placeholder: "IP",                      maxLength: 2 },
       size:        { label: "Referencia",                component: "Input",       placeholder: "17PM",                     maxLength: 20 },
-      category:    { label: "Categoría",                 component: "Select",      placeholder: null,                       maxLength: null },
+      category:    { label: "Categoría",                 component: "Select",      placeholder: "Elige una categoría",     maxLength: null },
       color:       { label: "Color",                     component: "Input",       placeholder: "Negro",                    maxLength: null },
       price:       { label: "Precio de venta (COP)",     component: "MoneyInput",  placeholder: "35.000",                   maxLength: null },
       cost:        { label: "Costo de adquisición (COP)",component: "MoneyInput",  placeholder: "15.000",                   maxLength: null },

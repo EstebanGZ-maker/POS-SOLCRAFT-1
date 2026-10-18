@@ -825,6 +825,66 @@ async function runBehavior() {
     tecInit.type_prefix === "" && tecInit.size === "",
     `type_prefix=${JSON.stringify(tecInit.type_prefix)} size=${JSON.stringify(tecInit.size)}`,
   )
+  // Initial completo: name/category/description/color vacíos, price/cost 0,
+  // quantity 1. Y.2: el panel no muestra precio sugerido pero el estado
+  // interno sí tiene price=0 (vacío visualmente).
+  check(
+    "createInitialItem(tec) — campos vacíos y price/cost = 0, quantity = 1",
+    tecInit.name === "" &&
+      tecInit.category === "" &&
+      tecInit.description === "" &&
+      tecInit.color === "" &&
+      tecInit.price === 0 &&
+      tecInit.cost === 0 &&
+      tecInit.quantity === 1,
+    `init=${JSON.stringify(tecInit)}`,
+  )
+
+  // applyAnalysisToItem(tec): el perfil NO devuelve precio ni costo, así que
+  // esos campos NO están en el patch — el formulario conserva los valores
+  // que ya tiene (defaults = 0, o lo que el operador haya escrito).
+  const tecAnalyzeFull = applyMod.applyAnalysisToItem(
+    { name: "Funda", brand_prefix: "IP", reference: "17PM", category: "FUNDAS", color: "negro", quantity: 2 },
+    "tecnologia",
+  )
+  check(
+    "applyAnalysisToItem(tec) — sin price ni cost en el patch",
+    !("price" in tecAnalyzeFull) && !("cost" in tecAnalyzeFull),
+    `keys=${JSON.stringify(Object.keys(tecAnalyzeFull))}`,
+  )
+
+  // validateItemForRubro(tec) — bloqueo cuando falta marca, referencia o
+  // (en ingressNewProduct) categoría. La categoría la chequea el server
+  // antes de llamar al validate, pero el validate cubre marca y referencia.
+  const V = applyMod.validateItemForRubro
+  check(
+    "validateItemForRubro(tec) — marca vacía rechaza",
+    typeof V({ type_prefix: "", size: "17PM" }, "tecnologia") === "string",
+  )
+  check(
+    "validateItemForRubro(tec) — marca de 1 char rechaza",
+    typeof V({ type_prefix: "I", size: "17PM" }, "tecnologia") === "string",
+  )
+  check(
+    "validateItemForRubro(tec) — marca de 3 chars rechaza",
+    typeof V({ type_prefix: "IPX", size: "17PM" }, "tecnologia") === "string",
+  )
+  check(
+    "validateItemForRubro(tec) — referencia vacía rechaza",
+    typeof V({ type_prefix: "IP", size: "" }, "tecnologia") === "string",
+  )
+  check(
+    "validateItemForRubro(tec) — referencia > 20 chars rechaza",
+    typeof V({ type_prefix: "IP", size: "A".repeat(21) }, "tecnologia") === "string",
+  )
+  check(
+    "validateItemForRubro(tec) — marca+referencia válidos pasan",
+    V({ type_prefix: "IP", size: "17PM" }, "tecnologia") === null,
+  )
+  check(
+    "validateItemForRubro(tec) — referencia justo en 20 chars pasa",
+    V({ type_prefix: "IP", size: "A".repeat(20) }, "tecnologia") === null,
+  )
 
   // ---------- 5. Mutación automática en memoria ----------------------
   // Patch: Math.round → Math.ceil en la rama ropa de apply-analysis.
