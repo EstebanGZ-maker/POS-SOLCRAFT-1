@@ -126,6 +126,7 @@ export function AiIngressPanel({
   uiProfile,
   rubroError,
   categories,
+  categoriesError,
 }: {
   centralWarehouseId: string
   centralSiteId: string
@@ -137,6 +138,11 @@ export function AiIngressPanel({
   // (hoy tecnología) es la whitelist del Select; para texto libre
   // (ropa) solo se usa para autocompletar visualmente (no bloquea).
   categories?: AiCategoryOption[]
+  // Mensaje de error de la lectura de categorías. Si no es null, el panel
+  // de tecnología muestra un banner destructivo en vez de dejar el Select
+  // vacío sin explicación. En ropa el Input sigue libre y el error se
+  // ignora (no bloquea el flujo).
+  categoriesError?: string | null
 }) {
   // Compuerta: sin rubro no se habilita subir ni se muestran defaults.
   // Nunca cae a ropa.
@@ -175,6 +181,7 @@ export function AiIngressPanel({
       rubro={rubro}
       uiProfile={uiProfile}
       categories={categories ?? []}
+      categoriesError={categoriesError ?? null}
     />
   )
 }
@@ -186,6 +193,7 @@ function AiIngressPanelImpl({
   rubro,
   uiProfile,
   categories,
+  categoriesError,
 }: {
   centralWarehouseId: string
   centralSiteId: string
@@ -193,6 +201,7 @@ function AiIngressPanelImpl({
   rubro: RubroId
   uiProfile: RubroUIBundle
   categories: AiCategoryOption[]
+  categoriesError: string | null
 }) {
   const { toast } = useToast()
   const [items, setItems] = useState<IngressItem[]>([])
@@ -415,6 +424,10 @@ function AiIngressPanelImpl({
   // En tecnología la lista del Select es whitelist cerrada: sin
   // categorías cargadas no se puede completar un ingreso válido.
   const categoriesEmpty = uiProfile.categoryIsSelect && categories.length === 0
+  // En rubros con Select, un error en la lectura de categorías es
+  // bloqueante (sin whitelist no se puede guardar). En ropa el error
+  // se ignora porque la categoría es texto libre.
+  const categoriesErrorActive = uiProfile.categoryIsSelect ? categoriesError : null
   // Para habilitar "Ingresar todo" todos los items listos tienen que
   // pasar la validación cliente — el servidor igualmente revalida.
   const anyItemInvalid = items.some(
@@ -422,7 +435,7 @@ function AiIngressPanelImpl({
       (it.status === "ready" || it.status === "error") &&
       validateItemClient(it, uiProfile, categories) !== null,
   )
-  const canSaveAll = readyCount > 0 && !categoriesEmpty && !anyItemInvalid
+  const canSaveAll = readyCount > 0 && !categoriesEmpty && !anyItemInvalid && !categoriesErrorActive
 
   return (
     <div className="space-y-6">
@@ -455,7 +468,21 @@ function AiIngressPanelImpl({
         </CardContent>
       </Card>
 
-      {categoriesEmpty && (
+      {categoriesErrorActive && (
+        <Card className="border-destructive/40 bg-destructive/5">
+          <CardContent className="flex items-start gap-3 py-4">
+            <AlertTriangle className="h-5 w-5 shrink-0 text-destructive" />
+            <div className="text-sm">
+              <p className="font-medium text-foreground">No se pudo cargar la lista de categorías del negocio.</p>
+              <p className="text-muted-foreground">{categoriesErrorActive}</p>
+              <p className="mt-1 text-muted-foreground">
+                El botón "Ingresar todo" permanece deshabilitado hasta que la lectura se recupere. Recarga la página para reintentar.
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+      {categoriesEmpty && !categoriesErrorActive && (
         <Card className="border-amber-500/40 bg-amber-500/5">
           <CardContent className="flex items-start gap-3 py-4">
             <AlertTriangle className="h-5 w-5 shrink-0 text-amber-600 dark:text-amber-400" />

@@ -115,6 +115,24 @@ export async function updateBusinessSettings(updates: Partial<BusinessSettings>)
 // La ruta `/api/analyze-product` consume esto antes de llamar a
 // `generateObject` — así una llamada sin sesión falla sin gastar
 // créditos del AI Gateway aunque todavía no haya guard 401 explícito.
+// Lee las categorías para el Select del panel de ingreso con IA.
+// Scope mínimo: solo `category_id` y `name` ordenadas por `name`. Se usa
+// desde el cliente vía SWR; lanza para que el fetcher transmita el error
+// al componente — nunca devuelve [] silencioso ante un error real
+// (quien lo consume distingue "lista cargada vacía" de "lectura rota").
+export async function getAiPanelCategories(): Promise<Array<{ category_id: string; name: string }>> {
+  const supabase = await createServerSupabaseClient()
+  const { data, error } = await supabase
+    .from("categories")
+    .select("category_id, name")
+    .order("name", { ascending: true })
+  if (error) {
+    console.error("[getAiPanelCategories] supabase error:", error)
+    throw new Error("No se pudo leer la lista de categorías del negocio.")
+  }
+  return (data || []).map((c: any) => ({ category_id: String(c.category_id), name: String(c.name) }))
+}
+
 export async function getBusinessRubro(): Promise<RubroId> {
   const supabase = await createServerSupabaseClient()
   const { data, error } = await supabase.from("business_settings").select("rubro").eq("id", 1).maybeSingle()

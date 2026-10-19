@@ -23,7 +23,7 @@ import { useToast } from "@/hooks/use-toast"
 import { formatCurrency } from "@/lib/utils"
 import { getProductsWithStock, getCategories, createBulkTransfer, receiveMerchandise, updateWholesalePrices } from "@/lib/inventory-actions"
 import { getSitesWithWarehouses, getCentralWarehouse } from "@/lib/site-actions"
-import { getBusinessRubro } from "@/lib/business-settings-actions"
+import { getBusinessRubro, getAiPanelCategories } from "@/lib/business-settings-actions"
 import { tryGetRubroUIBundle } from "@/lib/rubro-ui"
 import { Send, PackagePlus, Search, Filter, Plus, Trash2, Warehouse, Sparkles, BarChart3, RefreshCw, ImageOff } from "lucide-react"
 import { ProductPicker } from "@/components/inventory/product-picker"
@@ -47,12 +47,16 @@ export default function CentralPage() {
   const uiProfile = "bundle" in uiProfileResult ? uiProfileResult.bundle : null
   const uiProfileError = "error" in uiProfileResult && rubro ? uiProfileResult.error : null
   // Categorías para el panel de IA. En tecnología son whitelist cerrada
-  // del Select; en ropa son referencia opcional de autocompletado.
-  const { data: aiCategoriesRaw = [] } = useSWR("categories", getCategories)
-  const aiCategories = (aiCategoriesRaw as any[]).map((c: any) => ({
-    category_id: c.category_id,
-    name: c.name,
-  }))
+  // del Select; en ropa son referencia opcional de autocompletado. Si la
+  // lectura falla, pasamos el mensaje al panel para mostrar el aviso en
+  // vez de dejar el Select vacío sin explicación.
+  const { data: aiCategories = [], error: aiCategoriesErrorRaw } = useSWR(
+    "ai-panel-categories",
+    getAiPanelCategories,
+  )
+  const aiCategoriesError = aiCategoriesErrorRaw
+    ? String(aiCategoriesErrorRaw?.message || aiCategoriesErrorRaw)
+    : null
 
   return (
     <div className="p-6 max-w-7xl mx-auto space-y-6">
@@ -98,6 +102,7 @@ export default function CentralPage() {
               uiProfile={uiProfile}
               rubroError={rubroError || uiProfileError}
               categories={aiCategories}
+              categoriesError={aiCategoriesError}
             />
           </TabsContent>
           <TabsContent value="receive">
