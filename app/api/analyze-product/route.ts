@@ -1,37 +1,11 @@
 import { generateObject } from "ai"
 // import { google } from "@ai-sdk/google"  // ver bloque comentado abajo — vía inactiva
-import { z } from "zod"
 import { NextResponse } from "next/server"
+import { createServerSupabaseClient } from "@/lib/supabase/server"
+import { getRubroProfile } from "@/lib/rubro-profiles"
 
 export const runtime = "nodejs"
 export const maxDuration = 60
-
-const productSchema = z.object({
-  name: z.string().describe("Nombre corto y comercial de la prenda, ej: 'Camisa manga larga a cuadros'"),
-  type_prefix: z
-    .string()
-    .describe(
-      "Prefijo de 2 letras del tipo de prenda EN ESPAÑOL. Ej: CA=Camisa, PA=Pantalón, CH=Chaqueta, VE=Vestido, FA=Falda, BL=Blusa, BU=Buzo, SU=Suéter, SH=Short, ZA=Zapato, AC=Accesorio",
-    ),
-  category: z.string().describe("Categoría general, ej: Camisas, Pantalones, Vestidos, Calzado, Accesorios"),
-  description: z
-    .string()
-    .describe(
-      "Descripción corta y factual en el formato: '[tipo de prenda] [estilo/línea si es visible en la imagen] [color principal] [detalles visibles breves]'. Sin oraciones completas, sin adjetivos de marketing, sin adivinar material ni composición. Máximo ~12 palabras",
-    ),
-  size: z
-    .string()
-    .describe("Talla visible o estimada: XS, S, M, L, XL, XXL, o numérica (28, 30, 38). Si no se ve, estimar 'M'"),
-  color: z.string().describe("Color principal de la prenda"),
-  suggested_price: z
-    .number()
-    .describe("Precio de venta sugerido en pesos colombianos (COP), múltiplo de 1000, ej: 95000"),
-  suggested_cost: z.number().describe("Costo de adquisición estimado en COP, típicamente 40-55% del precio de venta"),
-  quantity: z
-    .number()
-    .int()
-    .describe("Cantidad de unidades visibles de esta MISMA prenda en la imagen/video. Si solo hay una, devolver 1"),
-})
 
 export async function POST(req: Request) {
   try {
@@ -50,6 +24,107 @@ export async function POST(req: Request) {
     const GEMINI_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"])
     const rawType = (mediaType || "").toLowerCase()
     const normalizedMediaType = isVideo || GEMINI_IMAGE_TYPES.has(rawType) ? mediaType || "image/jpeg" : "image/jpeg"
+
+    // Guard explícito de sesión + rol ANTES de leer configuración o llamar
+    // al modelo. Sin esto, un POST sin cookies llegaba a `generateObject`
+    // y gastaba créditos del AI Gateway. Las mismas reglas que
+    // `ingressNewProduct`: admin o encargado. Otros roles → 403.
+    const supabase = await createServerSupabaseClient()
+    const { data: authData, error: authError } = await supabase.auth.getUser()
+    if (authError || !authData?.user) {
+      if (authError) console.error("[analyze-product] auth.getUser error:", authError)
+      return NextResponse.json(
+        { error: "No autenticado.", code: "unauthenticated" },
+        { status: 401 },
+      )
+    }
+    const { data: profileRow, error: profileRowError } = await supabase
+      .from("user_profiles")
+      .select("role, is_active")
+      .eq("id", authData.user.id)
+      .maybeSingle()
+    if (profileRowError) {
+      console.error("[analyze-product] user_profiles read error:", profileRowError)
+      return NextResponse.json(
+        { error: "No se pudo verificar el usuario.", code: "profile_read_error" },
+        { status: 503 },
+      )
+    }
+    if (!profileRow || !profileRow.is_active) {
+      return NextResponse.json(
+        { error: "No autorizado.", code: "forbidden" },
+        { status: 403 },
+      )
+    }
+    if (profileRow.role !== "admin" && profileRow.role !== "encargado") {
+      return NextResponse.json(
+        { error: "No autorizado.", code: "forbidden" },
+        { status: 403 },
+      )
+    }
+
+    // Lectura del rubro con la sesión del usuario ANTES de llamar al modelo.
+    // Si falla (rubro vacío, rubro inválido) la ruta cierra con error
+    // visible y no consume créditos del AI Gateway. Nunca cae a 'ropa'
+    // por default.
+    const { data: cfg, error: cfgError } = await supabase
+      .from("business_settings")
+      .select("rubro")
+      .eq("id", 1)
+      .maybeSingle()
+    if (cfgError) {
+      console.error("[analyze-product] business_settings read error:", cfgError)
+      return NextResponse.json(
+        { error: "No se pudo leer la configuración del negocio.", code: "rubro_read_error" },
+        { status: 503 },
+      )
+    }
+    const rubro = cfg?.rubro
+    if (!rubro || typeof rubro !== "string") {
+      return NextResponse.json(
+        { error: "La configuración del negocio no está disponible.", code: "rubro_missing" },
+        { status: 503 },
+      )
+    }
+    let profile
+    try {
+      profile = getRubroProfile(rubro)
+    } catch (e) {
+      console.error("[analyze-product] rubro inválido:", rubro, e)
+      return NextResponse.json(
+        { error: "La configuración del negocio no es válida.", code: "rubro_invalid" },
+        { status: 500 },
+      )
+    }
+
+    // Para rubros que lo requieren (tecnología) cargamos la lista de
+    // categorías del tenant y la inyectamos al prompt. Comparación
+    // case-insensitive la hace el modelo según la regla del prompt; nosotros
+    // solo le damos la whitelist. Si la lectura falla o la lista queda
+    // vacía en tecnología, cerramos con 503 ANTES de llamar al modelo:
+    // sin whitelist la IA inventa categorías y el servidor termina
+    // rechazando la ingesta igual, con el gasto del AI Gateway de más.
+    let categoriesList: string[] | undefined
+    if (profile.needsCategoriesList) {
+      const { data: cats, error: catsError } = await supabase.from("categories").select("name").order("name")
+      if (catsError) {
+        console.error("[analyze-product] error leyendo categorías:", catsError)
+        return NextResponse.json(
+          { error: "No se pudo leer la lista de categorías del negocio.", code: "categories_read_error" },
+          { status: 503 },
+        )
+      }
+      categoriesList = (cats || []).map((c: any) => String(c.name))
+      if (categoriesList.length === 0) {
+        return NextResponse.json(
+          { error: "La lista de categorías del negocio está vacía. Pedile a un admin que agregue categorías antes de usar la IA.", code: "categories_read_error" },
+          { status: 503 },
+        )
+      }
+    }
+
+    const medium: "imagen" | "video" = isVideo ? "video" : "imagen"
+    const userText = (hint ? `Contexto del usuario: ${hint}. ` : "") + profile.messageTemplate(medium)
 
     // 2026-09-08: **camino activo = AI Gateway de Vercel con créditos pagos**.
     // Se intentó migrar a la API nativa de Google (@ai-sdk/google) para usar
@@ -74,32 +149,17 @@ export async function POST(req: Request) {
     // + reemplazar la línea `model:` de abajo por: model: google("gemini-3.6-flash"),
     // Para volver: descomentar el import + swap del modelo. El resto queda igual.
     const { object } = await generateObject({
-      model: "google/gemini-2.5-flash",
-      maxRetries: 0,
-      schema: productSchema,
-      instructions:
-        "Eres un catalogador de inventario para un almacén de ropa en Colombia. " +
-        "Analizas fotos de prendas y extraes SOLO datos que puedas verificar visualmente de la imagen. " +
-        "Los precios están en pesos colombianos (COP).\n\n" +
-        "REGLA CRÍTICA — no inventes: si un atributo no es determinable con certeza a partir de la imagen " +
-        "(material, composición textil, marca no visible, país de origen, temporada), NO lo incluyas en la descripción " +
-        "y NO lo pongas en `color`/`name`. Es preferible una descripción más corta que una con datos falsos. " +
-        "Nunca infieras 'algodón', 'poliéster', 'lino' o cualquier otro material a menos que veas la etiqueta de composición en la foto.\n\n" +
-        "DESCRIPCIÓN — corta y directa, formato: '[tipo] [línea/estilo si es visible] [color principal] [detalles visibles breves]'. " +
-        "Ejemplos válidos: 'Camisa monastery roja con detalles blancos', 'Pantalón cargo negro con bolsillos laterales', " +
-        "'Buzo oversize gris con capucha'. NO uses oraciones completas, adjetivos vagos ('elegante', 'cómoda', 'moderna', 'versátil') " +
-        "ni descripciones sensoriales ('suave al tacto', 'de excelente calidad'). Máximo ~12 palabras.\n\n" +
-        "Si detectas una etiqueta de precio o talla en la imagen, úsala. La talla es obligatoria para generar el código del producto — " +
-        "si no es visible ni deducible, devuelve 'M' como fallback.",
+      model: profile.model,
+      maxRetries: profile.maxRetries,
+      schema: profile.schema,
+      instructions: profile.buildInstructions({ categories: categoriesList }),
       messages: [
         {
           role: "user",
           content: [
             {
               type: "text",
-              text:
-                (hint ? `Contexto del usuario: ${hint}. ` : "") +
-                `Analiza este ${isVideo ? "video" : "imagen"} de una prenda de ropa y devuelve los datos del producto para ingresarlo al inventario.`,
+              text: userText,
             },
             {
               type: "file",
@@ -113,11 +173,10 @@ export async function POST(req: Request) {
 
     return NextResponse.json({ product: object })
   } catch (error: any) {
-    console.error("[v0] analyze-product error:", error?.message || error)
+    console.error("[analyze-product] error:", error?.message || error)
     return NextResponse.json(
       {
         error: "No se pudo analizar el archivo. Intenta con otra foto o completa los datos manualmente.",
-        debug: error?.message || String(error),
       },
       { status: 500 },
     )

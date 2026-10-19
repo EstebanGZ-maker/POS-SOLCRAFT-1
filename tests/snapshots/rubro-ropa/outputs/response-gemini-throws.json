@@ -1,0 +1,7 @@
+{
+  "status": 500,
+  "contentType": "application/json",
+  "body": {
+    "error": "No se pudo analizar el archivo. Intenta con otra foto o completa los datos manualmente."
+  }
+}

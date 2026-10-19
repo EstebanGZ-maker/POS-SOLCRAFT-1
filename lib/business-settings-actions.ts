@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache"
 import { createServerSupabaseClient } from "@/lib/supabase/server"
 import { requireRole } from "@/lib/role-guard"
+import { RUBRO_IDS, type RubroId } from "@/lib/rubro-ui"
 
 export interface BusinessSettings {
   id: number
@@ -105,6 +106,50 @@ export async function updateBusinessSettings(updates: Partial<BusinessSettings>)
   revalidatePath("/settings/receipt")
   revalidatePath("/pos")
   return { success: true, message: "Configuración guardada." }
+}
+
+// Lee el rubro del tenant usando la sesión del usuario. Lanza si:
+// - no hay fila de business_settings (RLS sin sesión → data null),
+// - el rubro está vacío o no es un valor del whitelist,
+// - Supabase devuelve error.
+// La ruta `/api/analyze-product` consume esto antes de llamar a
+// `generateObject` — así una llamada sin sesión falla sin gastar
+// créditos del AI Gateway aunque todavía no haya guard 401 explícito.
+// Lee las categorías para el Select del panel de ingreso con IA.
+// Scope mínimo: solo `category_id` y `name` ordenadas por `name`. Se usa
+// desde el cliente vía SWR; lanza para que el fetcher transmita el error
+// al componente — nunca devuelve [] silencioso ante un error real
+// (quien lo consume distingue "lista cargada vacía" de "lectura rota").
+export async function getAiPanelCategories(): Promise<Array<{ category_id: string; name: string }>> {
+  const supabase = await createServerSupabaseClient()
+  const { data, error } = await supabase
+    .from("categories")
+    .select("category_id, name")
+    .order("name", { ascending: true })
+  if (error) {
+    console.error("[getAiPanelCategories] supabase error:", error)
+    throw new Error("No se pudo leer la lista de categorías del negocio.")
+  }
+  return (data || []).map((c: any) => ({ category_id: String(c.category_id), name: String(c.name) }))
+}
+
+export async function getBusinessRubro(): Promise<RubroId> {
+  const supabase = await createServerSupabaseClient()
+  const { data, error } = await supabase.from("business_settings").select("rubro").eq("id", 1).maybeSingle()
+  if (error) {
+    console.error("[getBusinessRubro] supabase error:", error)
+    throw new Error("No se pudo leer la configuración del negocio.")
+  }
+  const rubro = data?.rubro
+  if (!rubro || typeof rubro !== "string") {
+    console.error("[getBusinessRubro] rubro vacío o no-string en business_settings:", { rubro })
+    throw new Error("No se pudo leer la configuración del negocio.")
+  }
+  if (!(RUBRO_IDS as readonly string[]).includes(rubro)) {
+    console.error("[getBusinessRubro] rubro inválido:", rubro, "esperado:", RUBRO_IDS)
+    throw new Error("No se pudo leer la configuración del negocio.")
+  }
+  return rubro as RubroId
 }
 
 // Datos completos para imprimir un recibo/factura

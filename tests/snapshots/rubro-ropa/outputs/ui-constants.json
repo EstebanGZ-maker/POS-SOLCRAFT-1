@@ -1,0 +1,4 @@
+{
+  "AI_MIN_INTERVAL_MS": 6500,
+  "PREFIX_HINTS": "CA=Camisa · PA=Pantalón · CH=Chaqueta · VE=Vestido · FA=Falda · BL=Blusa · BU=Buzo · SU=Suéter · SH=Short · ZA=Zapato · AC=Accesorio"
+}

@@ -1,0 +1,21 @@
+{
+  "initial": {
+    "type_prefix": "\"XX\"",
+    "size": "\"M\"",
+    "color": "\"\"",
+    "quantity": "1",
+    "price": "0",
+    "cost": "0"
+  },
+  "analyze": {
+    "name": "product.name ?? \"\"",
+    "type_prefix": "(product.type_prefix ?? \"XX\").toUpperCase().slice(0, 4)",
+    "category": "product.category ?? \"\"",
+    "description": "product.description ?? \"\"",
+    "size": "(product.size ?? \"M\").toUpperCase()",
+    "color": "product.color ?? \"\"",
+    "price": "Math.round(product.suggested_price ?? 0)",
+    "cost": "Math.round(product.suggested_cost ?? 0)",
+    "quantity": "product.quantity ?? 1"
+  }
+}

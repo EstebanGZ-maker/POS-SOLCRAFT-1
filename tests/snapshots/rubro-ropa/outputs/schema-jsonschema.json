@@ -1,0 +1,54 @@
+{
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "Nombre corto y comercial de la prenda, ej: 'Camisa manga larga a cuadros'"
+    },
+    "type_prefix": {
+      "type": "string",
+      "description": "Prefijo de 2 letras del tipo de prenda EN ESPAÑOL. Ej: CA=Camisa, PA=Pantalón, CH=Chaqueta, VE=Vestido, FA=Falda, BL=Blusa, BU=Buzo, SU=Suéter, SH=Short, ZA=Zapato, AC=Accesorio"
+    },
+    "category": {
+      "type": "string",
+      "description": "Categoría general, ej: Camisas, Pantalones, Vestidos, Calzado, Accesorios"
+    },
+    "description": {
+      "type": "string",
+      "description": "Descripción corta y factual en el formato: '[tipo de prenda] [estilo/línea si es visible en la imagen] [color principal] [detalles visibles breves]'. Sin oraciones completas, sin adjetivos de marketing, sin adivinar material ni composición. Máximo ~12 palabras"
+    },
+    "size": {
+      "type": "string",
+      "description": "Talla visible o estimada: XS, S, M, L, XL, XXL, o numérica (28, 30, 38). Si no se ve, estimar 'M'"
+    },
+    "color": {
+      "type": "string",
+      "description": "Color principal de la prenda"
+    },
+    "suggested_price": {
+      "type": "number",
+      "description": "Precio de venta sugerido en pesos colombianos (COP), múltiplo de 1000, ej: 95000"
+    },
+    "suggested_cost": {
+      "type": "number",
+      "description": "Costo de adquisición estimado en COP, típicamente 40-55% del precio de venta"
+    },
+    "quantity": {
+      "type": "integer",
+      "description": "Cantidad de unidades visibles de esta MISMA prenda en la imagen/video. Si solo hay una, devolver 1"
+    }
+  },
+  "required": [
+    "name",
+    "type_prefix",
+    "category",
+    "description",
+    "size",
+    "color",
+    "suggested_price",
+    "suggested_cost",
+    "quantity"
+  ],
+  "additionalProperties": false,
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

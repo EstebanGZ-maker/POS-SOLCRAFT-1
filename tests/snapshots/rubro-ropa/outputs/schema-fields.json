@@ -1,0 +1,56 @@
+[
+  {
+    "key": "name",
+    "type": "ZodString",
+    "isInt": false,
+    "description": "Nombre corto y comercial de la prenda, ej: 'Camisa manga larga a cuadros'"
+  },
+  {
+    "key": "type_prefix",
+    "type": "ZodString",
+    "isInt": false,
+    "description": "Prefijo de 2 letras del tipo de prenda EN ESPAÑOL. Ej: CA=Camisa, PA=Pantalón, CH=Chaqueta, VE=Vestido, FA=Falda, BL=Blusa, BU=Buzo, SU=Suéter, SH=Short, ZA=Zapato, AC=Accesorio"
+  },
+  {
+    "key": "category",
+    "type": "ZodString",
+    "isInt": false,
+    "description": "Categoría general, ej: Camisas, Pantalones, Vestidos, Calzado, Accesorios"
+  },
+  {
+    "key": "description",
+    "type": "ZodString",
+    "isInt": false,
+    "description": "Descripción corta y factual en el formato: '[tipo de prenda] [estilo/línea si es visible en la imagen] [color principal] [detalles visibles breves]'. Sin oraciones completas, sin adjetivos de marketing, sin adivinar material ni composición. Máximo ~12 palabras"
+  },
+  {
+    "key": "size",
+    "type": "ZodString",
+    "isInt": false,
+    "description": "Talla visible o estimada: XS, S, M, L, XL, XXL, o numérica (28, 30, 38). Si no se ve, estimar 'M'"
+  },
+  {
+    "key": "color",
+    "type": "ZodString",
+    "isInt": false,
+    "description": "Color principal de la prenda"
+  },
+  {
+    "key": "suggested_price",
+    "type": "ZodNumber",
+    "isInt": false,
+    "description": "Precio de venta sugerido en pesos colombianos (COP), múltiplo de 1000, ej: 95000"
+  },
+  {
+    "key": "suggested_cost",
+    "type": "ZodNumber",
+    "isInt": false,
+    "description": "Costo de adquisición estimado en COP, típicamente 40-55% del precio de venta"
+  },
+  {
+    "key": "quantity",
+    "type": "ZodNumber",
+    "isInt": true,
+    "description": "Cantidad de unidades visibles de esta MISMA prenda en la imagen/video. Si solo hay una, devolver 1"
+  }
+]
