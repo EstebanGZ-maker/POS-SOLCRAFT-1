@@ -44,7 +44,12 @@ import {
 } from "@/components/ui/alert-dialog"
 import { toast } from "@/components/ui/use-toast"
 import { formatCurrency } from "@/lib/utils"
-import { getProductsWithStock, deleteProductSafe, canDeleteProducts } from "@/lib/inventory-actions"
+import {
+  getProductsWithStock,
+  deleteProductSafe,
+  canDeleteProducts,
+  setProductsActive,
+} from "@/lib/inventory-actions"
 import { getCategories } from "@/lib/actions"
 import { getSitesWithWarehouses } from "@/lib/site-actions"
 import { useSite } from "@/lib/site-context"
@@ -55,7 +60,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { ProductFormDialog } from "@/components/inventory/product-form-dialog"
 import { AdjustmentDialog } from "@/components/inventory/adjustment-dialog"
 import { BulkActionsBar, type BulkAction } from "@/components/inventory/bulk-actions"
-import { Sliders } from "lucide-react"
+import { Sliders, PowerOff, Power } from "lucide-react"
 
 // Roles que ven "solo con historial" por default: los que hacen inventario
 // físico en una sede. Admin/contador ven catálogo completo por default
@@ -94,9 +99,14 @@ export default function ProductsPage() {
   // está definida sin bodega concreta. Aunque el checkbox esté marcado,
   // en modo "all" no se manda al server.
   const effectiveOnlyRelevant = Boolean(wid) && onlyRelevant
+  // Filtro de Estado: Activos (default) · Inactivos · Todos. Permite
+  // reactivar productos desde la misma vista. Admin solamente puede
+  // cambiar el estado (`setProductsActive`); los demás roles ven el
+  // filtro pero no la acción.
+  const [estadoFilter, setEstadoFilter] = useState<"active" | "inactive" | "all">("active")
   const { data: products = [], isLoading, mutate } = useSWR(
-    ["products-stock", wid, effectiveOnlyRelevant],
-    () => getProductsWithStock(wid, { onlyRelevant: effectiveOnlyRelevant }),
+    ["products-stock", wid, effectiveOnlyRelevant, estadoFilter],
+    () => getProductsWithStock(wid, { onlyRelevant: effectiveOnlyRelevant, estado: estadoFilter }),
   )
 
   const warehouses = useMemo(
@@ -213,6 +223,25 @@ export default function ProductsPage() {
     mutate()
   }
 
+  // Toggle individual del flag is_active desde el menú ⋮. Reusa la misma
+  // server action que las bulk actions para que la validación de stock
+  // sea la misma. El toast captura el motivo de rechazo cuando aplica.
+  const toggleActive = async (p: any, active: boolean) => {
+    const res = await setProductsActive([p.product_id], active)
+    if (res.updated.length === 1) {
+      toast({ title: active ? "Producto reactivado" : "Producto desactivado" })
+    } else if (res.rejected.length === 1) {
+      toast({
+        title: "No se pudo desactivar",
+        description: res.rejected[0].reason,
+        variant: "destructive",
+      })
+    } else {
+      toast({ title: "Error", description: "No se pudo cambiar el estado.", variant: "destructive" })
+    }
+    mutate()
+  }
+
   const toggleCat = (id: string) =>
     setActiveCats((prev) => (prev.includes(id) ? prev.filter((c) => c !== id) : [...prev, id]))
 
@@ -256,8 +285,64 @@ export default function ProductsPage() {
     })
   }
 
+  const isAdmin = role === "admin"
   const bulkActions: BulkAction<any>[] = useMemo(
     () => [
+      {
+        id: "deactivate",
+        label: "Desactivar seleccionados",
+        icon: PowerOff,
+        available: () => isAdmin,
+        confirm: {
+          title: (n) => `¿Desactivar ${n} producto${n === 1 ? "" : "s"}?`,
+          description: () =>
+            "Los productos con stock ≠ 0 en alguna bodega quedan rechazados y los verás listados al terminar. Los demás pasan a inactivo (no se muestran en POS ni en el catálogo público). Podés reactivarlos desde el filtro Estado.",
+          actionLabel: "Desactivar",
+        },
+        run: async (items) => {
+          const ids = items.map((p: any) => p.product_id)
+          const res = await setProductsActive(ids, false)
+          if (res.rejected.length > 0) {
+            const sample = res.rejected
+              .slice(0, 5)
+              .map((r: any) => (r.code || r.name || r.product_id.slice(0, 8)))
+              .join(", ")
+            const more = res.rejected.length - 5
+            toast({
+              title: `${res.updated.length} desactivado(s), ${res.rejected.length} rechazado(s) por tener stock`,
+              description:
+                `Rechazados: ${sample}${more > 0 ? ` y ${more} más` : ""}. Movelos a 0 antes de desactivar.`,
+              variant: "destructive",
+            })
+          }
+          return {
+            success: res.success,
+            processed: res.updated.length,
+            failed: res.rejected.length,
+          }
+        },
+      },
+      {
+        id: "reactivate",
+        label: "Reactivar seleccionados",
+        icon: Power,
+        available: () => isAdmin && estadoFilter !== "active",
+        confirm: {
+          title: (n) => `¿Reactivar ${n} producto${n === 1 ? "" : "s"}?`,
+          description: () =>
+            "Los productos vuelven a mostrarse en POS, Bodega Central y catálogo público.",
+          actionLabel: "Reactivar",
+        },
+        run: async (items) => {
+          const ids = items.map((p: any) => p.product_id)
+          const res = await setProductsActive(ids, true)
+          return {
+            success: res.success,
+            processed: res.updated.length,
+            failed: res.rejected.length,
+          }
+        },
+      },
       {
         id: "adjust",
         label: "Ajustar seleccionados",
@@ -306,7 +391,7 @@ export default function ProductsPage() {
         },
       },
     ],
-    [canDelete, warehouseId],
+    [canDelete, warehouseId, isAdmin, estadoFilter],
   )
 
   return (
@@ -333,6 +418,18 @@ export default function ProductsPage() {
                   {w.site_name} - {w.name}
                 </SelectItem>
               ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="w-full sm:w-44">
+          <Select value={estadoFilter} onValueChange={(v) => setEstadoFilter(v as any)}>
+            <SelectTrigger>
+              <SelectValue placeholder="Estado" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="active">Activos</SelectItem>
+              <SelectItem value="inactive">Inactivos</SelectItem>
+              <SelectItem value="all">Todos</SelectItem>
             </SelectContent>
           </Select>
         </div>
@@ -547,6 +644,16 @@ export default function ProductsPage() {
                         <DropdownMenuItem onClick={() => openEdit(p)}>
                           <Pencil className="mr-2 h-4 w-4" /> Editar
                         </DropdownMenuItem>
+                        {isAdmin && p.is_active && (
+                          <DropdownMenuItem onClick={() => toggleActive(p, false)}>
+                            <PowerOff className="mr-2 h-4 w-4" /> Desactivar
+                          </DropdownMenuItem>
+                        )}
+                        {isAdmin && !p.is_active && (
+                          <DropdownMenuItem onClick={() => toggleActive(p, true)}>
+                            <Power className="mr-2 h-4 w-4" /> Reactivar
+                          </DropdownMenuItem>
+                        )}
                         {canDelete && (
                           <DropdownMenuItem className="text-destructive" onClick={() => setToDelete(p)}>
                             <Trash2 className="mr-2 h-4 w-4" /> Eliminar

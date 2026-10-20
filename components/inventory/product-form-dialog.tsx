@@ -10,9 +10,10 @@ import { Button } from "@/components/ui/button"
 import { Switch } from "@/components/ui/switch"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { toast } from "@/components/ui/use-toast"
-import { saveProduct, uploadProductMedia } from "@/lib/inventory-actions"
+import { saveProduct, uploadProductMedia, setProductsActive } from "@/lib/inventory-actions"
 import { compressImage, formatBytes } from "@/lib/image-compress"
 import { ProductGalleryManager } from "@/components/inventory/product-gallery-manager"
+import { useAuth } from "@/lib/auth-context"
 import { ImageIcon, Loader2, Upload, X } from "lucide-react"
 
 type Category = { category_id: string; name: string }
@@ -40,6 +41,8 @@ export function ProductFormDialog({
   onSaved: () => void
 }) {
   const editing = !!product?.product_id
+  const { role } = useAuth()
+  const isAdmin = role === "admin"
   const [saving, setSaving] = useState(false)
   const [imageUrl, setImageUrl] = useState<string>("")
   const [uploadingImage, setUploadingImage] = useState(false)
@@ -54,6 +57,7 @@ export function ProductFormDialog({
     tax_rate: 0,
     is_service: false,
     is_favorite: false,
+    is_active: true,
     barcode: "",
     size: "",
     description: "",
@@ -74,6 +78,7 @@ export function ProductFormDialog({
         tax_rate: Number(product?.tax_rate ?? 0),
         is_service: product?.is_service ?? false,
         is_favorite: product?.is_favorite ?? false,
+        is_active: product?.is_active ?? true,
         barcode: product?.barcode ?? "",
         size: product?.size ?? "",
         description: product?.description ?? "",
@@ -158,14 +163,34 @@ export function ProductFormDialog({
       initial_stock: Number(form.initial_stock) || 0,
       initial_warehouse_id: form.initial_warehouse_id || null,
     })
-    setSaving(false)
-    if (res.success) {
-      toast({ title: editing ? "Producto actualizado" : "Producto creado" })
-      onOpenChange(false)
-      onSaved()
-    } else {
+    if (!res.success) {
+      setSaving(false)
       toast({ title: "Error", description: res.message, variant: "destructive" })
+      return
     }
+
+    // Si el admin cambió el flag Activo en modo edición, aplicamos el
+    // toggle con `setProductsActive` para que la validación de stock
+    // viva en un solo lugar. El save base (`saveProduct`) no toca
+    // `is_active`, así que el toggle es independiente.
+    if (editing && isAdmin && product?.product_id && form.is_active !== (product?.is_active ?? true)) {
+      const toggle = await setProductsActive([product.product_id], form.is_active)
+      if (toggle.rejected.length > 0) {
+        setSaving(false)
+        toast({
+          title: "El producto se guardó, pero no se pudo desactivar",
+          description: toggle.rejected[0].reason,
+          variant: "destructive",
+        })
+        onSaved()
+        return
+      }
+    }
+
+    setSaving(false)
+    toast({ title: editing ? "Producto actualizado" : "Producto creado" })
+    onOpenChange(false)
+    onSaved()
   }
 
   return (
@@ -342,6 +367,21 @@ export function ProductFormDialog({
               <span className="text-sm">Favorito en el POS</span>
               <Switch checked={form.is_favorite} onCheckedChange={(v) => setForm({ ...form, is_favorite: v })} />
             </div>
+            {editing && isAdmin && (
+              <div className="flex items-start justify-between rounded-md border px-3 py-2">
+                <div className="pr-3">
+                  <p className="text-sm">Activo</p>
+                  <p className="text-xs text-muted-foreground">
+                    Al desactivar deja de aparecer en POS, Bodega Central y catálogo público.
+                    Requiere stock = 0 en todas las bodegas.
+                  </p>
+                </div>
+                <Switch
+                  checked={form.is_active}
+                  onCheckedChange={(v) => setForm({ ...form, is_active: v })}
+                />
+              </div>
+            )}
           </section>
 
           {!editing && !form.is_service && (

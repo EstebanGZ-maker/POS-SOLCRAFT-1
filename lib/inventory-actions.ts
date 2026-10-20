@@ -20,7 +20,7 @@ import {
 // porque "relevancia" no está definida sin bodega.
 export async function getProductsWithStock(
   warehouse_id?: string | null,
-  opts?: { onlyRelevant?: boolean },
+  opts?: { onlyRelevant?: boolean; estado?: "active" | "inactive" | "all" },
 ) {
   const supabase = await createServerSupabaseClient()
   try {
@@ -216,6 +216,102 @@ export async function deleteProductSafe(product_id: string) {
 // el email autorizado. La UI oculta el botón cuando devuelve false.
 export async function canDeleteProducts(): Promise<boolean> {
   return isProductDeleteOwner()
+}
+
+/**
+ * Desactiva / reactiva productos (soft toggle de `is_active`).
+ *
+ * - Solo admin (los encargados y vendedores pueden consultar pero no
+ *   cambiar el estado).
+ * - Al DESACTIVAR, rechaza los productos que tengan stock != 0 en
+ *   CUALQUIER bodega (incluida la Tránsito, para no esconder mercancía
+ *   en movimiento). Reactivar no tiene ese chequeo.
+ * - Procesa cada id de forma independiente: los que pasan la
+ *   validación se actualizan, los demás se devuelven en `rejected`
+ *   con el motivo. La UI muestra el resumen.
+ *
+ * No toca `deleteProductSafe` ni el owner-check; esto es un cambio
+ * reversible de bandera, no borrado.
+ */
+export async function setProductsActive(
+  product_ids: string[],
+  active: boolean,
+): Promise<{
+  success: boolean
+  updated: string[]
+  rejected: Array<{ product_id: string; code: string | null; name: string | null; reason: string }>
+}> {
+  await requireRole("admin")
+  const supabase = await createServerSupabaseClient()
+  const ids = Array.from(new Set(product_ids.filter(Boolean)))
+  if (ids.length === 0) return { success: true, updated: [], rejected: [] }
+
+  // Lee info base de los productos (code / name) para los mensajes de
+  // rechazo. `.in` con hasta 200 ids no supera el payload de PostgREST.
+  const { data: prodRows } = await supabase
+    .from("products")
+    .select("product_id, code, name, is_active")
+    .in("product_id", ids)
+  const infoById = new Map<string, { code: string | null; name: string | null; is_active: boolean }>()
+  for (const r of (prodRows || []) as any[]) {
+    infoById.set(String(r.product_id), {
+      code: r.code ?? null,
+      name: r.name ?? null,
+      is_active: !!r.is_active,
+    })
+  }
+
+  const rejected: Array<{ product_id: string; code: string | null; name: string | null; reason: string }> = []
+  let allowed: string[] = ids
+
+  // Validación de stock SOLO al desactivar.
+  if (!active) {
+    const { data: stockRows } = await supabase
+      .from("product_stock")
+      .select("product_id, quantity, warehouses ( name, is_system )")
+      .in("product_id", ids)
+    const nonZeroByProduct = new Map<string, number>()
+    for (const r of (stockRows || []) as any[]) {
+      const q = Number(r.quantity || 0)
+      if (q === 0) continue
+      nonZeroByProduct.set(String(r.product_id), (nonZeroByProduct.get(String(r.product_id)) ?? 0) + q)
+    }
+    allowed = []
+    for (const id of ids) {
+      const total = nonZeroByProduct.get(id) ?? 0
+      if (total !== 0) {
+        const info = infoById.get(id)
+        rejected.push({
+          product_id: id,
+          code: info?.code ?? null,
+          name: info?.name ?? null,
+          reason: `Tiene stock ≠ 0 (${total} unidad${total === 1 ? "" : "es"}) en alguna bodega. Mové el stock a 0 antes de desactivar.`,
+        })
+      } else {
+        allowed.push(id)
+      }
+    }
+  }
+
+  if (allowed.length > 0) {
+    const { error } = await supabase
+      .from("products")
+      .update({ is_active: active })
+      .in("product_id", allowed)
+    if (error) {
+      console.error("setProductsActive:", error)
+      // Si el update global falla devolvemos success=false; no quedan
+      // half-updates porque PostgREST aplica update atómicamente.
+      return { success: false, updated: [], rejected }
+    }
+  }
+
+  revalidatePath("/inventory/products")
+  revalidatePath("/central")
+  revalidatePath("/pos")
+  revalidatePath("/catalog")
+
+  return { success: rejected.length === 0, updated: allowed, rejected }
 }
 
 // ============ CATEGORIES ============
