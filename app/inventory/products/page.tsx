@@ -53,7 +53,9 @@ import { Checkbox } from "@/components/ui/checkbox"
 import { Label } from "@/components/ui/label"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { ProductFormDialog } from "@/components/inventory/product-form-dialog"
+import { AdjustmentDialog } from "@/components/inventory/adjustment-dialog"
 import { BulkActionsBar, type BulkAction } from "@/components/inventory/bulk-actions"
+import { Sliders } from "lucide-react"
 
 // Roles que ven "solo con historial" por default: los que hacen inventario
 // físico en una sede. Admin/contador ven catálogo completo por default
@@ -74,6 +76,15 @@ export default function ProductsPage() {
   const [editing, setEditing] = useState<any | null>(null)
   const [toDelete, setToDelete] = useState<any | null>(null)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  // "Ajustar seleccionados": abre el diálogo de ajuste precargado con la
+  // bodega del filtro actual y los productos marcados. Si warehouseId
+  // es "all" el bulk action no está disponible (sin bodega no se puede
+  // ajustar).
+  const [adjustOpen, setAdjustOpen] = useState(false)
+  const [adjustPreload, setAdjustPreload] = useState<{ warehouseId: string | null; productIds: string[] }>({
+    warehouseId: null,
+    productIds: [],
+  })
 
   const { data: sites = [] } = useSWR("sites-wh", getSitesWithWarehouses)
   const { data: categories = [] } = useSWR("categories", getCategories)
@@ -248,6 +259,23 @@ export default function ProductsPage() {
   const bulkActions: BulkAction<any>[] = useMemo(
     () => [
       {
+        id: "adjust",
+        label: "Ajustar seleccionados",
+        icon: Sliders,
+        // Sin bodega concreta no se puede ajustar: el ajuste siempre
+        // apunta a una bodega. Deshabilita el bulk cuando warehouseId es
+        // "all".
+        available: () => warehouseId !== "all",
+        run: async (items) => {
+          setAdjustPreload({
+            warehouseId: warehouseId === "all" ? null : warehouseId,
+            productIds: items.map((p: any) => p.product_id),
+          })
+          setAdjustOpen(true)
+          return { success: true, processed: items.length, failed: 0 }
+        },
+      },
+      {
         id: "delete",
         label: "Eliminar",
         icon: Trash2,
@@ -278,7 +306,7 @@ export default function ProductsPage() {
         },
       },
     ],
-    [canDelete],
+    [canDelete, warehouseId],
   )
 
   return (
@@ -541,6 +569,19 @@ export default function ProductsPage() {
         categories={categories}
         warehouses={warehouses}
         onSaved={() => mutate()}
+      />
+
+      <AdjustmentDialog
+        open={adjustOpen}
+        onOpenChange={setAdjustOpen}
+        warehouses={warehouses}
+        products={products}
+        initialWarehouseId={adjustPreload.warehouseId}
+        initialProductIds={adjustPreload.productIds}
+        onSaved={() => {
+          setSelectedIds(new Set())
+          mutate()
+        }}
       />
 
       <AlertDialog open={!!toDelete} onOpenChange={(o) => !o && setToDelete(null)}>
