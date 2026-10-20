@@ -5,7 +5,7 @@ import { createServerSupabaseClient } from "@/lib/supabase/server"
 import { getUserProfile, isProductDeleteOwner } from "@/lib/auth-helpers"
 import { requireRole } from "@/lib/role-guard"
 import { phoneCORequired, PHONE_CO_ERROR } from "@/lib/validators/customer"
-import { fetchCustomersRaw, fetchCategoriesRaw } from "@/lib/pos-bootstrap-queries"
+import { fetchCustomersRaw, fetchCategoriesRaw, fetchAllPages } from "@/lib/pos-bootstrap-queries"
 
 // --- Customer Actions ---
 export async function getCustomers() {
@@ -180,15 +180,22 @@ export async function createContact(input: {
 // --- Product Actions ---
 export async function getProducts() {
   const supabase = await createServerSupabaseClient()
-  const { data, error } = await supabase
-    .from("products")
-    .select("*, categories ( category_id, name )")
-    .order("name", { ascending: true })
-  if (error) {
+  // Catálogo completo para la página Productos y servicios → paginar
+  // con orden estable (name + product_id). Antes `select(...).order(name)`
+  // sin `.range()` lo cortaba PostgREST en 1000 filas; Taiwy (1333
+  // productos) perdía 333 silenciosamente.
+  try {
+    return await fetchAllPages<any>(() =>
+      supabase
+        .from("products")
+        .select("*, categories ( category_id, name )")
+        .order("name", { ascending: true })
+        .order("product_id", { ascending: true }),
+    )
+  } catch (error: any) {
     console.error("Error fetching products:", error)
     return []
   }
-  return data || []
 }
 
 export async function createProduct(formData: FormData) {
