@@ -2053,11 +2053,17 @@ export async function previewProductCode(prefix: string, size: string, price: nu
 
 export async function getCentralPurchases(opts?: { from?: string; to?: string }) {
   const supabase = await createServerSupabaseClient()
+  // Filtrar por `motivo='compra'`: tanto `receiveMerchandise` ("[Entrada]
+  // …") como `ingressNewProduct` ("Ingreso inicial …") marcan el ajuste
+  // con ese motivo. El filtro histórico por `notes LIKE '%[Entrada]%'`
+  // dejaba fuera todos los ingresos con IA del rubro ropa y toda la
+  // bodega inicial de tecnología — el reporte salía vacío aunque la DB
+  // tuviera miles de compras activas.
   let query = supabase
     .from("inventory_adjustments")
     .select("adjustment_id, notes, adjustment_date, adjustment_items ( product_id, cost, quantity, products ( name, code, price ) )")
     .eq("status", "active")
-    .ilike("notes", "%[Entrada]%")
+    .eq("motivo", "compra")
     .order("adjustment_date", { ascending: false })
   if (opts?.from) query = query.gte("adjustment_date", opts.from)
   if (opts?.to) query = query.lte("adjustment_date", opts.to)
