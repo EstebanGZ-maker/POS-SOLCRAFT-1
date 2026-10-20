@@ -181,22 +181,26 @@ export async function fetchWarehouseForSiteRaw(
 export async function fetchProductsWithStockRaw(
   supabase: any,
   warehouse_id?: string | null,
-  opts?: { onlyRelevant?: boolean },
+  opts?: { onlyRelevant?: boolean; estado?: "active" | "inactive" | "all" },
 ) {
   const useInner = Boolean(warehouse_id) && Boolean(opts?.onlyRelevant)
   const stockSelect = useInner
     ? "product_stock!inner ( warehouse_id, quantity, min_quantity, max_quantity )"
     : "product_stock ( warehouse_id, quantity, min_quantity, max_quantity )"
+  const estado = opts?.estado ?? "active"
   // Orden estable: desempate por product_id para que la paginación de
   // `fetchAllPages` no pierda ni duplique filas cuando dos productos
-  // comparten nombre.
+  // comparten nombre. `estado` por default sigue filtrando por
+  // is_active=true para no cambiar el comportamiento histórico de los
+  // callers que no lo pasan (POS, importador, etc.).
   const buildQuery = () => {
     let q = supabase
       .from("products")
       .select(`*, categories ( category_id, name ), ${stockSelect}`)
-      .eq("is_active", true)
       .order("name", { ascending: true })
       .order("product_id", { ascending: true })
+    if (estado === "active") q = q.eq("is_active", true)
+    else if (estado === "inactive") q = q.eq("is_active", false)
     if (useInner) {
       q = q.eq("product_stock.warehouse_id", warehouse_id!)
     }
