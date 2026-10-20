@@ -181,6 +181,15 @@ function BulkSendPanel({ centralWarehouseId }: { centralWarehouseId: string }) {
       const max = priceMax ? Number(priceMax) : Number.POSITIVE_INFINITY
       list = list.filter((p: any) => Number(p.price) >= min && Number(p.price) <= max)
     }
+    // Al buscar por texto, re-ordenar por `code` descendente con
+    // comparación natural (numeric:true) — misma regla que la lista
+    // de Productos y servicios, para que RE-U-215-10 quede antes que
+    // RE-U-215-09.
+    if (search.trim()) {
+      return [...list].sort((a: any, b: any) =>
+        (b.code || "").localeCompare(a.code || "", "es", { numeric: true, sensitivity: "base" }),
+      )
+    }
     return list
   }, [availableProducts, search, mode, categoryId, priceMin, priceMax])
 

@@ -8,6 +8,45 @@
 // desincronizarse entre el bootstrap consolidado y las server actions
 // legacy que otros callers usan (ej. refreshData post-venta).
 
+/**
+ * Paginador para queries de PostgREST que devuelven listas completas.
+ * Supabase corta en 1000 filas por default (configurable con headers
+ * `Prefer: count=exact` + `Range-Unit: items`, pero no desde el cliente
+ * JS). Para lecturas donde la UI espera la lista completa (catálogos,
+ * stocks globales, listas de precios, etc.) hay que paginar con
+ * `.range(from, from+pageSize-1)` hasta recibir menos filas que el
+ * pageSize.
+ *
+ * `buildQuery` debe ser una **factory**: cada iteración necesita una
+ * query fresca porque las queries de supabase-js son thenables de uso
+ * único. El orden tiene que ser **estable** (único) entre páginas —
+ * `.order("name")` solo no basta si hay empates; los callers deben
+ * agregar un tiebreaker determinístico (típicamente `.order("<pk>")`)
+ * para evitar duplicados o filas perdidas entre páginas.
+ */
+export async function fetchAllPages<T = any>(
+  buildQuery: () => any,
+  pageSize: number = 1000,
+): Promise<T[]> {
+  const all: T[] = []
+  let from = 0
+  // Techo de seguridad: 500 páginas × 1000 = 500 000 filas. Si una
+  // tabla se acerca a eso, el helper falla visible en vez de colgarse
+  // o devolver silenciosamente los primeros N.
+  const MAX_PAGES = 500
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const { data, error } = await buildQuery().range(from, from + pageSize - 1)
+    if (error) throw new Error(error.message)
+    const rows = (data || []) as T[]
+    all.push(...rows)
+    if (rows.length < pageSize) return all
+    from += pageSize
+  }
+  throw new Error(
+    `fetchAllPages: supera ${MAX_PAGES * pageSize} filas — probable loop por orden no estable.`,
+  )
+}
+
 export interface ShiftBalance {
   shift_id: string
   number: number
@@ -148,17 +187,23 @@ export async function fetchProductsWithStockRaw(
   const stockSelect = useInner
     ? "product_stock!inner ( warehouse_id, quantity, min_quantity, max_quantity )"
     : "product_stock ( warehouse_id, quantity, min_quantity, max_quantity )"
-  let query = supabase
-    .from("products")
-    .select(`*, categories ( category_id, name ), ${stockSelect}`)
-    .eq("is_active", true)
-    .order("name", { ascending: true })
-  if (useInner) {
-    query = query.eq("product_stock.warehouse_id", warehouse_id!)
+  // Orden estable: desempate por product_id para que la paginación de
+  // `fetchAllPages` no pierda ni duplique filas cuando dos productos
+  // comparten nombre.
+  const buildQuery = () => {
+    let q = supabase
+      .from("products")
+      .select(`*, categories ( category_id, name ), ${stockSelect}`)
+      .eq("is_active", true)
+      .order("name", { ascending: true })
+      .order("product_id", { ascending: true })
+    if (useInner) {
+      q = q.eq("product_stock.warehouse_id", warehouse_id!)
+    }
+    return q
   }
-  const { data, error } = await query
-  if (error) throw new Error(error.message)
-  return (data || []).map((p: any) => {
+  const data = await fetchAllPages<any>(buildQuery)
+  return data.map((p: any) => {
     const stockRows = p.product_stock || []
     const totalStock = stockRows.reduce((s: number, r: any) => s + (r.quantity || 0), 0)
     const warehouseStock =
@@ -170,12 +215,14 @@ export async function fetchProductsWithStockRaw(
 }
 
 export async function fetchCustomersRaw(supabase: any) {
-  const { data, error } = await supabase
-    .from("customers")
-    .select("*")
-    .order("name", { ascending: true })
-  if (error) throw new Error(error.message)
-  return data || []
+  // Orden estable: desempate por customer_id para la paginación.
+  return fetchAllPages(() =>
+    supabase
+      .from("customers")
+      .select("*")
+      .order("name", { ascending: true })
+      .order("customer_id", { ascending: true }),
+  )
 }
 
 export async function fetchCategoriesRaw(supabase: any) {
@@ -188,14 +235,22 @@ export async function fetchCategoriesRaw(supabase: any) {
 }
 
 export async function fetchPriceListsForPOSRaw(supabase: any) {
-  const [listsRes, pricesRes] = await Promise.all([
+  // product_prices tiene una fila por (producto × lista) → con 1300+
+  // productos y 2+ listas sobra el tope de 1000. Paginar con orden
+  // estable (product_id + price_list_id).
+  const [listsRes, prices] = await Promise.all([
     supabase.from("price_lists").select("price_list_id, name, is_default").order("name"),
-    supabase.from("product_prices").select("product_id, price_list_id, price"),
+    fetchAllPages<{ product_id: string; price_list_id: string; price: number }>(() =>
+      supabase
+        .from("product_prices")
+        .select("product_id, price_list_id, price")
+        .order("product_id", { ascending: true })
+        .order("price_list_id", { ascending: true }),
+    ),
   ])
   if (listsRes.error) throw new Error(listsRes.error.message)
-  if (pricesRes.error) throw new Error(pricesRes.error.message)
   const priceMap: Record<string, Record<string, number>> = {}
-  for (const pp of pricesRes.data || []) {
+  for (const pp of prices) {
     if (!priceMap[pp.price_list_id]) priceMap[pp.price_list_id] = {}
     priceMap[pp.price_list_id][pp.product_id] = Number(pp.price)
   }

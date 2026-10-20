@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache"
 import { createServerSupabaseClient } from "@/lib/supabase/server"
 import { requirePermission } from "@/lib/role-guard"
+import { fetchAllPages } from "@/lib/pos-bootstrap-queries"
 import type { ProductImportRow } from "@/lib/product-schema"
 
 // =====================================================================
@@ -45,9 +46,26 @@ export async function getImportBootstrap(): Promise<ImportBootstrap> {
 
   // Todas las queries en paralelo. RLS filtra sites por rol/sede, así
   // que la lista de warehouses ya viene acotada al scope del user.
-  const [codesRes, barcodesRes, catsRes, sitesRes] = await Promise.all([
-    supabase.from("products").select("code, is_active").not("code", "is", null),
-    supabase.from("products").select("barcode, is_active").not("barcode", "is", null),
+  // El dedup de códigos y barcodes necesita LA LISTA COMPLETA de
+  // productos — sin paginar, un catálogo >1000 dejaría colisiones sin
+  // detectar y el importador diría "código nuevo" sobre uno que ya
+  // existe en la fila 1200. Orden estable por product_id para la
+  // paginación.
+  const [codes, barcodes, catsRes, sitesRes] = await Promise.all([
+    fetchAllPages<{ code: string | null; is_active: boolean | null }>(() =>
+      supabase
+        .from("products")
+        .select("code, is_active, product_id")
+        .not("code", "is", null)
+        .order("product_id", { ascending: true }),
+    ),
+    fetchAllPages<{ barcode: string | null; is_active: boolean | null }>(() =>
+      supabase
+        .from("products")
+        .select("barcode, is_active, product_id")
+        .not("barcode", "is", null)
+        .order("product_id", { ascending: true }),
+    ),
     supabase.from("categories").select("category_id, name").order("name"),
     supabase
       .from("sites")
@@ -57,18 +75,12 @@ export async function getImportBootstrap(): Promise<ImportBootstrap> {
   ])
 
   const existingCodes: Record<string, boolean> = {}
-  for (const r of (codesRes.data ?? []) as Array<{
-    code: string | null
-    is_active: boolean | null
-  }>) {
+  for (const r of codes) {
     if (r.code) existingCodes[r.code] = r.is_active ?? true
   }
 
   const existingBarcodes: Record<string, boolean> = {}
-  for (const r of (barcodesRes.data ?? []) as Array<{
-    barcode: string | null
-    is_active: boolean | null
-  }>) {
+  for (const r of barcodes) {
     if (r.barcode) existingBarcodes[r.barcode] = r.is_active ?? true
   }
 

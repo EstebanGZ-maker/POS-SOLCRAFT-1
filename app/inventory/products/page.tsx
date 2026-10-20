@@ -164,7 +164,7 @@ export default function ProductsPage() {
   )
 
   const filtered = useMemo(() => {
-    return products.filter((p: any) => {
+    const rows = products.filter((p: any) => {
       const matchSearch =
         !search ||
         p.name.toLowerCase().includes(search.toLowerCase()) ||
@@ -172,6 +172,16 @@ export default function ProductsPage() {
       const matchCat = activeCats.length === 0 || (p.category_id && activeCats.includes(p.category_id))
       return matchSearch && matchCat
     })
+    // Al buscar por texto, re-ordenar por `code` descendente con
+    // comparación natural (numeric:true) para que RE-U-215-10 quede
+    // antes que RE-U-215-09, y 215 antes que 98. Sin texto, se
+    // conserva el orden que viene del servidor (por `name`).
+    if (search) {
+      return [...rows].sort((a: any, b: any) =>
+        (b.code || "").localeCompare(a.code || "", "es", { numeric: true, sensitivity: "base" }),
+      )
+    }
+    return rows
   }, [products, search, activeCats])
 
   const openNew = () => {

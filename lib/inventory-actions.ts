@@ -8,6 +8,7 @@ import {
   fetchProductsWithStockRaw,
   fetchPriceListsForPOSRaw,
   fetchActivePromotionsForPOSRaw,
+  fetchAllPages,
 } from "@/lib/pos-bootstrap-queries"
 
 // ============ PRODUCTS (extended) ============
@@ -263,12 +264,21 @@ export async function getPriceListsForPOS() {
 
 export async function getPriceListWithProducts(price_list_id: string) {
   const supabase = await createServerSupabaseClient()
-  const { data, error } = await supabase
-    .from("products")
-    .select("product_id, name, code, price, product_prices ( price, price_list_id )")
-    .order("name")
-  if (error) return []
-  return (data || []).map((p: any) => ({
+  // Editor de lista de precios → necesita el catálogo completo. Paginar
+  // con orden estable.
+  let data: any[]
+  try {
+    data = await fetchAllPages<any>(() =>
+      supabase
+        .from("products")
+        .select("product_id, name, code, price, product_prices ( price, price_list_id )")
+        .order("name", { ascending: true })
+        .order("product_id", { ascending: true }),
+    )
+  } catch {
+    return []
+  }
+  return data.map((p: any) => ({
     ...p,
     listPrice: p.product_prices?.find((pp: any) => pp.price_list_id === price_list_id)?.price ?? null,
   }))
@@ -1485,7 +1495,16 @@ export async function receiveMerchandise(input: {
 export async function getSiteInventorySummary() {
   const supabase = await createServerSupabaseClient()
   const { data: sites } = await supabase.from("sites").select("site_id, name, code, is_central, warehouses ( warehouse_id )")
-  const { data: stock } = await supabase.from("product_stock").select("warehouse_id, quantity")
+  // product_stock tiene una fila por (producto × bodega) → con 1300+
+  // productos y 3+ bodegas supera el tope de 1000. Paginar con orden
+  // estable (product_id + warehouse_id).
+  const stock = await fetchAllPages<any>(() =>
+    supabase
+      .from("product_stock")
+      .select("warehouse_id, quantity, product_id")
+      .order("product_id", { ascending: true })
+      .order("warehouse_id", { ascending: true }),
+  )
   const rows = (sites || []).map((s: any) => {
     const whIds = (s.warehouses || []).map((w: any) => w.warehouse_id)
     const siteStock = (stock || []).filter((r: any) => whIds.includes(r.warehouse_id))
@@ -1499,15 +1518,22 @@ export async function getSiteInventorySummary() {
 // ============ INVENTORY VALUE ============
 export async function getInventoryValue(warehouse_id?: string | null) {
   const supabase = await createServerSupabaseClient()
-  const { data, error } = await supabase
-    .from("products")
-    .select("product_id, name, code, cost, price, is_active, unit, product_stock ( warehouse_id, quantity )")
-    .order("name")
-  if (error) {
+  // Catálogo completo + stock → paginar con orden estable (name +
+  // product_id como tiebreaker).
+  let data: any[]
+  try {
+    data = await fetchAllPages<any>(() =>
+      supabase
+        .from("products")
+        .select("product_id, name, code, cost, price, is_active, unit, product_stock ( warehouse_id, quantity )")
+        .order("name", { ascending: true })
+        .order("product_id", { ascending: true }),
+    )
+  } catch (error: any) {
     console.error("Error fetching inventory value:", error)
     return { rows: [], total: 0 }
   }
-  const rows = (data || []).map((p: any) => {
+  const rows = data.map((p: any) => {
     const stockRows = p.product_stock || []
     const qty = warehouse_id
       ? (stockRows.find((r: any) => r.warehouse_id === warehouse_id)?.quantity ?? 0)
@@ -2095,12 +2121,22 @@ export async function getCentralDistributions(opts?: { from?: string; to?: strin
 
 export async function getCentralMarginReport() {
   const supabase = await createServerSupabaseClient()
-  const { data: products } = await supabase
-    .from("products")
-    .select("product_id, name, code, cost, price")
-    .eq("is_active", true)
-    .order("name")
-  return (products || []).map((p: any) => {
+  // Reporte sobre el catálogo activo completo → paginar.
+  let products: any[] = []
+  try {
+    products = await fetchAllPages<any>(() =>
+      supabase
+        .from("products")
+        .select("product_id, name, code, cost, price")
+        .eq("is_active", true)
+        .order("name", { ascending: true })
+        .order("product_id", { ascending: true }),
+    )
+  } catch (e) {
+    console.error("getCentralMarginReport:", e)
+    return []
+  }
+  return products.map((p: any) => {
     const cost = Number(p.cost || 0)
     const price = Number(p.price || 0)
     return {
