@@ -377,18 +377,221 @@ export async function deletePromotion(promotion_id: string) {
 }
 
 // ============ INVENTORY ADJUSTMENTS ============
-export async function getAdjustments() {
-  const supabase = await createServerSupabaseClient()
+
+export type AdjustmentsEstado = "active" | "voided" | "all"
+export type AdjustmentsTipo = "ia" | "entrada" | "manual"
+export type AdjustmentsMotivo = "compra" | "sobrante" | "correccion" | "merma"
+
+export interface AdjustmentsFilter {
+  page?: number
+  pageSize?: number
+  search?: string           // busca en notes y en adjustment_items.products(name, code)
+  motivo?: AdjustmentsMotivo | null
+  tipo?: AdjustmentsTipo | null
+  estado?: AdjustmentsEstado
+  warehouseId?: string | null
+  siteId?: string | null
+  dateFrom?: string | null  // ISO
+  dateTo?: string | null    // ISO
+  totalMin?: number | null
+  totalMax?: number | null
+  numero?: number | null
+}
+
+// Prefijos de notes que distinguen cada tipo (fuente de verdad: writers
+// en `receiveMerchandise` y `ingressNewProduct`). Si cambian los
+// writers, actualizar acá.
+const TIPO_IA_PREFIX = "Ingreso inicial"
+const TIPO_ENTRADA_PREFIXES = ["[Entrada] ", "[Entrada de mercancía]"]
+
+function applyTipoFilter(query: any, tipo: AdjustmentsTipo) {
+  if (tipo === "ia") {
+    return query.ilike("notes", `${TIPO_IA_PREFIX}%`)
+  }
+  if (tipo === "entrada") {
+    return query.or(
+      `notes.ilike.${TIPO_ENTRADA_PREFIXES[0]}%,notes.eq.${TIPO_ENTRADA_PREFIXES[1]}`,
+    )
+  }
+  // manual: no "Ingreso inicial" y no entradas.
+  return query
+    .not("notes", "ilike", `${TIPO_IA_PREFIX}%`)
+    .not("notes", "ilike", `${TIPO_ENTRADA_PREFIXES[0]}%`)
+    .not("notes", "eq", TIPO_ENTRADA_PREFIXES[1])
+}
+
+async function searchItemAdjustmentIds(
+  supabase: any,
+  search: string,
+): Promise<string[]> {
+  const term = `%${search.trim()}%`
   const { data, error } = await supabase
-    .from("inventory_adjustments")
-    .select("*, warehouses ( name, sites ( name ) ), adjustment_items ( adjustment_item_id )")
-    .eq("status", "active")
-    .order("adjustment_date", { ascending: false })
+    .from("adjustment_items")
+    .select("adjustment_id, products!inner(name, code)")
+    .or(`name.ilike.${term},code.ilike.${term}`, { referencedTable: "products" })
   if (error) {
-    console.error("Error fetching adjustments:", error)
+    console.error("searchItemAdjustmentIds:", error)
     return []
   }
-  return data || []
+  const set = new Set<string>()
+  for (const r of (data || []) as any[]) {
+    if (r.adjustment_id) set.add(String(r.adjustment_id))
+  }
+  return [...set]
+}
+
+function applyFiltersCommon(query: any, f: AdjustmentsFilter) {
+  // Estado por defecto: active. 'all' no filtra. 'voided' explícito.
+  const estado = f.estado ?? "active"
+  if (estado !== "all") query = query.eq("status", estado)
+  if (f.motivo) {
+    if (f.motivo === "merma") query = query.is("motivo", null)
+    else query = query.eq("motivo", f.motivo)
+  }
+  if (f.warehouseId) query = query.eq("warehouse_id", f.warehouseId)
+  if (f.siteId) query = query.eq("site_id", f.siteId)
+  if (f.dateFrom) query = query.gte("adjustment_date", f.dateFrom)
+  if (f.dateTo) query = query.lte("adjustment_date", f.dateTo)
+  if (typeof f.totalMin === "number") query = query.gte("total_adjusted", f.totalMin)
+  if (typeof f.totalMax === "number") query = query.lte("total_adjusted", f.totalMax)
+  if (typeof f.numero === "number") query = query.eq("numero", f.numero)
+  if (f.tipo) query = applyTipoFilter(query, f.tipo)
+  return query
+}
+
+async function applySearchFilter(
+  supabase: any,
+  query: any,
+  search: string | undefined | null,
+) {
+  const term = (search || "").trim()
+  if (!term) return query
+  const likeTerm = `%${term}%`
+  const idsFromItems = await searchItemAdjustmentIds(supabase, term)
+  if (idsFromItems.length > 0) {
+    // `.or` admite listas con `.in.(uuid1,uuid2)`. Supabase-js escapa
+    // los paréntesis internamente.
+    return query.or(
+      `notes.ilike.${likeTerm},adjustment_id.in.(${idsFromItems.join(",")})`,
+    )
+  }
+  return query.ilike("notes", likeTerm)
+}
+
+/**
+ * Lista paginada de ajustes con filtros server-side. Devuelve rows + total
+ * + page + pageSize para que la UI arme el paginador y los contadores.
+ * Orden estable: adjustment_date DESC + adjustment_id DESC.
+ */
+export async function getAdjustmentsPaginated(filter: AdjustmentsFilter) {
+  const supabase = await createServerSupabaseClient()
+  const page = Math.max(1, filter.page ?? 1)
+  const pageSize = Math.min(200, Math.max(1, filter.pageSize ?? 50))
+  const from = (page - 1) * pageSize
+  const to = from + pageSize - 1
+
+  let query = supabase
+    .from("inventory_adjustments")
+    .select(
+      "*, warehouses ( name, sites ( name ) ), adjustment_items ( adjustment_item_id )",
+      { count: "exact" },
+    )
+    .order("adjustment_date", { ascending: false })
+    .order("adjustment_id", { ascending: false })
+    .range(from, to)
+
+  query = applyFiltersCommon(query, filter)
+  query = await applySearchFilter(supabase, query, filter.search)
+
+  const { data, count, error } = await query
+  if (error) {
+    console.error("getAdjustmentsPaginated:", error)
+    return { rows: [], total: 0, page, pageSize }
+  }
+  return { rows: data || [], total: count ?? 0, page, pageSize }
+}
+
+/**
+ * Ids que matchean el filtro actual, hasta `max` (default 200). Se usa
+ * para "Seleccionar todos los resultados del filtro" en la UI; la cota
+ * es dura (si el filtro tiene más resultados, la UI avisa y limita).
+ */
+export async function getAdjustmentIdsForFilter(
+  filter: AdjustmentsFilter,
+  max: number = 200,
+): Promise<{ ids: string[]; capped: boolean; total: number }> {
+  const supabase = await createServerSupabaseClient()
+  const cap = Math.max(1, Math.min(200, max))
+  let query = supabase
+    .from("inventory_adjustments")
+    .select("adjustment_id", { count: "exact" })
+    .order("adjustment_date", { ascending: false })
+    .order("adjustment_id", { ascending: false })
+    .range(0, cap - 1)
+  query = applyFiltersCommon(query, filter)
+  query = await applySearchFilter(supabase, query, filter.search)
+  const { data, count, error } = await query
+  if (error) {
+    console.error("getAdjustmentIdsForFilter:", error)
+    return { ids: [], capped: false, total: 0 }
+  }
+  const ids = (data || []).map((r: any) => String(r.adjustment_id))
+  const total = count ?? ids.length
+  return { ids, capped: total > ids.length, total }
+}
+
+// Mantiene la firma legacy que esperan algunos callers (sin filtros, lista
+// activa de los últimos ajustes). Internamente usa el paginado con
+// pageSize=50 para no caer en el tope de 1000 de PostgREST.
+export async function getAdjustments() {
+  const { rows } = await getAdjustmentsPaginated({ estado: "active", pageSize: 50, page: 1 })
+  return rows
+}
+
+/**
+ * Anulación masiva: ejecuta `void_adjustment` uno por uno (cada uno
+ * en su propia transacción del lado del RPC). Si uno falla (stock
+ * insuficiente, ya anulado, permiso), sigue con los demás. Devuelve
+ * la lista de éxitos y errores con el número de ajuste para que la UI
+ * los muestre.
+ */
+export async function voidAdjustmentsBulk(adjustment_ids: string[]) {
+  await requireRole("admin", "encargado")
+  const supabase = await createServerSupabaseClient()
+  // Leemos `numero` para los mensajes de error ANTES del loop: después
+  // del void sigue estando (status pasa a voided, numero no cambia), pero
+  // leer en bulk es más barato que un select por fallo.
+  const { data: rows } = await supabase
+    .from("inventory_adjustments")
+    .select("adjustment_id, numero")
+    .in("adjustment_id", adjustment_ids)
+  const numeroById = new Map<string, number | null>()
+  for (const r of (rows || []) as any[]) {
+    numeroById.set(String(r.adjustment_id), (r.numero ?? null) as number | null)
+  }
+  const results: { adjustment_id: string; numero: number | null; ok: boolean; message?: string }[] = []
+  for (const id of adjustment_ids) {
+    const { error } = await supabase.rpc("void_adjustment", { p_adjustment_id: id })
+    if (error) {
+      let message = error.message
+      if ((error as any).code === "42883") {
+        message =
+          "La función de anular ajustes no está disponible en este ambiente. Contacta al administrador."
+      }
+      results.push({ adjustment_id: id, numero: numeroById.get(id) ?? null, ok: false, message })
+    } else {
+      results.push({ adjustment_id: id, numero: numeroById.get(id) ?? null, ok: true })
+    }
+  }
+  revalidatePath("/inventory/adjustments")
+  const okCount = results.filter((r) => r.ok).length
+  const failCount = results.length - okCount
+  return {
+    success: failCount === 0,
+    okCount,
+    failCount,
+    results,
+  }
 }
 
 export async function getAdjustmentById(adjustment_id: string) {
@@ -2053,17 +2256,37 @@ export async function previewProductCode(prefix: string, size: string, price: nu
 
 export async function getCentralPurchases(opts?: { from?: string; to?: string }) {
   const supabase = await createServerSupabaseClient()
-  let query = supabase
-    .from("inventory_adjustments")
-    .select("adjustment_id, notes, adjustment_date, adjustment_items ( product_id, cost, quantity, products ( name, code, price ) )")
-    .eq("status", "active")
-    .ilike("notes", "%[Entrada]%")
-    .order("adjustment_date", { ascending: false })
-  if (opts?.from) query = query.gte("adjustment_date", opts.from)
-  if (opts?.to) query = query.lte("adjustment_date", opts.to)
-  const { data, error } = await query
-  if (error) { console.error("getCentralPurchases:", error); return [] }
-  return (data || []).map((a: any) => {
+  // Filtrar por `motivo='compra'`: tanto `receiveMerchandise` ("[Entrada]
+  // …") como `ingressNewProduct` ("Ingreso inicial …") marcan el ajuste
+  // con ese motivo. El filtro histórico por `notes LIKE '%[Entrada]%'`
+  // dejaba fuera todos los ingresos con IA del rubro ropa y toda la
+  // bodega inicial de tecnología — el reporte salía vacío aunque la DB
+  // tuviera miles de compras activas.
+  // Totales exactos: paginar con fetchAllPages. El reporte agrega sobre
+  // TODOS los ajustes compra, no solo los primeros 1000; con 1.3k+
+  // compras en Taiwy el total era parcial sin paginación.
+  const buildQuery = () => {
+    let q = supabase
+      .from("inventory_adjustments")
+      .select(
+        "adjustment_id, notes, adjustment_date, adjustment_items ( product_id, cost, quantity, products ( name, code, price ) )",
+      )
+      .eq("status", "active")
+      .eq("motivo", "compra")
+      .order("adjustment_date", { ascending: false })
+      .order("adjustment_id", { ascending: false })
+    if (opts?.from) q = q.gte("adjustment_date", opts.from)
+    if (opts?.to) q = q.lte("adjustment_date", opts.to)
+    return q
+  }
+  let data: any[] = []
+  try {
+    data = await fetchAllPages<any>(buildQuery)
+  } catch (error: any) {
+    console.error("getCentralPurchases:", error)
+    return []
+  }
+  return data.map((a: any) => {
     const items = (a.adjustment_items || []).map((it: any) => ({
       product_id: it.product_id,
       name: it.products?.name ?? "",
@@ -2087,15 +2310,28 @@ export async function getCentralPurchases(opts?: { from?: string; to?: string })
 
 export async function getCentralDistributions(opts?: { from?: string; to?: string }) {
   const supabase = await createServerSupabaseClient()
-  let query = supabase
-    .from("transfers")
-    .select("transfer_id, transfer_date, notes, to_wh:warehouses!transfers_to_warehouse_id_fkey ( name, sites ( name, site_id ) ), transfer_items ( product_id, quantity, products:products ( name, code, cost, price ) )")
-    .order("transfer_date", { ascending: false })
-  if (opts?.from) query = query.gte("transfer_date", opts.from)
-  if (opts?.to) query = query.lte("transfer_date", opts.to)
-  const { data, error } = await query
-  if (error) { console.error("getCentralDistributions:", error); return [] }
-  return (data || []).map((t: any) => {
+  // Totales exactos: igual que getCentralPurchases, paginar para no
+  // perder transfers que exceden las primeras 1000 filas.
+  const buildQuery = () => {
+    let q = supabase
+      .from("transfers")
+      .select(
+        "transfer_id, transfer_date, notes, to_wh:warehouses!transfers_to_warehouse_id_fkey ( name, sites ( name, site_id ) ), transfer_items ( product_id, quantity, products:products ( name, code, cost, price ) )",
+      )
+      .order("transfer_date", { ascending: false })
+      .order("transfer_id", { ascending: false })
+    if (opts?.from) q = q.gte("transfer_date", opts.from)
+    if (opts?.to) q = q.lte("transfer_date", opts.to)
+    return q
+  }
+  let data: any[] = []
+  try {
+    data = await fetchAllPages<any>(buildQuery)
+  } catch (error: any) {
+    console.error("getCentralDistributions:", error)
+    return []
+  }
+  return data.map((t: any) => {
     const items = (t.transfer_items || []).map((it: any) => ({
       product_id: it.product_id,
       name: it.products?.name ?? "",
