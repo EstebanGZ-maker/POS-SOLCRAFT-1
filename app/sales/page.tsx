@@ -1,10 +1,13 @@
 "use client"
 
-import { useState } from "react"
+import { useMemo, useState } from "react"
 import useSWR from "swr"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import { MoneyInput } from "@/components/ui/money-input"
 import { PageHeader } from "@/components/page-header"
 import {
   Table,
@@ -23,15 +26,83 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog"
-import { getSales, getSaleDetails, voidSale } from "@/lib/actions"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+import { getSalesPaginated, getSaleDetails, voidSale } from "@/lib/actions"
+import { getSites } from "@/lib/site-actions"
 import { useAuth } from "@/lib/auth-context"
 import { useToast } from "@/hooks/use-toast"
-import { Eye, Ban, Receipt, AlertTriangle } from "lucide-react"
+import { Eye, Ban, Receipt, AlertTriangle, ChevronLeft, ChevronRight, X } from "lucide-react"
+
+const PAGE_SIZE = 50
 
 export default function SalesPage() {
-  const { data: sales = [], mutate } = useSWR("sales", getSales)
   const { role } = useAuth()
   const canVoid = role === "admin" || role === "encargado"
+
+  const [page, setPage] = useState(1)
+  const [numero, setNumero] = useState("")
+  const [customerId, setCustomerId] = useState("")
+  const [siteId, setSiteId] = useState<string>("all")
+  const [seller, setSeller] = useState("")
+  const [dateFrom, setDateFrom] = useState("")
+  const [dateTo, setDateTo] = useState("")
+  const [estado, setEstado] = useState<"active" | "voided" | "all">("active")
+  const [onAccount, setOnAccount] = useState<"yes" | "no" | "all">("all")
+  const [totalMin, setTotalMin] = useState(0)
+  const [totalMax, setTotalMax] = useState(0)
+
+  const filter = useMemo(
+    () => ({
+      page,
+      pageSize: PAGE_SIZE,
+      numero: numero.trim() ? Number(numero) : null,
+      customerId: customerId.trim() || null,
+      siteId: siteId === "all" ? null : siteId,
+      seller: seller.trim() || null,
+      dateFrom: dateFrom || null,
+      dateTo: dateTo ? `${dateTo}T23:59:59.999Z` : null,
+      estado,
+      onAccount,
+      totalMin: totalMin > 0 ? totalMin : null,
+      totalMax: totalMax > 0 ? totalMax : null,
+    }),
+    [page, numero, customerId, siteId, seller, dateFrom, dateTo, estado, onAccount, totalMin, totalMax],
+  )
+
+  const { data, isLoading, mutate } = useSWR(
+    ["sales-paginated", JSON.stringify(filter)],
+    () => getSalesPaginated(filter),
+  )
+  const sales = data?.rows ?? []
+  const total = data?.total ?? 0
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
+
+  const { data: sites = [] } = useSWR("sales-sites", getSites)
+
+  const resetPage = (fn: () => void) => () => {
+    fn()
+    setPage(1)
+  }
+
+  const clear = () => {
+    setNumero("")
+    setCustomerId("")
+    setSiteId("all")
+    setSeller("")
+    setDateFrom("")
+    setDateTo("")
+    setEstado("active")
+    setOnAccount("all")
+    setTotalMin(0)
+    setTotalMax(0)
+    setPage(1)
+  }
 
   return (
     <div className="p-6 max-w-6xl mx-auto space-y-6">
@@ -40,6 +111,89 @@ export default function SalesPage() {
         description="Consulta todas las transacciones de venta registradas."
         icon={Receipt}
       />
+
+      <Card className="p-3">
+        <div className="flex flex-wrap items-end gap-2">
+          <div className="min-w-[6rem]">
+            <Label className="text-xs">N° venta</Label>
+            <Input
+              type="number"
+              value={numero}
+              onChange={(e) => { setNumero(e.target.value); setPage(1) }}
+              placeholder="Ej: 123"
+            />
+          </div>
+          <div className="min-w-[9rem]">
+            <Label className="text-xs">Cliente (id)</Label>
+            <Input
+              value={customerId}
+              onChange={(e) => { setCustomerId(e.target.value); setPage(1) }}
+              placeholder="UUID exacto"
+            />
+          </div>
+          <div className="min-w-[12rem]">
+            <Label className="text-xs">Sede</Label>
+            <Select value={siteId} onValueChange={(v) => { setSiteId(v); setPage(1) }}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">Todas</SelectItem>
+                {(sites as any[]).map((s) => (
+                  <SelectItem key={s.site_id} value={s.site_id}>{s.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="min-w-[10rem]">
+            <Label className="text-xs">Vendedor</Label>
+            <Input
+              value={seller}
+              onChange={(e) => { setSeller(e.target.value); setPage(1) }}
+              placeholder="Nombre o email"
+            />
+          </div>
+          <div className="min-w-[8rem]">
+            <Label className="text-xs">Desde</Label>
+            <Input type="date" value={dateFrom} onChange={(e) => { setDateFrom(e.target.value); setPage(1) }} />
+          </div>
+          <div className="min-w-[8rem]">
+            <Label className="text-xs">Hasta</Label>
+            <Input type="date" value={dateTo} onChange={(e) => { setDateTo(e.target.value); setPage(1) }} />
+          </div>
+          <div className="min-w-[8rem]">
+            <Label className="text-xs">Estado</Label>
+            <Select value={estado} onValueChange={(v) => { setEstado(v as any); setPage(1) }}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="active">Activa</SelectItem>
+                <SelectItem value="voided">Anulada</SelectItem>
+                <SelectItem value="all">Todas</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="min-w-[8rem]">
+            <Label className="text-xs">Fiado</Label>
+            <Select value={onAccount} onValueChange={(v) => { setOnAccount(v as any); setPage(1) }}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">Todas</SelectItem>
+                <SelectItem value="yes">Fiado</SelectItem>
+                <SelectItem value="no">Contado</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="min-w-[9rem]">
+            <Label className="text-xs">Total mínimo</Label>
+            <MoneyInput value={totalMin} onChange={(n) => { setTotalMin(n ?? 0); setPage(1) }} />
+          </div>
+          <div className="min-w-[9rem]">
+            <Label className="text-xs">Total máximo</Label>
+            <MoneyInput value={totalMax} onChange={(n) => { setTotalMax(n ?? 0); setPage(1) }} />
+          </div>
+          <Button variant="outline" size="sm" onClick={clear} className="gap-1">
+            <X className="h-3.5 w-3.5" /> Limpiar
+          </Button>
+        </div>
+      </Card>
 
       <Card>
         <CardContent className="p-0">
@@ -55,10 +209,14 @@ export default function SalesPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {sales.length === 0 ? (
+              {isLoading ? (
+                <TableRow>
+                  <TableCell colSpan={6} className="py-8 text-center text-muted-foreground">Cargando...</TableCell>
+                </TableRow>
+              ) : sales.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={6} className="py-8 text-center text-muted-foreground">
-                    No se han registrado ventas.
+                    {total === 0 ? "No hay ventas con estos filtros." : "Sin resultados en esta página."}
                   </TableCell>
                 </TableRow>
               ) : (
@@ -73,6 +231,26 @@ export default function SalesPage() {
               )}
             </TableBody>
           </Table>
+          <div className="flex flex-wrap items-center justify-between gap-2 border-t p-3 text-sm">
+            <div className="text-muted-foreground">
+              {total > 0 ? (
+                <>
+                  Página <strong>{page}</strong> de <strong>{totalPages}</strong> ·{" "}
+                  <strong>{total}</strong> resultado{total === 1 ? "" : "s"}
+                </>
+              ) : (
+                <>Sin resultados</>
+              )}
+            </div>
+            <div className="flex gap-2">
+              <Button variant="outline" size="sm" onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page <= 1}>
+                <ChevronLeft className="h-4 w-4" /> Anterior
+              </Button>
+              <Button variant="outline" size="sm" onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page >= totalPages}>
+                Siguiente <ChevronRight className="h-4 w-4" />
+              </Button>
+            </div>
+          </div>
         </CardContent>
       </Card>
     </div>
@@ -152,7 +330,6 @@ function SaleRow({
       </TableCell>
       <TableCell className="text-right">
         <div className="flex items-center justify-end gap-1">
-          {/* View detail */}
           <Dialog open={detailOpen} onOpenChange={setDetailOpen}>
             <DialogTrigger asChild>
               <Button variant="ghost" size="icon" onClick={handleViewDetail}>
@@ -210,7 +387,6 @@ function SaleRow({
             </DialogContent>
           </Dialog>
 
-          {/* Void button */}
           {canVoid && !isVoided && (
             <Dialog open={voidOpen} onOpenChange={setVoidOpen}>
               <DialogTrigger asChild>
@@ -235,14 +411,8 @@ function SaleRow({
                   <p><strong>Productos:</strong> {sale.sale_items?.length ?? 0} referencias</p>
                 </div>
                 <DialogFooter>
-                  <Button variant="outline" onClick={() => setVoidOpen(false)}>
-                    Cancelar
-                  </Button>
-                  <Button
-                    variant="destructive"
-                    onClick={handleVoid}
-                    disabled={voiding}
-                  >
+                  <Button variant="outline" onClick={() => setVoidOpen(false)}>Cancelar</Button>
+                  <Button variant="destructive" onClick={handleVoid} disabled={voiding}>
                     {voiding ? "Anulando..." : "Confirmar anulación"}
                   </Button>
                 </DialogFooter>

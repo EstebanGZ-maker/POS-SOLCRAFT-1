@@ -28,9 +28,9 @@ import {
 } from "@/components/ui/alert-dialog"
 import { useToast } from "@/hooks/use-toast"
 import { useAuth } from "@/lib/auth-context"
-import { dispatchPendingTransfer, getTransfers, getTransferSummary } from "@/lib/inventory-actions"
+import { dispatchPendingTransfer, getTransfersPaginated, getTransferSummary } from "@/lib/inventory-actions"
 import { CancelTransferDialog } from "@/components/central/cancel-transfer-dialog"
-import { X } from "lucide-react"
+import { ChevronLeft, ChevronRight, X } from "lucide-react"
 import { getSites, type Site } from "@/lib/site-actions"
 import {
   TRANSFER_STATUSES,
@@ -75,9 +75,14 @@ export default function TransfersPage() {
     ? (searchParams.get("status") as TransferStatus)
     : "all"
   const siteFilter = searchParams.get("site") ?? "all"
+  const fromSiteFilter = searchParams.get("from_site") ?? "all"
+  const toSiteFilter = searchParams.get("to_site") ?? "all"
   const dateFrom = searchParams.get("from") ?? ""
   const dateTo = searchParams.get("to") ?? ""
   const urlQ = searchParams.get("q") ?? ""
+  const numeroStr = searchParams.get("numero") ?? ""
+  const page = Math.max(1, Number(searchParams.get("page") ?? 1) || 1)
+  const PAGE_SIZE = 50
 
   const [qInput, setQInput] = useState(urlQ)
   useEffect(() => {
@@ -93,15 +98,19 @@ export default function TransfersPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [qInput])
 
-  function updateParams(patch: Record<string, string | null>) {
+  function updateParams(patch: Record<string, string | null>, resetPage = true) {
     const next = new URLSearchParams(searchParams.toString())
     for (const [k, v] of Object.entries(patch)) {
-      if (v == null || v === "" || ((k === "status" || k === "site") && v === "all")) {
+      const isAllFilter = ["status", "site", "from_site", "to_site"].includes(k)
+      if (v == null || v === "" || (isAllFilter && v === "all")) {
         next.delete(k)
       } else {
         next.set(k, v)
       }
     }
+    // Al cambiar cualquier filtro reiniciamos la paginación — solo
+    // conservamos page cuando se pide explícitamente (botones de paginar).
+    if (resetPage && !("page" in patch)) next.delete("page")
     const qs = next.toString()
     router.replace(qs ? `/central/transfers?${qs}` : "/central/transfers", { scroll: false })
   }
@@ -112,18 +121,26 @@ export default function TransfersPage() {
   // total real dentro del scope RLS). Se cachea por su propia key SWR.
   const { data: summary, mutate: mutateSummary } = useSWR("transfer-summary", () => getTransferSummary())
 
-  const { data: transfers = [], isLoading, mutate } = useSWR(
-    ["transfers", status, siteFilter, dateFrom, dateTo, urlQ],
+  const { data: transfersData, isLoading, mutate } = useSWR(
+    ["transfers-paginated", status, siteFilter, fromSiteFilter, toSiteFilter, dateFrom, dateTo, urlQ, numeroStr, page],
     () =>
-      getTransfers({
+      getTransfersPaginated({
+        page,
+        pageSize: PAGE_SIZE,
         status: status === "all" ? null : status,
         site_id: siteFilter === "all" ? null : siteFilter,
+        from_site_id: fromSiteFilter === "all" ? null : fromSiteFilter,
+        to_site_id: toSiteFilter === "all" ? null : toSiteFilter,
         // date_to inclusivo hasta fin del día para no cortar traslados del mismo día seleccionado.
         date_from: dateFrom || null,
         date_to: dateTo ? `${dateTo}T23:59:59.999Z` : null,
         q: urlQ || null,
+        numero: numeroStr.trim() ? Number(numeroStr) : null,
       }),
   )
+  const transfers = transfersData?.rows ?? []
+  const total = transfersData?.total ?? 0
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
 
   async function handleDispatch() {
     if (!dispatchTarget) return
@@ -200,11 +217,17 @@ export default function TransfersPage() {
         </div>
       )}
 
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <Input
           placeholder="Buscar producto (nombre o código)"
           value={qInput}
           onChange={(e) => setQInput(e.target.value)}
+        />
+        <Input
+          type="number"
+          placeholder="N° traslado"
+          value={numeroStr}
+          onChange={(e) => updateParams({ numero: e.target.value || null })}
         />
         <Select value={status} onValueChange={(v) => updateParams({ status: v })}>
           <SelectTrigger>
@@ -219,16 +242,38 @@ export default function TransfersPage() {
             ))}
           </SelectContent>
         </Select>
-        <Select value={siteFilter} onValueChange={(v) => updateParams({ site: v })}>
+        <Select value={siteFilter} onValueChange={(v) => updateParams({ site: v, from_site: null, to_site: null })}>
           <SelectTrigger>
-            <SelectValue />
+            <SelectValue placeholder="Sede (cualquier dirección)" />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="all">Todas las sedes</SelectItem>
+            <SelectItem value="all">Sede (todas)</SelectItem>
             {(sites ?? []).map((s) => (
               <SelectItem key={s.site_id} value={s.site_id}>
                 {s.name}
               </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select value={fromSiteFilter} onValueChange={(v) => updateParams({ from_site: v, site: null })}>
+          <SelectTrigger>
+            <SelectValue placeholder="Origen" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">Origen (todas)</SelectItem>
+            {(sites ?? []).map((s) => (
+              <SelectItem key={s.site_id} value={s.site_id}>{s.name}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select value={toSiteFilter} onValueChange={(v) => updateParams({ to_site: v, site: null })}>
+          <SelectTrigger>
+            <SelectValue placeholder="Destino" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">Destino (todas)</SelectItem>
+            {(sites ?? []).map((s) => (
+              <SelectItem key={s.site_id} value={s.site_id}>{s.name}</SelectItem>
             ))}
           </SelectContent>
         </Select>
@@ -244,6 +289,14 @@ export default function TransfersPage() {
           onChange={(e) => updateParams({ to: e.target.value || null })}
           placeholder="Hasta"
         />
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => router.replace("/central/transfers", { scroll: false })}
+          className="gap-1 self-end"
+        >
+          <X className="h-3.5 w-3.5" /> Limpiar
+        </Button>
       </div>
 
       <CancelTransferDialog
@@ -368,6 +421,36 @@ export default function TransfersPage() {
               )}
             </tbody>
           </table>
+          <div className="flex flex-wrap items-center justify-between gap-2 border-t p-3 text-sm">
+            <div className="text-muted-foreground">
+              {total > 0 ? (
+                <>
+                  Página <strong>{page}</strong> de <strong>{totalPages}</strong> ·{" "}
+                  <strong>{total}</strong> resultado{total === 1 ? "" : "s"}
+                </>
+              ) : (
+                <>Sin resultados</>
+              )}
+            </div>
+            <div className="flex gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => updateParams({ page: String(Math.max(1, page - 1)) }, false)}
+                disabled={page <= 1}
+              >
+                <ChevronLeft className="h-4 w-4" /> Anterior
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => updateParams({ page: String(Math.min(totalPages, page + 1)) }, false)}
+                disabled={page >= totalPages}
+              >
+                Siguiente <ChevronRight className="h-4 w-4" />
+              </Button>
+            </div>
+          </div>
         </CardContent>
       </Card>
     </div>

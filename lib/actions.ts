@@ -302,29 +302,74 @@ export async function deleteProduct(product_id: string) {
 
 // --- Sales Actions ---
 export async function getSales() {
-  const supabase = await createServerSupabaseClient()
-  const { data, error } = await supabase
-    .from("sales")
-    .select(`
-      *,
-      customers (
-        name
-      ),
-      sale_items (
-        *,
-        products (
-          name,
-          price
-        )
-      )
-    `)
-    .order("sale_date", { ascending: false })
+  // Legacy: delegamos al paginado para que ningún caller caiga en el
+  // tope de 1000 de PostgREST. Página 1 × 50 filas, filtros vacíos.
+  const { rows } = await getSalesPaginated({ pageSize: 50, page: 1 })
+  return rows
+}
 
+export interface SalesFilter {
+  page?: number
+  pageSize?: number
+  numero?: number | null
+  customerId?: string | null
+  siteId?: string | null
+  seller?: string | null
+  dateFrom?: string | null  // ISO
+  dateTo?: string | null    // ISO (fin de día inclusive si el caller lo arma)
+  estado?: "active" | "voided" | "all"
+  onAccount?: "yes" | "no" | "all"
+  totalMin?: number | null
+  totalMax?: number | null
+}
+
+/**
+ * Lista paginada de ventas con filtros server-side. Orden estable:
+ * sale_date DESC + sale_id DESC. Devuelve {rows, total, page, pageSize}.
+ * El RLS existente limita el scope por rol/sede (vendedor y encargado
+ * ven solo su sede).
+ */
+export async function getSalesPaginated(filter: SalesFilter) {
+  const supabase = await createServerSupabaseClient()
+  const page = Math.max(1, filter.page ?? 1)
+  const pageSize = Math.min(200, Math.max(1, filter.pageSize ?? 50))
+  const from = (page - 1) * pageSize
+  const to = from + pageSize - 1
+
+  let query = supabase
+    .from("sales")
+    .select(
+      `
+      *,
+      customers ( customer_id, name ),
+      sale_items ( sale_item_id, quantity, unit_price, products ( name, price ) )
+    `,
+      { count: "exact" },
+    )
+    .order("sale_date", { ascending: false })
+    .order("sale_id", { ascending: false })
+    .range(from, to)
+
+  const estado = filter.estado ?? "active"
+  if (estado !== "all") query = query.eq("status", estado)
+  if (typeof filter.numero === "number") query = query.eq("numero", filter.numero)
+  if (filter.customerId) query = query.eq("customer_id", filter.customerId)
+  if (filter.siteId) query = query.eq("site_id", filter.siteId)
+  if (filter.seller) query = query.ilike("seller", `%${filter.seller}%`)
+  if (filter.dateFrom) query = query.gte("sale_date", filter.dateFrom)
+  if (filter.dateTo) query = query.lte("sale_date", filter.dateTo)
+  if (typeof filter.totalMin === "number") query = query.gte("total_amount", filter.totalMin)
+  if (typeof filter.totalMax === "number") query = query.lte("total_amount", filter.totalMax)
+  const onAccount = filter.onAccount ?? "all"
+  if (onAccount === "yes") query = query.eq("is_on_account", true)
+  else if (onAccount === "no") query = query.eq("is_on_account", false)
+
+  const { data, count, error } = await query
   if (error) {
-    console.error("Error fetching sales:", error)
-    return []
+    console.error("getSalesPaginated:", error)
+    return { rows: [], total: 0, page, pageSize }
   }
-  return data || []
+  return { rows: data || [], total: count ?? 0, page, pageSize }
 }
 
 export async function getSaleDetails(sale_id: string) {
