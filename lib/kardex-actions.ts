@@ -24,6 +24,102 @@ async function resolveSiteScope(requestedSiteId?: string): Promise<string[] | nu
   return accessible
 }
 
+export interface StockMovementsFilter {
+  product_id?: string
+  warehouse_id?: string
+  movement_type?: string
+  from_date?: string
+  to_date?: string
+  site_id?: string
+  limit?: number
+  page?: number
+  pageSize?: number
+}
+
+/**
+ * Lista paginada de stock_movements con filtros server-side. Mantiene
+ * la lógica de scope por sede (RLS defensa en profundidad). Orden
+ * estable: created_at DESC + movement_id DESC. Devuelve
+ * {rows, total, page, pageSize}.
+ */
+export async function getStockMovementsPaginated(filters?: StockMovementsFilter) {
+  await requireRole("admin", "contador", "encargado")
+  const supabase = await createServerSupabaseClient()
+
+  const page = Math.max(1, filters?.page ?? 1)
+  const pageSize = Math.min(200, Math.max(1, filters?.pageSize ?? 50))
+
+  const siteIds = await resolveSiteScope(filters?.site_id)
+  if (siteIds && siteIds.length === 0) return { rows: [], total: 0, page, pageSize }
+
+  let warehouseIds: string[] | null = null
+  if (siteIds) {
+    const { data: whs } = await supabase
+      .from("warehouses")
+      .select("warehouse_id")
+      .in("site_id", siteIds)
+    warehouseIds = (whs || []).map((w: any) => w.warehouse_id)
+    if (warehouseIds.length === 0) return { rows: [], total: 0, page, pageSize }
+  }
+
+  const from = (page - 1) * pageSize
+  const to = from + pageSize - 1
+  let query = supabase
+    .from("stock_movements")
+    .select(
+      `
+      movement_id, product_id, warehouse_id, movement_type, quantity,
+      reference_type, reference_id, user_id, notes, created_at,
+      products(name, code),
+      warehouses(name, site_id, sites(name))
+    `,
+      { count: "exact" },
+    )
+    .order("created_at", { ascending: false })
+    .order("movement_id", { ascending: false })
+    .range(from, to)
+
+  if (filters?.warehouse_id) {
+    if (warehouseIds && !warehouseIds.includes(filters.warehouse_id)) {
+      return { rows: [], total: 0, page, pageSize }
+    }
+    query = query.eq("warehouse_id", filters.warehouse_id)
+  } else if (warehouseIds) {
+    query = query.in("warehouse_id", warehouseIds)
+  }
+  if (filters?.product_id) query = query.eq("product_id", filters.product_id)
+  if (filters?.movement_type) query = query.eq("movement_type", filters.movement_type)
+  if (filters?.from_date) query = query.gte("created_at", filters.from_date)
+  if (filters?.to_date) query = query.lte("created_at", filters.to_date + "T23:59:59")
+
+  const { data, count, error } = await query
+  if (error) {
+    console.error("getStockMovementsPaginated:", error)
+    return { rows: [], total: 0, page, pageSize }
+  }
+  return { rows: data || [], total: count ?? 0, page, pageSize }
+}
+
+/**
+ * Saldo actual de un producto en una bodega (o total si no se pasa bodega).
+ * Usada por el Kardex para mostrar "Saldo actual" cuando el usuario filtra
+ * por un producto específico. No es un helper de kardex puro — leé
+ * `product_stock` directamente.
+ */
+export async function getProductStockForKardex(product_id: string, warehouse_id?: string | null) {
+  await requireRole("admin", "contador", "encargado")
+  const supabase = await createServerSupabaseClient()
+  let query = supabase
+    .from("product_stock")
+    .select("warehouse_id, quantity")
+    .eq("product_id", product_id)
+  if (warehouse_id) query = query.eq("warehouse_id", warehouse_id)
+  const { data } = await query
+  const rows = (data || []) as Array<{ warehouse_id: string; quantity: number }>
+  const total = rows.reduce((s, r) => s + Number(r.quantity || 0), 0)
+  return { total, rows }
+}
+
 export async function getStockMovements(filters?: {
   product_id?: string
   warehouse_id?: string

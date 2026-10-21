@@ -882,6 +882,102 @@ export interface GetTransfersOpts {
   q?: string | null
 }
 
+export interface TransfersPaginatedFilter extends GetTransfersOpts {
+  page?: number
+  pageSize?: number
+  numero?: number | null
+  from_site_id?: string | null
+  to_site_id?: string | null
+}
+
+/**
+ * Lista paginada de transfers con filtros server-side. Mantiene toda la
+ * lógica de pre-filtrado del `getTransfers` legacy (sede → warehouses,
+ * búsqueda de producto vía join a transfer_items.products) y agrega
+ * `.range()` + `count: "exact"` + numero + from_site / to_site.
+ * Orden estable: transfer_date DESC + transfer_id DESC.
+ */
+export async function getTransfersPaginated(opts: TransfersPaginatedFilter) {
+  await requireRole("admin", "contador", "encargado", "vendedor")
+  const supabase = await createServerSupabaseClient()
+  const page = Math.max(1, opts.page ?? 1)
+  const pageSize = Math.min(200, Math.max(1, opts.pageSize ?? 50))
+
+  async function siteWarehouseIds(site_id: string | null | undefined): Promise<string[] | null> {
+    if (!site_id) return null
+    const { data: whs, error: whErr } = await supabase
+      .from("warehouses")
+      .select("warehouse_id")
+      .eq("site_id", site_id)
+    if (whErr) return null
+    return (whs ?? []).map((w: any) => w.warehouse_id as string)
+  }
+
+  const siteIdsAny = await siteWarehouseIds(opts.site_id)
+  if (opts.site_id && (!siteIdsAny || siteIdsAny.length === 0)) {
+    return { rows: [], total: 0, page, pageSize }
+  }
+  const fromIds = await siteWarehouseIds(opts.from_site_id)
+  if (opts.from_site_id && (!fromIds || fromIds.length === 0)) {
+    return { rows: [], total: 0, page, pageSize }
+  }
+  const toIds = await siteWarehouseIds(opts.to_site_id)
+  if (opts.to_site_id && (!toIds || toIds.length === 0)) {
+    return { rows: [], total: 0, page, pageSize }
+  }
+
+  // Pre-filtro de búsqueda de producto (mismo patrón que
+  // `getAdjustmentsPaginated`): resolver transfer_ids que contienen un
+  // item cuyo producto hace match, luego combinarlos con el filtro
+  // principal.
+  let matchedTransferIds: string[] | null = null
+  const rawQ = (opts.q ?? "").trim()
+  if (rawQ) {
+    const pattern = `%${rawQ}%`
+    const { data: hits, error: qErr } = await supabase
+      .from("transfer_items")
+      .select("transfer_id, products!inner(name, code)")
+      .or(`name.ilike.${pattern},code.ilike.${pattern}`, { foreignTable: "products" })
+    if (qErr) {
+      console.error("getTransfersPaginated (search):", qErr)
+      return { rows: [], total: 0, page, pageSize }
+    }
+    matchedTransferIds = Array.from(new Set((hits ?? []).map((r: any) => r.transfer_id as string)))
+    if (matchedTransferIds.length === 0) return { rows: [], total: 0, page, pageSize }
+  }
+
+  const fromRange = (page - 1) * pageSize
+  const toRange = fromRange + pageSize - 1
+  let q = supabase
+    .from("transfers")
+    .select(
+      "*, from_wh:warehouses!transfers_from_warehouse_id_fkey ( name, site_id, sites ( name ) ), to_wh:warehouses!transfers_to_warehouse_id_fkey ( name, site_id, sites ( name ) ), transfer_items ( transfer_item_id, quantity )",
+      { count: "exact" },
+    )
+    .order("transfer_date", { ascending: false })
+    .order("transfer_id", { ascending: false })
+    .range(fromRange, toRange)
+
+  if (opts.status) q = q.eq("status", opts.status)
+  if (opts.date_from) q = q.gte("transfer_date", opts.date_from)
+  if (opts.date_to) q = q.lte("transfer_date", opts.date_to)
+  if (typeof opts.numero === "number") q = q.eq("numero", opts.numero)
+  if (siteIdsAny) {
+    const list = siteIdsAny.join(",")
+    q = q.or(`from_warehouse_id.in.(${list}),to_warehouse_id.in.(${list})`)
+  }
+  if (fromIds) q = q.in("from_warehouse_id", fromIds)
+  if (toIds) q = q.in("to_warehouse_id", toIds)
+  if (matchedTransferIds) q = q.in("transfer_id", matchedTransferIds)
+
+  const { data, count, error } = await q
+  if (error) {
+    console.error("getTransfersPaginated:", error)
+    return { rows: [], total: 0, page, pageSize }
+  }
+  return { rows: data || [], total: count ?? 0, page, pageSize }
+}
+
 export async function getTransfers(opts?: GetTransfersOpts) {
   await requireRole("admin", "contador", "encargado", "vendedor")
   const supabase = await createServerSupabaseClient()

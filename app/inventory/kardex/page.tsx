@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useCallback } from "react"
+import { useState, useCallback, useEffect, useMemo } from "react"
 import useSWR from "swr"
 import { PageHeader } from "@/components/page-header"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -11,14 +11,15 @@ import { Input } from "@/components/ui/input"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { useToast } from "@/hooks/use-toast"
 import {
-  getStockMovements,
+  getStockMovementsPaginated,
+  getProductStockForKardex,
   getProductsForFilter,
   getWarehousesForFilter,
   verifyKardexIntegrity,
 } from "@/lib/kardex-actions"
 import { useAuth } from "@/lib/auth-context"
 import { useSite } from "@/lib/site-context"
-import { ScrollText, Search, ShieldCheck, ArrowDown, ArrowUp, RefreshCw } from "lucide-react"
+import { ScrollText, Search, ShieldCheck, ArrowDown, ArrowUp, RefreshCw, ChevronLeft, ChevronRight, X } from "lucide-react"
 
 const TYPE_LABELS: Record<string, string> = {
   apertura: "Apertura",
@@ -63,21 +64,61 @@ export default function KardexPage() {
     ? siteFilter === "all" ? undefined : siteFilter === "current" ? currentSite?.site_id : siteFilter
     : currentSite?.site_id ?? assignedSiteId
 
-  const filters = {
-    product_id: productId !== "all" ? productId : undefined,
-    warehouse_id: warehouseId !== "all" ? warehouseId : undefined,
-    movement_type: movementType !== "all" ? movementType : undefined,
-    from_date: fromDate || undefined,
-    to_date: toDate || undefined,
-    site_id: effectiveSiteId ?? undefined,
-  }
+  const PAGE_SIZE = 50
+  const [page, setPage] = useState(1)
 
-  const fetchKey = JSON.stringify(["kardex", filters])
-  const fetcher = useCallback(() => getStockMovements(filters), [fetchKey])
-  const { data: movements = [], isLoading, mutate } = useSWR(fetchKey, fetcher)
+  const filters = useMemo(
+    () => ({
+      product_id: productId !== "all" ? productId : undefined,
+      warehouse_id: warehouseId !== "all" ? warehouseId : undefined,
+      movement_type: movementType !== "all" ? movementType : undefined,
+      from_date: fromDate || undefined,
+      to_date: toDate || undefined,
+      site_id: effectiveSiteId ?? undefined,
+      page,
+      pageSize: PAGE_SIZE,
+    }),
+    [productId, warehouseId, movementType, fromDate, toDate, effectiveSiteId, page],
+  )
+
+  // Reset de página al cambiar cualquier filtro (sin resetear si solo
+  // cambia `page`).
+  const filterNoPage = useMemo(
+    () =>
+      JSON.stringify({
+        productId,
+        warehouseId,
+        movementType,
+        fromDate,
+        toDate,
+        effectiveSiteId,
+      }),
+    [productId, warehouseId, movementType, fromDate, toDate, effectiveSiteId],
+  )
+  useEffect(() => {
+    setPage(1)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filterNoPage])
+
+  const fetchKey = JSON.stringify(["kardex-paginated", filters])
+  const fetcher = useCallback(() => getStockMovementsPaginated(filters), [fetchKey])
+  const { data, isLoading, mutate } = useSWR(fetchKey, fetcher)
+  const movements = data?.rows ?? []
+  const total = data?.total ?? 0
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
+
   const { data: products = [] } = useSWR("kardex-products", getProductsForFilter)
   const whKey = JSON.stringify(["kardex-warehouses", effectiveSiteId])
   const { data: warehouses = [] } = useSWR(whKey, () => getWarehousesForFilter(effectiveSiteId))
+
+  // Saldo actual del producto en la bodega filtrada (o suma total si no
+  // hay bodega). Se consulta solo si el usuario filtró por un producto.
+  const stockKey = productId !== "all"
+    ? JSON.stringify(["kardex-stock", productId, warehouseId !== "all" ? warehouseId : null])
+    : null
+  const { data: stockForProduct } = useSWR(stockKey, () =>
+    getProductStockForKardex(productId, warehouseId !== "all" ? warehouseId : null),
+  )
 
   async function handleVerify() {
     setVerifying(true)
@@ -108,15 +149,15 @@ export default function KardexPage() {
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <Card>
           <CardContent className="p-4">
-            <div className="text-sm text-muted-foreground">Movimientos</div>
-            <div className="text-2xl font-bold">{movements.length}</div>
+            <div className="text-sm text-muted-foreground">Movimientos (filtro)</div>
+            <div className="text-2xl font-bold">{total}</div>
           </CardContent>
         </Card>
         <Card>
           <CardContent className="p-4 flex items-center gap-2">
             <ArrowUp className="h-5 w-5 text-green-500" />
             <div>
-              <div className="text-sm text-muted-foreground">Entradas</div>
+              <div className="text-sm text-muted-foreground">Entradas (página)</div>
               <div className="text-2xl font-bold text-green-600">+{totalIn}</div>
             </div>
           </CardContent>
@@ -125,7 +166,7 @@ export default function KardexPage() {
           <CardContent className="p-4 flex items-center gap-2">
             <ArrowDown className="h-5 w-5 text-red-500" />
             <div>
-              <div className="text-sm text-muted-foreground">Salidas</div>
+              <div className="text-sm text-muted-foreground">Salidas (página)</div>
               <div className="text-2xl font-bold text-red-600">{totalOut}</div>
             </div>
           </CardContent>
@@ -205,7 +246,29 @@ export default function KardexPage() {
             <Button size="sm" variant="outline" onClick={handleVerify} disabled={verifying}>
               <ShieldCheck className="h-4 w-4 mr-1" /> {verifying ? "Verificando..." : "Verificar integridad"}
             </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                setSiteFilter("current")
+                setProductId("all")
+                setWarehouseId("all")
+                setMovementType("all")
+                setFromDate("")
+                setToDate("")
+                setPage(1)
+              }}
+            >
+              <X className="h-4 w-4 mr-1" /> Limpiar
+            </Button>
           </div>
+          {productId !== "all" && stockForProduct && (
+            <div className="mt-3 rounded-md border bg-muted/40 p-2 text-sm">
+              Saldo actual del producto
+              {warehouseId !== "all" ? " en la bodega filtrada" : " (todas las bodegas)"}:{" "}
+              <strong>{stockForProduct.total}</strong>
+            </div>
+          )}
         </CardContent>
       </Card>
 
@@ -265,12 +328,32 @@ export default function KardexPage() {
                 <TableRow>
                   <TableCell colSpan={7} className="text-center py-8 text-muted-foreground">
                     <ScrollText className="h-8 w-8 mx-auto mb-2 opacity-50" />
-                    No hay movimientos con los filtros seleccionados.
+                    {total === 0 ? "No hay movimientos con los filtros seleccionados." : "Sin resultados en esta página."}
                   </TableCell>
                 </TableRow>
               )}
             </TableBody>
           </Table>
+          <div className="flex flex-wrap items-center justify-between gap-2 border-t p-3 text-sm">
+            <div className="text-muted-foreground">
+              {total > 0 ? (
+                <>
+                  Página <strong>{page}</strong> de <strong>{totalPages}</strong> ·{" "}
+                  <strong>{total}</strong> resultado{total === 1 ? "" : "s"}
+                </>
+              ) : (
+                <>Sin resultados</>
+              )}
+            </div>
+            <div className="flex gap-2">
+              <Button variant="outline" size="sm" onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page <= 1}>
+                <ChevronLeft className="h-4 w-4" /> Anterior
+              </Button>
+              <Button variant="outline" size="sm" onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page >= totalPages}>
+                Siguiente <ChevronRight className="h-4 w-4" />
+              </Button>
+            </div>
+          </div>
         </CardContent>
       </Card>
     </div>
