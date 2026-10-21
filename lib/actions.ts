@@ -301,12 +301,6 @@ export async function deleteProduct(product_id: string) {
 }
 
 // --- Sales Actions ---
-export async function getSales() {
-  // Legacy: delegamos al paginado para que ningún caller caiga en el
-  // tope de 1000 de PostgREST. Página 1 × 50 filas, filtros vacíos.
-  const { rows } = await getSalesPaginated({ pageSize: 50, page: 1 })
-  return rows
-}
 
 export interface SalesFilter {
   page?: number
