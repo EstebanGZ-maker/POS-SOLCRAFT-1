@@ -177,14 +177,16 @@ sobre datos limpios. Coordinar con Esteban cuándo hacer la pasada.
 
 ---
 
-## 0. LEE ESTO PRIMERO — estado tras sesión 2026-10-20
+## 0. LEE ESTO PRIMERO — estado tras sesión 2026-10-21
 
-**Estado de ramas**: `main` @ `f834ccd`. Deploys production de las 3
+**Estado de ramas**: `main` @ `19ea1d7`. Deploys production de las 3
 instancias (Solcraft, Taiwy Sport, celulares-carmen) **READY** sobre ese
 sha. Ramas de feature mergeadas y preservadas en origin (no borrar
 todavía): `feat/ia-rubro-perfil`, `fix/central-purchases-motivo`,
 `fix/paginacion-1000`, `feat/ajuste-seleccion-multiple`,
-`fix/paginacion-listas`, `feat/desactivar-productos`.
+`fix/paginacion-listas`, `feat/desactivar-productos`,
+`fix/paginacion-ventas-traslados-kardex`,
+`feat/ia-categorias-select-todos`.
 
 **Historial anterior**: `docs/HISTORIAL-ESTADO.md` (secciones del §0
 previas al 2026-10-20 que ya cerraron, archivadas por la regla "nada
@@ -199,15 +201,26 @@ se borra sin rastro").
 | `feat/ajuste-seleccion-multiple` | **`38f7eab`** | Nuevo ajuste: `MultiProductPicker` con checkbox + "Agregar N seleccionados"; stock por fila que recalcula al cambiar bodega; acciones masivas Objetivo / Cantidad / "Llevar a 0"; validación cliente de Disminuir > stock con motivo visible. Nueva bulk action "Ajustar seleccionados" desde Productos y servicios. |
 | `fix/paginacion-listas` | **`6a177f6`** | Lista de Ajustes paginada en servidor (50/página, `.range()` + `count: "exact"`); filtros server-side (search por notes + items, motivo, tipo, estado, bodega, fecha, total min/max, numero); selección masiva ("esta página" + "todos los resultados del filtro" cap 200); `voidAdjustmentsBulk` con partial-success y detalle de fallos. `getCentralPurchases` filtra por `motivo='compra'` (cherry-pick de `ff04006`) y usa `fetchAllPages`; `getCentralDistributions` también paginado para totales exactos. |
 | `feat/desactivar-productos` | **`f834ccd`** | `setProductsActive(ids[], active)` admin-only con validación de stock=0 en todas las bodegas (incluida Tránsito) para desactivar. Bulk actions "Desactivar / Reactivar seleccionados" + menú ⋮ por fila + filtro Estado (Activos / Inactivos / Todos) + switch Activo admin-only en el formulario de edición. `revalidatePath` de `/inventory/products`, `/central`, `/pos`, `/catalog`. |
+| `fix/paginacion-ventas-traslados-kardex` | **`6323ba9`** | Paginación en servidor de Ventas (`getSalesPaginated`), Traslados (`getTransfersPaginated`) y Kardex (`getStockMovementsPaginated`): `.range()` + `count: "exact"` + filtros combinables (numero, cliente/sede/vendedor, fecha, estado, fiado yes/no, total min/max; search por notes + items; from_site/to_site; movement_type) + paginador "Anterior / Siguiente · página X de Y · N resultados" en las 3 pantallas. "Saldo actual" en Kardex cuando se filtra por producto. Permisos existentes intactos (vendedor/encargado solo su sede). |
+| chore legacy | **`1182b89`** | Eliminado `getSales()` legacy que delegaba al paginado con `pageSize=50` sin aviso — cero callers, se retira para no dejar una trampa de 50 filas en el repo. |
+| `feat/ia-categorias-select-todos` | **`19ea1d7`** | Ingreso con IA: Select de categorías contra whitelist para TODOS los rubros. Ropa pasa de Input libre + creación on-the-fly (que generaba duplicados Camisetas/CAMISETAS, PANTALONETA/PANTALONETAS, Uniforme Futbol/Uniformes Futbol) a Select cerrado. El prompt inyecta las categorías del tenant; la UI canonicaliza la sugerencia (NFD + strip accents + lowercase) contra la lista y deja vacío si no matchea — nunca inventa. Validación cliente + server: `ingressNewProduct` rechaza categoría vacía o fuera de lista cuando `allowCreateCategory=false`. NO toca el importador de Excel ni el formulario manual de productos. |
 
 ### PENDIENTES (en orden de arranque sugerido)
 
-1. **Paginación en servidor de Ventas, Traslados y Kardex**. Las listas
-   administrativas siguen con el patrón pre-paginación; con la cuenta
-   de filas crecen más allá de 1000 (vía 1 año) el reporte queda
-   trunco. Patrón: igual que `getAdjustmentsPaginated` (`.range` +
-   `count: "exact"` + filtros server-side + orden estable con
-   tiebreaker por PK).
+1. **Unificar categorías duplicadas** (datos, no código). Casos
+   conocidos: Solcraft `Camisetas / CAMISETAS` y
+   `PANTALONETA / PANTALONETAS`; Taiwy Sport `Uniforme Futbol /
+   Uniformes Futbol`. Plan: reasignar los productos de la variante
+   duplicada a la canónica (`UPDATE products SET category_id = <canónica>
+   WHERE category_id = <duplicada>`) y luego retirar la categoría
+   vacía (`DELETE FROM categories WHERE category_id = <duplicada> AND
+   NOT EXISTS (SELECT 1 FROM products WHERE category_id = <duplicada>)`).
+   SQL a **revisión de Esteban antes de aplicar**; **nunca** borrar
+   productos ni categorías con productos vivos; una fila por
+   instancia en el registro de intervenciones manuales. Pre-condición:
+   el merge `19ea1d7` ya impide crear nuevos duplicados vía ingreso
+   con IA (whitelist cerrada), así que el fix es por única vez salvo
+   que entren vías manuales nuevas.
 2. **Catálogo público ordenado "más nuevo primero"**. Requiere
    migración `public_catalog_list` para ordenar por `created_at` DESC
    (verificar `md5(prosrc)` previo en las 3 instancias para no pisar
@@ -220,21 +233,21 @@ se borra sin rastro").
    y mostrar un aviso explícito "Este ajuste 100% disminución registra
    gasto por merma". Hoy la UI lo deshabilita pero deja el select
    visible, confunde al operador.
-4. **Ingreso IA en lotes** (1 ajuste por "Ingresar todo", no uno por
+4. **Anulación masiva**: tras anular, ofrecer "¿Desactivar también
+   estos productos?" (ir al menú de productos ya no es un paso natural
+   para operadores que anulan por "producto que no se vende"). Reusa
+   `setProductsActive` del commit `f834ccd`.
+5. **Ingreso IA en lotes** (1 ajuste por "Ingresar todo", no uno por
    producto). **Decisión de Esteban pendiente**: hoy crea N ajustes
    independientes, lo que fragmenta el reporte de Compras. Alternativa:
    un único ajuste con todos los items. Trade-off: la anulación pasa
    a ser todo o nada.
-5. **Y.3 — "Talla" → "Referencia"** en el formulario manual de
+6. **Y.3 — "Talla" → "Referencia"** en el formulario manual de
    productos (`app/inventory/products/product-form-dialog.tsx`), en
    el importador de Excel (`components/inventory/product-import-*`)
    y en el catálogo público. Fuente del label: `uiProfile.ui.labels.size`.
    celulares-carmen carga por Excel → el header de la columna debe
    decir "Referencia" para `rubro='tecnologia'`.
-6. **Anulación masiva**: tras anular, ofrecer "¿Desactivar también
-   estos productos?" (ir al menú de productos ya no es un paso natural
-   para operadores que anulan por "producto que no se vende"). Reusa
-   `setProductsActive` del commit `f834ccd`.
 7. **Multi-tenant SOLO diseño** (sin código): ver "Plan comercial —
    multi-tenant con diseño primero" más abajo con las 7 correcciones
    acordadas (Vault, `current_tenant()`, 36 tablas, `USING(true)`,

@@ -1,6 +1,6 @@
 # CONTEXT-POS.md
 
-Contexto denso de POS-SOLCRAFT para pasar a otra instancia de Claude sin acceso al repo. Estado al **2026-10-20**. Últimos merges en producción: perfil IA Y.1+Y.2 + endurecimiento `/api/analyze-product` (`02df6a6`), paginación >1000 filas + orden por código en búsqueda (`6a3dece`), ajuste de inventario con selección múltiple + "Llevar a 0" (`38f7eab`), ajustes con filtros + paginación en servidor + anulación masiva + reporte de compras por `motivo='compra'` (`6a177f6`), desactivar/reactivar productos (admin) con validación de stock (`f834ccd`). `main` @ `f834ccd`, 3 instancias en producción READY. Detalle operativo actualizado siempre en `docs/ESTADO-PENDIENTES.md §0`; historial archivado en `docs/HISTORIAL-ESTADO.md`.
+Contexto denso de POS-SOLCRAFT para pasar a otra instancia de Claude sin acceso al repo. Estado al **2026-10-21**. Últimos merges en producción (desde el VOLCADO del 2026-10-20): paginación en servidor de Ventas / Traslados / Kardex con filtros (`6323ba9`), `getSales` legacy retirado (`1182b89`), Select de categorías contra whitelist cerrada en el ingreso con IA para TODOS los rubros — ropa pasa a Select, sin creación on-the-fly, con canonicalización NFD + strip accents de la sugerencia del AI (`19ea1d7`); previos ya documentados: perfil IA Y.1+Y.2 + endurecimiento `/api/analyze-product` (`02df6a6`), paginación >1000 filas + orden por código en búsqueda (`6a3dece`), ajuste de inventario con selección múltiple + "Llevar a 0" (`38f7eab`), Ajustes con filtros + paginación en servidor + anulación masiva + reporte de compras por `motivo='compra'` (`6a177f6`), desactivar/reactivar productos (admin) con validación de stock (`f834ccd`). `main` @ `19ea1d7`, 3 instancias en producción READY. Detalle operativo actualizado siempre en `docs/ESTADO-PENDIENTES.md §0`; historial archivado en `docs/HISTORIAL-ESTADO.md`.
 
 ## 0. Reglas de sesión (obligatorias — leer antes de tocar nada)
 
@@ -850,6 +850,27 @@ Ninguna decidida. `suspended_sales` funciona hoy con opción 4 implícita.
   de caja). Las listas administrativas pasan a paginación en servidor
   **antes** de abrir multi-tenant; el POS se evalúa aparte si llega a
   presionar al free tier de Supabase.
+
+### Lecciones aprendidas 2026-10-21 (paginación getters legacy + whitelist de categorías)
+
+- **Nunca dejar un getter "legacy" que devuelva solo la página 1 sin
+  avisar.** El patrón "mantener la firma vieja llamando al paginado
+  con `pageSize=50`" (como quedó `getSales()` en `a1db582`) es una
+  trampa: cualquier caller nuevo que lo importe cree que recibe la
+  lista completa y silenciosamente ve 50 filas. Dos opciones aceptables:
+  (a) **eliminar el getter legacy** cuando no tiene callers
+  (`1182b89`), o (b) hacerlo paginar completo con
+  `fetchAllPages(buildQuery)` cuando el consumidor realmente necesita
+  la lista completa (como `getCentralPurchases` en `6a177f6`). Un
+  getter que miente sobre el tope es peor que uno que no existe.
+- **Categorías: el ingreso con IA solo acepta categorías existentes
+  (Select contra whitelist) en TODOS los rubros** (`19ea1d7`). La
+  creación de categorías vive en Inventario → Categorías
+  (`/inventory/management` o similar — pantalla admin). Nunca más
+  crear categoría al vuelo desde el flujo IA; evita duplicados tipo
+  `Camisetas / CAMISETAS`. El panel canonicaliza la sugerencia del AI
+  (NFD + strip accents + lowercase) contra la lista: si matchea, usa
+  el nombre canónico; si no, deja vacío para que el operador elija.
 
 ### Drift de esquema (prod tiene objetos no versionados en `scripts/*.sql`)
 

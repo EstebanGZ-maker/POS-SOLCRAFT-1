@@ -8,6 +8,20 @@
 
 ---
 
+### Pendiente retirado del §0 el 2026-10-21: "Paginación en servidor de Ventas, Traslados y Kardex"
+
+Cerrado por el merge `6323ba9` (rama `fix/paginacion-ventas-traslados-kardex`).
+Texto original del pendiente, extraído del §0 vigente al 2026-10-20:
+
+1. **Paginación en servidor de Ventas, Traslados y Kardex**. Las listas
+   administrativas siguen con el patrón pre-paginación; con la cuenta
+   de filas crecen más allá de 1000 (vía 1 año) el reporte queda
+   trunco. Patrón: igual que `getAdjustmentsPaginated` (`.range` +
+   `count: "exact"` + filtros server-side + orden estable con
+   tiebreaker por PK).
+
+---
+
 ### Y.1 — perfil IA (ropa/tecnología): WIP local sin revisión (2026-10-17)
 
 - Rama `feat/ia-rubro-perfil` con commit **WIP local** de Y.1 (perfil IA
