@@ -13,8 +13,8 @@
   },
   "category": {
     "label": "Categoría",
-    "component": "Input",
-    "placeholder": "Camisas",
+    "component": "Select",
+    "placeholder": "Elige una categoría",
     "maxLength": null
   },
   "size": {

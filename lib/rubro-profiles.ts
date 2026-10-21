@@ -136,7 +136,7 @@ const ropaSchema = z.object({
     .describe(
       "Prefijo de 2 letras del tipo de prenda EN ESPAÑOL. Ej: CA=Camisa, PA=Pantalón, CH=Chaqueta, VE=Vestido, FA=Falda, BL=Blusa, BU=Buzo, SU=Suéter, SH=Short, ZA=Zapato, AC=Accesorio",
     ),
-  category: z.string().describe("Categoría general, ej: Camisas, Pantalones, Vestidos, Calzado, Accesorios"),
+  category: z.string().describe("Categoría del producto EXACTAMENTE como aparece en la lista provista al final del prompt. Comparación insensible a mayúsculas y tildes. Vacío si ninguna de la lista aplica"),
   description: z
     .string()
     .describe(
@@ -174,9 +174,18 @@ const ropaProfile: RubroProfile = {
   model: "google/gemini-2.5-flash",
   maxRetries: 0,
   schema: ropaSchema,
-  needsCategoriesList: false,
+  // Categorías: whitelist cerrada (mismo patrón que tecnología). El
+  // modelo elige una de la lista inyectada en el prompt; la UI muestra
+  // Select; el server rechaza si no match.
+  needsCategoriesList: true,
   rejectionPhrase: null,
-  buildInstructions: () => ROPA_INSTRUCTIONS,
+  buildInstructions: (ctx) => {
+    const cats = ctx?.categories ?? []
+    const catsLine = cats.length > 0
+      ? `\n\nCategorías disponibles para esta solicitud: ${cats.join(", ")}. Elige la que mejor describa la prenda (comparación insensible a mayúsculas y tildes). Si ninguna aplica, deja \`category\` vacío — nunca inventes una.`
+      : "\n\nCategorías disponibles para esta solicitud: (ninguna cargada; deja `category` vacío)."
+    return ROPA_INSTRUCTIONS + catsLine
+  },
   messageTemplate: (medium) =>
     // Preserva byte-a-byte el error de género "Analiza este imagen" del main
     // pre-refactor. Fix de este error va en commit aparte (ver

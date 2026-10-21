@@ -15,7 +15,7 @@
     "key": "category",
     "type": "ZodString",
     "isInt": false,
-    "description": "Categoría general, ej: Camisas, Pantalones, Vestidos, Calzado, Accesorios"
+    "description": "Categoría del producto EXACTAMENTE como aparece en la lista provista al final del prompt. Comparación insensible a mayúsculas y tildes. Vacío si ninguna de la lista aplica"
   },
   {
     "key": "description",

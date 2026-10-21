@@ -2216,9 +2216,11 @@ export async function ingressNewProduct(input: IngressItemInput, warehouse_id: s
       code = gen as string
     }
 
-    // Tecnología: la categoría es obligatoria. Debe venir de la lista
-    // del tenant (no se crea on-the-fly) y no se admite vacía.
-    if (rubro === "tecnologia" && (input.category || "").trim() === "") {
+    // Rubros con whitelist cerrada de categorías (allowCreateCategory=false):
+    // la categoría es obligatoria y debe venir de la lista. Antes solo
+    // tecnología validaba esto; ahora también ropa — se evitan duplicados
+    // tipo "Camisetas / CAMISETAS".
+    if (!allowCreateCategory && (input.category || "").trim() === "") {
       return {
         success: false,
         message: "La categoría es obligatoria. Elige una de la lista del negocio.",
