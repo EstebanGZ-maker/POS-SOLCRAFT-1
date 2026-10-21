@@ -186,6 +186,10 @@ todavía): `feat/ia-rubro-perfil`, `fix/central-purchases-motivo`,
 `fix/paginacion-1000`, `feat/ajuste-seleccion-multiple`,
 `fix/paginacion-listas`, `feat/desactivar-productos`.
 
+**Historial anterior**: `docs/HISTORIAL-ESTADO.md` (secciones del §0
+previas al 2026-10-20 que ya cerraron, archivadas por la regla "nada
+se borra sin rastro").
+
 ### CERRADO en producción (en orden cronológico de merge)
 
 | Rama (merge) | Sha | Qué cerró |
@@ -231,10 +235,54 @@ todavía): `feat/ia-rubro-perfil`, `fix/central-purchases-motivo`,
    estos productos?" (ir al menú de productos ya no es un paso natural
    para operadores que anulan por "producto que no se vende"). Reusa
    `setProductsActive` del commit `f834ccd`.
-7. **Multi-tenant SOLO diseño** (sin código). Compilar lo acordado en
-   la sección "Plan comercial" + los runbooks de aprovisionamiento
-   que ya existen; definir onboarding con rubro al momento de crear
-   la instancia.
+7. **Multi-tenant SOLO diseño** (sin código): ver "Plan comercial —
+   multi-tenant con diseño primero" más abajo con las 7 correcciones
+   acordadas (Vault, `current_tenant()`, 36 tablas, `USING(true)`,
+   AI Gateway, rubro por instancia, Auth / rama de producción por
+   proyecto). Compilar junto con los runbooks de aprovisionamiento;
+   definir onboarding con rubro al momento de crear la instancia.
+
+### Plan comercial — multi-tenant con diseño primero (SIN CÓDIGO)
+
+**6 clientes esperan**, rubro celulares y tecnología, sin DIAN por
+ahora. Camino A industrializado. Multi-tenant **sin código** hasta que
+Esteban lo pida explícitamente.
+
+**Archivos de diseño pendientes de crear** (no existen todavía en el
+repo): `docs/CAMINO-B-MULTITENANT.md` y
+`docs/PLAN-IMPLEMENTACION-CLIENTES.md`. Cuando se escriban, deben
+incorporar las 7 correcciones acordadas:
+
+0. **Supuesto implícito a romper**: hoy 25 tablas tienen policy de
+   SELECT `USING(true)` para `authenticated` — depende de que
+   **solo el personal interno** tenga cuenta en el proyecto Supabase.
+   Esto se sostiene mientras: (a) "Allow new users to sign up" esté
+   **OFF** en los 3 proyectos (verificado por Esteban), (b) las
+   altas pasen por `admin_create_user` que inyecta rol/sede. Cualquier
+   diseño multi-tenant que permita signup público desde el storefront
+   tiene que reemplazar esos `USING(true)` por policies con `tenant_id`
+   + rol **antes** de habilitar el signup abierto; de lo contrario
+   un cliente final autoregistrado del storefront lee datos operativos
+   del negocio.
+1. **36 tablas** en `public` (no 29). La suite de aislamiento debe
+   recorrer el catálogo entero y fallar si aparece una tabla sin
+   `tenant_id`.
+2. **Secretos por tenant cifrados en Supabase Vault v0.3.1**, no en
+   env vars por slug ni en texto plano.
+3. **IA usa AI Gateway con créditos pagos** (NO `GOOGLE_GENERATIVE_AI_API_KEY`
+   ni API directa de Google). Verificar atribución por usuario/tag.
+4. **El rubro es por instancia, no por tenant**: `business_settings.rubro`
+   ya existe; no depende de la tabla `tenants` (cuando exista).
+5. **Benchmark de `current_tenant()`** contra `tenant_id` como claim JWT
+   y contra `(SELECT current_tenant())` en policies, en staging, ANTES
+   de comprometer la reescritura de las 98 policies.
+6. **RPCs públicos**: `p_tenant_id` NO es frontera de seguridad (la
+   anon key es pública). Definir qué expone y qué valida cada RPC
+   público (tenant activo, tienda habilitada, anti-spam).
+7. **Auth**: comodín de redirect URLs `*.app-solcraft.com` + JWT secret
+   compartido como riesgos. **Evaluar si Vercel permite fijar rama de
+   producción por proyecto** → propuesta: `main` para Solcraft, rama
+   `release` para clientes promoviendo tras smoke en Solcraft + piloto.
 
 ### Pendientes de Esteban (bloquean algo o van en paralelo)
 

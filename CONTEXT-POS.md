@@ -1,6 +1,6 @@
 # CONTEXT-POS.md
 
-Contexto denso de POS-SOLCRAFT para pasar a otra instancia de Claude sin acceso al repo. Estado al **2026-10-14**. Última sesión documentada acá: **§7.22** (celulares-carmen aprovisionado completo Fases 1-2-5 + admin + migración `business_settings.rubro` versionada aplicada en las 3 instancias + UPDATE a `'tecnologia'` en celulares-carmen; código del perfil IA pendiente). `main` @ `afdd603`. Detalle operativo actualizado siempre en `docs/ESTADO-PENDIENTES.md §0`.
+Contexto denso de POS-SOLCRAFT para pasar a otra instancia de Claude sin acceso al repo. Estado al **2026-10-20**. Últimos merges en producción: perfil IA Y.1+Y.2 + endurecimiento `/api/analyze-product` (`02df6a6`), paginación >1000 filas + orden por código en búsqueda (`6a3dece`), ajuste de inventario con selección múltiple + "Llevar a 0" (`38f7eab`), ajustes con filtros + paginación en servidor + anulación masiva + reporte de compras por `motivo='compra'` (`6a177f6`), desactivar/reactivar productos (admin) con validación de stock (`f834ccd`). `main` @ `f834ccd`, 3 instancias en producción READY. Detalle operativo actualizado siempre en `docs/ESTADO-PENDIENTES.md §0`; historial archivado en `docs/HISTORIAL-ESTADO.md`.
 
 ## 0. Reglas de sesión (obligatorias — leer antes de tocar nada)
 
@@ -40,7 +40,7 @@ antes de ejecutarla.
    se extraen las líneas exactas del archivo y se concatenan como texto
    literal; nunca se tipea el SQL de cero. Reescribir SQL introduce
    divergencia silenciosa con el repo (ver deriva Taiwy Sport
-   documentada en `ESTADO-PENDIENTES.md`). Regla adoptada 2026-10-14.
+   documentada en `docs/HISTORIAL-ESTADO.md`). Regla adoptada 2026-10-14.
 5. **Toda migración aplicada por MCP se versiona en
    `supabase/migrations/` en el MISMO commit**. Aplicar un
    `apply_migration` suelto crea deriva: la DB queda con la función
