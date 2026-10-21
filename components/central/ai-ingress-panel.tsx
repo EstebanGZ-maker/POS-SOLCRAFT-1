@@ -106,6 +106,11 @@ function validateItemClient(
     if (!new RegExp(`^[A-Z0-9]{1,${refMax}}$`).test(ref)) {
       return `Falta la ${uiProfile.ui.labels.size.label.toLowerCase()}: entre 1 y ${refMax} caracteres alfanuméricos.`
     }
+  }
+  // Validación de categoría para TODOS los rubros con whitelist cerrada
+  // (Select). Antes solo aplicaba a tecnología; con ropa pasando a
+  // Select también evita que el server rechace la ingesta más tarde.
+  if (uiProfile.categoryIsSelect) {
     const chosen = (item.category || "").trim()
     if (!chosen) {
       return `Falta elegir la ${uiProfile.ui.labels.category.label.toLowerCase()}.`
@@ -272,10 +277,24 @@ function AiIngressPanelImpl({
       })
       if (!res.ok) throw new Error("analysis failed")
       const { product } = await res.json()
-      update(id, {
-        status: "ready",
-        ...applyAnalysisToItem(product, rubro),
-      })
+      const patch = applyAnalysisToItem(product, rubro)
+      // Canonicalización de categoría cuando el rubro usa whitelist cerrada
+      // (Select): el AI puede devolver "Camisetas" aunque la DB tenga
+      // "CAMISETAS" o "Camisetas largas". Normalizamos (lowercase + sin
+      // acentos) y si matchea, usamos el nombre canónico de la lista;
+      // si no, dejamos vacío para que el operador elija — nunca inventamos.
+      if (uiProfile.categoryIsSelect && typeof patch.category === "string") {
+        const raw = (patch.category || "").trim()
+        if (raw === "") {
+          patch.category = ""
+        } else {
+          const norm = (s: string) => s.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().trim()
+          const needle = norm(raw)
+          const match = categories.find((c) => norm(c.name) === needle)
+          patch.category = match ? match.name : ""
+        }
+      }
+      update(id, { status: "ready", ...patch })
     } catch {
       // Importante: en el catch NO reseteamos a defaults de ropa (XX/M);
       // tecnología debe quedar con los valores vacíos que ya tiene el item.

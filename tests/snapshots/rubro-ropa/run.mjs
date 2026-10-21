@@ -192,7 +192,11 @@ function resetAiGlobals() {
   delete globalThis.__ropa_ai_error_message
   globalThis.__ROPA_FIXTURE_RUBRO = "ropa"
   globalThis.__ROPA_FIXTURE_SUPABASE_ERROR = false
-  globalThis.__ROPA_FIXTURE_CATEGORIES = []
+  // Default de categorías: ambos perfiles ya requieren la lista
+  // (`needsCategoriesList: true`), por lo que un fixture sin categorías
+  // devolvería 503 `categories_read_error`. Usamos un set canónico de
+  // ropa; cada test puede sobreescribirlo.
+  globalThis.__ROPA_FIXTURE_CATEGORIES = ["Camisas", "Pantalones", "Vestidos"]
   // Sesión + rol de usuario autenticado por default: admin activo.
   // Casos de 401/403 setean estos globals explícitamente.
   globalThis.__ROPA_FIXTURE_AUTH_USER = { id: "fixture-user-admin" }
@@ -580,6 +584,19 @@ function captureUIFromPanelOracle(outDir) {
     throw new Error(`AST oracle: esperaba ${ROPA_FIELD_KEYS.length} pairs, encontró ${pairs.length}`)
   }
   const labelsByKey = Object.fromEntries(pairs.map((p, i) => [ROPA_FIELD_KEYS[i], p]))
+  // Divergencia intencional post-refactor: tras `feat/ia-categorias-select-todos`
+  // la categoría de ropa pasa de Input libre a Select contra whitelist
+  // (mismo patrón que tecnología) para evitar duplicados tipo
+  // "Camisetas / CAMISETAS". El panel original @ 1aff84b aún tiene
+  // Input; esto no es una regresión del refactor sino un cambio
+  // acordado — overrideamos la fila para que `--source=route` quede
+  // alineada con `--source=profile`.
+  labelsByKey.category = {
+    label: "Categoría",
+    component: "Select",
+    placeholder: "Elige una categoría",
+    maxLength: null,
+  }
 
   writeJSON(path.join(outDir, "ui-labels.json"), labelsByKey)
   writeJSON(path.join(outDir, "ui-constants.json"), canonicalConstants)
@@ -930,8 +947,18 @@ async function runIsolation() {
   }
 
   function scanTextOf(profile) {
+    // Categorías realistas por rubro para la prueba de aislamiento. Si
+    // pasáramos las categorías de tecnología a ropa (y viceversa), la
+    // lista inyectada en el prompt dispararía falsos positivos en el
+    // escaneo cruzado (p.ej. "FUNDAS" como marcador tec dentro del
+    // prompt de ropa). Cada rubro ve categorías propias.
+    const categoriesByRubro = {
+      ropa: ["Camisas", "Pantalones", "Vestidos"],
+      tecnologia: ["FUNDAS", "CARGADORES", "AUDIFONOS"],
+    }
+    const cats = categoriesByRubro[profile.rubro] ?? []
     const parts = [
-      profile.buildInstructions({ categories: ["FUNDAS", "CARGADORES", "AUDIFONOS"] }),
+      profile.buildInstructions({ categories: cats }),
       profile.messageTemplate("imagen"),
       profile.messageTemplate("video"),
     ]

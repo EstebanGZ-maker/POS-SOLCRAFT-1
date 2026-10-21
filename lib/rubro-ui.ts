@@ -86,16 +86,21 @@ export interface RubroUIBundle {
 
 export const ROPA_UI: RubroUIBundle = {
   rubro: "ropa",
-  allowCreateCategory: true,
+  // Categorías: Select contra la lista existente (igual que tecnología).
+  // Antes era Input libre con creación on-the-fly, que produjo
+  // duplicados tipo "Camisetas / CAMISETAS" y "PANTALONETA / PANTALONETAS"
+  // en Solcraft y Taiwy — ahora el panel presenta la lista real y el
+  // operador elige una.
+  allowCreateCategory: false,
   showSuggestedPrice: true,
   typePrefixMaxLength: 4,
   referenceMaxLength: null,
-  categoryIsSelect: false,
+  categoryIsSelect: true,
   ui: {
     labels: {
       name:        { label: "Nombre del producto",       component: "Input",       placeholder: "Ej: Camisa manga larga", maxLength: null },
       type_prefix: { label: "Tipo (prefijo)",            component: "Input",       placeholder: "CA",                      maxLength: 4 },
-      category:    { label: "Categoría",                 component: "Input",       placeholder: "Camisas",                 maxLength: null },
+      category:    { label: "Categoría",                 component: "Select",      placeholder: "Elige una categoría",    maxLength: null },
       size:        { label: "Talla",                     component: "Input",       placeholder: "M",                       maxLength: null },
       color:       { label: "Color",                     component: "Input",       placeholder: "Azul",                    maxLength: null },
       price:       { label: "Precio de venta (COP)",     component: "MoneyInput",  placeholder: "95.000",                  maxLength: null },
