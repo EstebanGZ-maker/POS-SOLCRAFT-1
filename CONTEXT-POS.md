@@ -793,9 +793,63 @@ Ninguna decidida. `suspended_sales` funciona hoy con opción 4 implícita.
 
 ### Bugs conocidos sin corregir
 
-- **`app/central/page.tsx:23`**: importa `getCategories` de `@/lib/inventory-actions` que no existe. Warning webpack, silencioso runtime; UI de central muestra "sin categorías". Solo requiere crear el export.
+- ~~**`app/central/page.tsx:23`**: importaba `getCategories` de `@/lib/inventory-actions` que no existe.~~ **Resuelto 2026-10-19** (`407cff7` para el panel IA y `6a3dece` para el filtro de envío masivo del BulkSendPanel). El build no falló porque `typescript.ignoreBuildErrors=true` y `eslint.ignoreDuringBuilds=true` dejan pasar imports fantasma — ver lecciones abajo.
 - **`lib/shift-actions.ts` (pre-S1)**: `openShift`, `closeShift`, `addCashMovement`, `getShiftHistory`, `getCurrentShift` sin `requireRole()`. Cerrado por S1-paso1 vía validación interna en los RPCs, pero mientras el deploy no lande el path directo del wrapper viejo sigue vivo.
 - **`lib/actions.ts createSale`**: sin `requireRole`. Único punto abierto para venta en el POS. Cierra en S1-paso2 pendiente.
+
+### Lecciones aprendidas 2026-10-20 (paginación + anulación de duplicados)
+
+- **PostgREST corta en 1000 filas sin error visible**. Toda lectura de
+  lista que pueda superar 1000 filas debe elegir una de dos estrategias
+  — nunca un `select` sin tope:
+  - **Catálogos que el cliente consume completos** (POS, selectores,
+    importador, reportes agregados): `fetchAllPages(buildQuery)` en
+    `lib/pos-bootstrap-queries.ts` — pagina en el servidor con
+    `.range(from, from + pageSize - 1)` hasta recibir menos filas que
+    `pageSize`. Requiere **orden estable** (name + tiebreaker por PK
+    típicamente `product_id` / `customer_id`) para no duplicar ni
+    perder filas entre páginas. Techo anti-loop en 500 páginas.
+  - **Listas administrativas con crecimiento sin límite** (ajustes,
+    ventas, transfers, kardex): paginación en servidor con
+    `.range()` + `count: "exact"` + filtros server-side; la UI muestra
+    "Anterior / Siguiente · página X de Y · N resultados" y limita las
+    bulk actions a 200 ids. Ejemplo canónico implementado:
+    `getAdjustmentsPaginated` + `getAdjustmentIdsForFilter` (`6a177f6`).
+  - **Nunca** un `select` sin límite sobre `products`,
+    `inventory_adjustments`, `stock_movements`, `sales`, `transfers`,
+    `product_stock` ni `product_prices`.
+- **Duplicados de ingreso: se anula el ajuste de ingreso, NO se crea
+  un ajuste de disminución**. `void_adjustment` revierte stock sin
+  asiento (es la operación correcta porque el ingreso original nunca
+  fue mercancía real); `create_adjustment` con objetivo "disminuir"
+  registra un gasto "Merma / Ajuste negativo" en contabilidad, que
+  acá sería mentira. Procedimiento validado en Taiwy el 2026-10-20
+  con 14 ajustes anulados (ver "Registro de intervenciones manuales"
+  en `docs/ESTADO-PENDIENTES.md`).
+- **Un ajuste 100% disminución exige `motivo = NULL`**. Lo valida
+  `create_adjustment` del lado del RPC; el formulario de ajuste tiene
+  que ocultar o deshabilitar el Select de motivo cuando todas las
+  filas son "disminuir" (hoy la UI lo deshabilita pero deja el select
+  visible — queda como mejora pendiente en §0).
+- **El ingreso (IA o manual) deja el stock en Bodega Central**; el
+  POS de cada sede solo ve su propia bodega hasta que se ejecuta un
+  traslado desde Central. Confusión frecuente al validar smoke: el
+  producto nuevo "no aparece" en POS porque el stock está en Central.
+- **Deuda técnica: `products.stock_quantity` es columna legada y
+  está desalineada** (Taiwy 1.251 vs 1.333 productos activos; en
+  Solcraft también). No usarla para nada — la fuente de verdad es
+  `product_stock.quantity` por bodega.
+- **`ignoreBuildErrors=true` + `ignoreDuringBuilds=true` dejaron
+  llegar a prod un import inexistente** (`getCategories` desde
+  inventory-actions). El dev server y el build no fallaron; solo se
+  detectó el síntoma visible (dropdown vacío) en preview Y.2.
+  Pendiente evaluar bajar estas banderas o al menos agregar un chequeo
+  CI con `tsc --noEmit` filtrado a los archivos tocados por el PR.
+- **Paginación: el POS sigue cargando todo el stock de la sede** (la
+  búsqueda instantánea es crítica para el lector de códigos y el flujo
+  de caja). Las listas administrativas pasan a paginación en servidor
+  **antes** de abrir multi-tenant; el POS se evalúa aparte si llega a
+  presionar al free tier de Supabase.
 
 ### Drift de esquema (prod tiene objetos no versionados en `scripts/*.sql`)
 
@@ -811,7 +865,10 @@ Ninguna decidida. `suspended_sales` funciona hoy con opción 4 implícita.
 - **M8** — Recoger en tienda (feature del storefront).
 - **M9** — Cuentas de cliente (tabla `customer_accounts` existe, UI no).
 - **M12** — Excluir ventas anuladas del cálculo de `expected_cash` en `close_shift` RPC y `buildBalance` TS (paridad 1:1 preservada en S1 por prudencia; mejora aparte).
-- **`products.stock_quantity`** — columna legacy congelada en 0. Ignorable, `product_stock.quantity` es la fuente.
+- **`products.stock_quantity`** — columna legacy desalineada (en Taiwy
+  1.251 vs 1.333 productos activos; en Solcraft hay drift similar).
+  No usar — `product_stock.quantity` por bodega es la fuente de verdad.
+  Confirmado 2026-10-20 al paginar `getProductsWithStock`.
 
 ### Deuda de tests
 

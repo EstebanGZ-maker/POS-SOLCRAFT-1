@@ -39,6 +39,8 @@
 | 2026-10-14 15:58:35 UTC | `lmuuilicckgderapyxma` (celulares-carmen) | Fase 5 del runbook, bloque único transaccional: `INSERT INTO price_lists` ('General', default), `INSERT INTO sites` (CEN/CC1/CC2, 3 filas), `INSERT INTO warehouses` (Tránsito+Principal en CEN, Principal en CC1, Principal en CC2 — 4 filas, todas `is_public=false`), `INSERT INTO adjustment_counters` (3), `INSERT INTO site_counters` (3), `INSERT INTO categories` (10 — FUNDAS/CARGADORES/AUDIFONOS/VIDRIOS/CABLES/POWERBANKS/SOPORTES/PARLANTES/RELOJES/ACCESORIOS), `INSERT INTO business_settings` (business_name='Celulares Carmen', regime='No responsable de IVA', WhatsApp/COD/Wompi/pickup/delivery todos false). | Datos semilla iniciales de la instancia. Replica estructura de Taiwy Sport verificada en la base. verify_provisioning.sql 39/39 PASS tras aplicar. | Esteban |
 | 2026-10-14 18:59:26 UTC | Vercel proyecto `pos-celulares-carmen` (`prj_aEMbFXOf1UGzanQFJEqXxpfPdoy4`) | Dominio `tecnologia-accesorios.app-solcraft.com` agregado por Esteban al proyecto `pos-celulares-carmen`; es el dominio oficial. `verified=true` (zone `app-solcraft.com` corre en nameservers de Vercel, el registro se crea solo). | Dominio oficial de la instancia celulares-carmen. El nombre interno `celulares-carmen` se mantiene como handle de instancia/proyecto; el subdominio se eligió por el cliente y no tiene que coincidir con él. | Esteban |
 | 2026-10-14 19:27:59 UTC | `lmuuilicckgderapyxma` (celulares-carmen), `auth.users` + `user_profiles` | Cuenta `sebitas542010@hotmail.com` creada con rol `admin` (vía trigger `on_auth_user_created` + alta en Dashboard → Authentication → Add user). | Cuenta del cliente confirmada por Esteban el 2026-10-14. Rol definitivo (admin si es el dueño, encargado con sede si es colaborador) queda por confirmar con el cliente — no modificar la fila. | Esteban (confirmación 2026-10-14) |
+| 2026-10-18 (smoke Y.2) | `lmuuilicckgderapyxma` (celulares-carmen) | Producto de prueba `PU-12P-1-00` (Powerbank, stock 1) creado desde el panel de Ingreso con IA durante el smoke de la preview Y.2. Sigue **activo** y con stock 1. | Dato de smoke que quedó en la DB; pendiente anular (void del ajuste de ingreso que lo creó + `setProductsActive([…], false)` cuando el stock pase a 0). Está en los pendientes de Esteban del §0. | Esteban |
+| 2026-10-20 | `aapchdjwpqhwsquffnxn` (Taiwy Sport) | 14 ajustes de ingreso anulados por duplicados vía `void_adjustment` desde la UI: #1158, 1159, 1160, 1161, 1162, 1163, 1164, 1165, 1166, 1167, 1168, 1169, 1291, 1293. Productos afectados: `ST-20-110-00..03` (4), `ST-30-120-00..05` (6), `ST-40-130-00/01` (2), `TG-42-220-02/03` (2). Tras la anulación los productos quedaron con stock 0 y fueron desactivados; `verify_kardex_integrity` y las integridades contables y de crédito corren en 0. | Limpieza de duplicados detectados por Esteban en la lista de Ajustes nueva (filtros + paginación). `void_adjustment` revierte el stock sin asiento, lo que es lo correcto porque el ingreso original ya se desarmó entero — NO se usó un ajuste de disminución, porque `create_adjustment` registra un gasto "Merma / Ajuste negativo" en ese caso y el ingreso de duplicados nunca fue mercancía real. Sin gasto de merma registrado. | Esteban |
 
 > **Reglas de la tabla**:
 > - **No se borran filas** — una intervención antigua que se revierte se
@@ -175,48 +177,96 @@ sobre datos limpios. Coordinar con Esteban cuándo hacer la pasada.
 
 ---
 
-## 0. LEE ESTO PRIMERO — estado tras sesión 2026-10-14 (celulares-carmen aprovisionado + base perfil IA)
+## 0. LEE ESTO PRIMERO — estado tras sesión 2026-10-20
 
-**Estado de ramas**: `main` @ `afdd603`. Sin ramas de feature vivas.
-Deploys production `pos-solcraft-1-a1x2` y `pos-taiwysport` **READY** del
-commit `afdd603`.
+**Estado de ramas**: `main` @ `f834ccd`. Deploys production de las 3
+instancias (Solcraft, Taiwy Sport, celulares-carmen) **READY** sobre ese
+sha. Ramas de feature mergeadas y preservadas en origin (no borrar
+todavía): `feat/ia-rubro-perfil`, `fix/central-purchases-motivo`,
+`fix/paginacion-1000`, `feat/ajuste-seleccion-multiple`,
+`fix/paginacion-listas`, `feat/desactivar-productos`.
 
-### Y.1 — perfil IA (ropa/tecnología): WIP local sin revisión (2026-10-17)
+### CERRADO en producción (en orden cronológico de merge)
 
-- Rama `feat/ia-rubro-perfil` con commit **WIP local** de Y.1 (perfil IA
-  ropa/tecnología), **sin revisión de Esteban**: **no commitear ni
-  mergear** nada encima. Al reanudar, el próximo paso es que Esteban
-  pegue los diffs desde la terminal para revisarlos.
-- Pasan todos los tests del fixture: `--source=profile --verify` y
-  `--source=route --verify` (18 archivos byte-idénticos), `--isolation`
-  20/20, `--behavior` 25/25.
-- Fix del fixture ya mergeado en `71791a5` (extractor AST en vez del
-  regex buggy; solo `outputs/client-fallbacks.json` + `run.mjs` +
-  README cambiaron, los otros 17 outputs quedaron idénticos).
-- Perfil de tecnología aprobado con 7 correcciones aplicadas (marca del
-  EQUIPO en fundas/vidrios/cables; category como lista inyectada por
-  request; REJECTION_RULE como constante propia; español sin voseo;
-  `typePrefixMaxLength` por perfil; sufijos sin abreviatura literal en
-  mayúsculas). Accesorios universales (cable/cargador sin modelo):
-  `reference` vacía y el operador la escribe; la UI bloquea Guardar
-  hasta completarla.
-- La ruta `/api/analyze-product` tras merge pasa a exigir **sesión
-  implícita** (status 401 `rubro_missing` sin sesión por la lectura
-  de `business_settings.rubro`) en las 3 instancias, con una lectura
-  extra a `business_settings` (y a `categories` solo en modo tecnología)
-  y un nuevo modo de falla 503 `rubro_read_error` si Supabase falla al
-  leer. **Falta su commit propio de endurecimiento**: guard 401
-  explícito y fix del campo `debug` que expone el mensaje interno del
-  AI Gateway.
-- **Pendientes abiertos tras Y.1**:
-  - **Y.2** — UI de tecnología (Select de categoría poblado desde DB,
-    sin precio/costo sugeridos, Guardar bloqueado si falta `marca` **o**
-    `referencia`; el servidor ya rechaza con `validateItemForRubro`).
-  - **Y.3** — reemplazar la etiqueta hardcoded "Talla" por la del
-    perfil en el formulario manual de productos
-    (`app/inventory/products/`), el importador de Excel y la landing
-    del catálogo público. Celulares-carmen carga por Excel → el label
-    debe decir "Referencia" para `rubro='tecnologia'`.
+| Rama (merge) | Sha | Qué cerró |
+|---|---|---|
+| `feat/ia-rubro-perfil` | **`02df6a6`** | Y.1 + Y.2 + endurecimiento `/api/analyze-product` (sesión explícita con `supabase.auth.getUser()`, rol admin/encargado, sin campo `debug` en el body — detalle solo en `console.error`). Incluye el fix del import roto de `getCategories` que vaciaba el Select de categorías en tecnología y el filtro de envío masivo. |
+| `fix/paginacion-1000` | **`6a3dece`** | Paginación >1000 filas de PostgREST con `fetchAllPages` (products × stock, customers, product_prices, product_stock global, catálogo completo para reportes e importador). Orden por `code` descendente con comparación natural en el buscador de Productos y servicios + selector de envío masivo. |
+| `feat/ajuste-seleccion-multiple` | **`38f7eab`** | Nuevo ajuste: `MultiProductPicker` con checkbox + "Agregar N seleccionados"; stock por fila que recalcula al cambiar bodega; acciones masivas Objetivo / Cantidad / "Llevar a 0"; validación cliente de Disminuir > stock con motivo visible. Nueva bulk action "Ajustar seleccionados" desde Productos y servicios. |
+| `fix/paginacion-listas` | **`6a177f6`** | Lista de Ajustes paginada en servidor (50/página, `.range()` + `count: "exact"`); filtros server-side (search por notes + items, motivo, tipo, estado, bodega, fecha, total min/max, numero); selección masiva ("esta página" + "todos los resultados del filtro" cap 200); `voidAdjustmentsBulk` con partial-success y detalle de fallos. `getCentralPurchases` filtra por `motivo='compra'` (cherry-pick de `ff04006`) y usa `fetchAllPages`; `getCentralDistributions` también paginado para totales exactos. |
+| `feat/desactivar-productos` | **`f834ccd`** | `setProductsActive(ids[], active)` admin-only con validación de stock=0 en todas las bodegas (incluida Tránsito) para desactivar. Bulk actions "Desactivar / Reactivar seleccionados" + menú ⋮ por fila + filtro Estado (Activos / Inactivos / Todos) + switch Activo admin-only en el formulario de edición. `revalidatePath` de `/inventory/products`, `/central`, `/pos`, `/catalog`. |
+
+### PENDIENTES (en orden de arranque sugerido)
+
+1. **Paginación en servidor de Ventas, Traslados y Kardex**. Las listas
+   administrativas siguen con el patrón pre-paginación; con la cuenta
+   de filas crecen más allá de 1000 (vía 1 año) el reporte queda
+   trunco. Patrón: igual que `getAdjustmentsPaginated` (`.range` +
+   `count: "exact"` + filtros server-side + orden estable con
+   tiebreaker por PK).
+2. **Catálogo público ordenado "más nuevo primero"**. Requiere
+   migración `public_catalog_list` para ordenar por `created_at` DESC
+   (verificar `md5(prosrc)` previo en las 3 instancias para no pisar
+   deriva; SQL va a revisión antes de aplicar). En código,
+   `revalidatePath("/catalog")` en los endpoints de ingreso IA, ajuste,
+   traslado y venta para que el storefront vea los productos nuevos.
+3. **Formulario de ajuste** (`AdjustmentDialog`): si todas las filas
+   son "disminuir", **quitar el Select de motivo automáticamente**
+   (el server ya exige `motivo=NULL` en ese caso vía `create_adjustment`)
+   y mostrar un aviso explícito "Este ajuste 100% disminución registra
+   gasto por merma". Hoy la UI lo deshabilita pero deja el select
+   visible, confunde al operador.
+4. **Ingreso IA en lotes** (1 ajuste por "Ingresar todo", no uno por
+   producto). **Decisión de Esteban pendiente**: hoy crea N ajustes
+   independientes, lo que fragmenta el reporte de Compras. Alternativa:
+   un único ajuste con todos los items. Trade-off: la anulación pasa
+   a ser todo o nada.
+5. **Y.3 — "Talla" → "Referencia"** en el formulario manual de
+   productos (`app/inventory/products/product-form-dialog.tsx`), en
+   el importador de Excel (`components/inventory/product-import-*`)
+   y en el catálogo público. Fuente del label: `uiProfile.ui.labels.size`.
+   celulares-carmen carga por Excel → el header de la columna debe
+   decir "Referencia" para `rubro='tecnologia'`.
+6. **Anulación masiva**: tras anular, ofrecer "¿Desactivar también
+   estos productos?" (ir al menú de productos ya no es un paso natural
+   para operadores que anulan por "producto que no se vende"). Reusa
+   `setProductsActive` del commit `f834ccd`.
+7. **Multi-tenant SOLO diseño** (sin código). Compilar lo acordado en
+   la sección "Plan comercial" + los runbooks de aprovisionamiento
+   que ya existen; definir onboarding con rubro al momento de crear
+   la instancia.
+
+### Pendientes de Esteban (bloquean algo o van en paralelo)
+
+- **Apagar el registro abierto de Supabase en celulares-carmen**
+  (`Auth → Providers → Allow new users to sign up`). Hoy sigue en
+  ON; riesgo multi-tenant si alguien conoce la URL.
+- **Auth URLs + `NEXT_PUBLIC_APP_URL`** del proyecto Vercel: setear
+  la Site URL de Supabase y la env var en Vercel y hacer **redeploy**
+  (los links del magic/invite usan la Site URL en el momento de
+  enviarse; sin redeploy, los correos existentes siguen apuntando
+  al valor viejo).
+- **Confirmar `sebitas542010@hotmail.com`** (invite enviado el
+  2026-10-14): dar OK si es el dueño (rol admin) o restringir a
+  `encargado + site_id` si es colaborador.
+- **Revisar cuentas de Solcraft**: lista completa de admins/encargados
+  antes de cualquier movimiento de rotación.
+- **Anular el Powerbank de prueba `PU-12P-1-00`** en celulares-carmen
+  (sigue activo con stock 1 de la fase Y.2 — ver registro de
+  intervenciones manuales).
+
+### Pendientes ALTA (sin cambios respecto a sesión anterior)
+
+- **Alineación de los 4 guards de Solcraft** (`apply_customer_credit`,
+  `create_adjustment`, `create_sale`, `void_adjustment`) con la versión
+  del repo (= CC HOY). Si algún `md5_norm` cambia respecto al baseline
+  del gate tras aplicar, actualizar baseline en el mismo commit.
+- **Trazabilidad de anulaciones** (`voided_by`, `voided_at`,
+  `void_reason` + vista "Anulados"). Primero ajustes. La migración
+  reescribe `void_adjustment` → rompe baseline `33b md5_norm` (hoy
+  `58c2918a…`); en el mismo commit actualizar baseline del gate.
+- **Rotación `anon` key y `service_role` de Solcraft**: pendiente sin
+  fecha.
 
 ### Instancias productivas (3)
 
@@ -228,422 +278,6 @@ commit `afdd603`.
 
 Team Vercel: `team_NYfI1cmi7rmw2rG6BEP7Ws2p`.
 
-### Cerrado y verificado al 2026-10-14
-
-- **Endurecimiento SECDEF**: 15 funciones sin EXECUTE para anon en
-  Solcraft y Taiwy Sport (migraciones `20261012000000` + `20261012000001`,
-  verificado con `has_function_privilege`). Smoke reversible pasado en
-  ambas (ajuste #1 anulado + 3 integridades en 0).
-- **Auditoría de deriva, reglas de sesión y registro de intervenciones
-  manuales** formalizados (`CONTEXT-POS.md §0`, tabla "Registro de
-  intervenciones manuales en producción"). Diff estricto confirmó que la
-  única diferencia LÓGICA entre instancias era el guard débil de los 4
-  guards de Solcraft (resto cosmético).
-- **celulares-carmen** aprovisionado:
-  - **Fase 1** (crear proyecto, USD 10/mes, sa-east-1, `ACTIVE_HEALTHY`).
-  - **Fase 2**: 36 tablas, 57 funciones, 98 policies, 123 índices, 6
-    triggers. Paridad con Taiwy Sport salvo 4 funciones cosméticas
-    documentadas. Scripts 15/16/17a/17b/17c_v2/17e/18 PARCIAL +
-    10 migraciones versionadas (incluye las 2 de 20261012 REVOKE anon +
-    20260918000001 `catalog_facets_by_category` recuperada).
-  - **Fase 5**: sedes CEN (central), CC1, CC2; 10 categorías (FUNDAS,
-    CARGADORES, AUDIFONOS, VIDRIOS, CABLES, POWERBANKS, SOPORTES,
-    PARLANTES, RELOJES, ACCESORIOS); Tránsito única; lista `General`
-    default; contadores por sede; `business_settings` con
-    `business_name='Celulares Carmen'`, `regime='No responsable de IVA'`,
-    comercio apagado (WhatsApp/COD/Wompi/pickup/delivery todos false).
-  - **Admin inicial**: `esteban@solcraftsas.com` con `role='admin'`,
-    `site_id=NULL`, `is_active=TRUE`, 0 filas en `user_sites` (replica
-    convención Taiwy Sport verificada por Esteban).
-  - **Proyecto Vercel** `pos-celulares-carmen` creado con deploy READY.
-- **Gate `scripts/verify_provisioning.sql`**: 53 chequeos (01-15
-  anon_internal, 16-25 anon_public, 26-27 buckets, 28-29 triggers,
-  30 RPCs 2C+D, 31 Tránsito única, 32 primarias, 33a guard endurecido
-  × 4, 33b md5 norm × 10 vs baseline del repo, 34-36 integridades,
-  37 business_settings, 38-39 walk-in, 40 conteos globales).
-  **53/53 PASS en celulares-carmen; 49/53 PASS en Taiwy Sport** (4
-  cosméticas conocidas del 33b: `close_shift`,
-  `create_adjustment`, `verify_adjustment_accounting_integrity`,
-  `verify_credit_integrity`).
-- **Migración 20260918000001** (`public_catalog_facets`) versionada:
-  antes solo existía como migración MCP suelta aplicada 2026-08-31
-  a Solcraft y Taiwy Sport, sin archivo en el repo. Recuperada desde
-  `statements[1]` de `schema_migrations` de TS.
-- **Migración 20261014000000** (`business_settings.rubro TEXT NOT NULL
-  DEFAULT 'ropa' CHECK IN ('ropa','tecnologia')`): aplicada canario en
-  las 3 instancias el 2026-10-14 ~22:50 UTC. Commit `afdd603`. UPDATE a
-  `'tecnologia'` en celulares-carmen aplicado y verificado
-  (~22:59 UTC en el registro de intervenciones). Solcraft y Taiwy Sport
-  siguen en `'ropa'`. **El código del perfil IA NO se ha escrito.**
-- **Hallazgos corregidos**:
-  - Policies son **98** (no 97) — también en Taiwy Sport. Actualizado en
-    runbook §2.2.1 y en gate.
-  - Supabase Vault v0.3.1 YA está instalado — rehacer decisión Wompi
-    con credenciales **cifradas por tenant en Vault**, no env vars.
-  - `Consumidor final` es **precondición del script 15** (bootstrap del
-    walk-in + verificación abortiva D12). Movido en runbook §2.3 ANTES
-    de scripts 15-18. §5.3 queda cumplido por §2.3.
-- **Reglas de sesión formalizadas** (`CONTEXT-POS.md §0`):
-  - #4: SQL se **extrae del archivo**, nunca se reescribe de memoria.
-  - #5: Toda migración MCP se **versiona en `supabase/migrations/`** en
-    el mismo commit.
-
-### Pendientes de celulares-carmen (en orden)
-
-1. **Dominio oficial** `tecnologia-accesorios.app-solcraft.com`: ✅
-   agregado por Esteban al proyecto Vercel `pos-celulares-carmen` el
-   2026-10-14 18:59:26 UTC, `verified=true`, responde 200 por HTTPS.
-   Nombre interno `celulares-carmen` se mantiene como handle de
-   instancia/proyecto; el subdominio no coincide con él y es correcto.
-2. **(ALTA, nuevo 2026-10-15) Supabase Auth "Allow new users to sign up"
-   ACTIVADO en celulares-carmen**: verificado por el asistente (sin
-   tocar nada). Con `Confirm email` apagado, un registro público desde
-   `tecnologia-accesorios.app-solcraft.com/login` crea un `auth.users`
-   + un `user_profiles` vía trigger `handle_new_user()` (rol
-   `vendedor`, `is_active=true`). **25 tablas tienen policy de SELECT
-   con `USING(true)` para `authenticated`** (`customers`,
-   `sale_payments`, `cash_movements`, `customer_credits`,
-   `stock_movements`, `transfers`, `suspended_sales`, etc.), por lo
-   que una cuenta anónima autoregistrada **ve datos del negocio en
-   crudo**. La RPC `admin_create_user` inserta directamente en
-   `auth.users` con `role='service_role'` + guard de rol admin: NO
-   depende del interruptor, apagar el signup no la rompe. **Esteban
-   apaga el interruptor en Dashboard → Authentication → Settings
-   del proyecto `lmuuilicckgderapyxma`.** Falta verificar en Solcraft
-   (`nxszaxwsrtlofqimbfig`) y Taiwy Sport (`aapchdjwpqhwsquffnxn`) —
-   Esteban manda capturas.
-3. **Pendiente de Esteban (post-dominio)** — infra que yo no toco:
-   - `NEXT_PUBLIC_APP_URL=https://tecnologia-accesorios.app-solcraft.com`
-     en Vercel proyecto `pos-celulares-carmen`, targets **Production
-     + Preview**, + redeploy.
-   - Supabase Auth del proyecto `lmuuilicckgderapyxma`: `Site URL` y
-     `Redirect URLs` actualizados al dominio oficial.
-   - Verificar que las 4 env vars estén en target **Preview** además
-     de Production: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`,
-     `SUPABASE_SERVICE_ROLE_KEY`, `NEXT_PUBLIC_APP_URL`. **El MCP no
-     puede listarlas (403 forbidden)** — lo verifica Esteban en dashboard.
-   - Revisar cuentas inesperadas en Solcraft (`admin@solcraft.dev`,
-     `admin@taiwy.com` sin perfil, `qa.multisede@solcraft.dev` y
-     tres administradores Gmail): verificar si corresponden,
-     desactivar / borrar las que no.
-4. **Cuenta `sebitas542010@hotmail.com`**: confirmada por Esteban el
-   2026-10-14 como cuenta del cliente (dueño o colaborador). Rol
-   `admin` vigente; el rol definitivo (admin si es el dueño, encargado
-   con sede si es colaborador) queda por confirmar con el cliente. **No
-   modificar la fila.**
-5. **Verificación de Auth** (`Confirm email` OFF) y **Storage global
-   upload size limit en 100 MB**: Esteban dijo "ya quedó ok" sin
-   verificación formal — pendiente de validar.
-6. **Smoke real con el cliente**: venta en cada local, traslado
-   Central→local con recepción, cierre de turno. Alta de encargados y
-   vendedores. Backups diarios activos.
-7. **Carga inicial** de productos por importador Excel con las 10
-   categorías (sin CELULARES/TABLETS/LAPTOPS por decisión).
-
-### Perfil de rubro IA — diseño aprobado, código pendiente (va por rama)
-
-**Base**: `lib/rubro-profiles.ts` con 2 perfiles `ropa` y `tecnologia`.
-`getRubroProfile(rubro)` **falla con excepción** si el valor no matchea
-(sin fallback a 'ropa'). Perfiles 100% aislados: perfil `ropa` se mueve
-TAL CUAL desde `app/api/analyze-product/route.ts` y
-`components/central/ai-ingress-panel.tsx` **sin reescribir** (preserva
-prompt, schema con `size` obligatorio fallback 'M', `suggested_price` +
-`suggested_cost`, etiquetas CA=Camisa/PA=Pantalón..., formato
-descripción, `allowCreateCategory=true` como hoy). Perfil `tecnologia`
-con prompt/schema/etiquetas **propios sin fragmentos compartidos con
-ropa**, `allowCreateCategory=false`, categorías leídas de la base en
-cada solicitud (SELECT name FROM categories). Si la IA no devuelve una
-categoría del whitelist dinámico, el campo queda vacío y el usuario
-elige. Si la imagen no es del rubro (p.ej. una prenda en tecnología) →
-aviso **"no corresponde al rubro"** con campos vacíos (regla NO
-aplica al perfil ropa).
-
-**Convención `tecnologia`**: código `MARCA-REFERENCIA-PRECIO(miles)-NN`.
-- Prefijo marca: RM Redmi, IP iPhone, SA Samsung, HO Honor, OP Oppo,
-  IN Infinix, TE Tecno. Marcas fuera de esa lista = 2 primeras letras.
-- Referencia:
-  - **Fundas, vidrios, cables**: modelo del EQUIPO al que corresponden
-    (p.ej. funda iPhone 17 Pro Max → `IP-17PM-...`).
-  - **Accesorios con marca propia** (parlantes, audífonos, powerbanks,
-    relojes): nombre comercial del modelo, mayúsculas, sin espacios
-    (`TUNE520BT`, `FLIP6`, `CHARGE5`, `MIBAND8`).
-  - **Si el empaque no muestra el modelo**: referencia **vacía**; UI
-    bloquea Guardar hasta completarla (evita `IP--35-00`).
-  - **La IA NO asigna compatibilidad que el empaque no muestre** (un
-    cable Lightning sin indicar iPhone compatible → referencia vacía).
-- Abreviaturas de modelos: `Pro=P`, `Pro Max=PM`, `Ultra=U`, `Plus=PL`,
-  `Lite=LT`, `Mini=M`, `Note=N`, `Reno=R`, `Flip=FL`, `Fold=FD`. Nada
-  de caracteres especiales.
-- Lista de modelos del prompt = **ejemplos ilustrativos**, no cerrada.
-  El prompt genera por regla modelos nuevos.
-- **Capacidad** (almacenamiento/RAM) va en `name` + `description`,
-  **nunca** en `size` ni `type_prefix`.
-- **Precio y costo**: los carga el usuario — se **quitan** del esquema
-  de tecnología (`suggested_price` y `suggested_cost`).
-- Colores en español. Descripción corta sin inventar datos.
-
-**Verificación obligatoria antes del merge**:
-a. **Test de instantánea** del perfil ropa carácter-por-carácter vs el
-   código actual (prompt, schema JSON, labels).
-b. **Regresión de ropa en preview**: foto de ropa → SOLO ANÁLISIS, no
-   guardar; shape de salida idéntico al actual. Esteban descarta con
-   "Quitar".
-c. **Smoke tecnología en celulares-carmen** con 5 fotos de fundas + 1
-   foto de prenda que debe devolver el aviso "no corresponde al rubro".
-d. **Merge solo si a + b + c pasan**.
-
-**Otras tareas del mismo bloque**:
-- La action de `/settings/receipt` **no puede dejar `rubro` nulo** ni
-  pisarlo accidentalmente — actualizar solo los campos que conoce.
-- **Seed del runbook §5.5** debe incluir `rubro`.
-- **Chequeo de `rubro`** en `scripts/verify_provisioning.sql` (ej.:
-  fila con `rubro IN ('ropa','tecnologia')` NOT NULL).
-
-### Pendientes ALTA, sin tocar
-
-- **Alineación de los 4 guards de Solcraft** (`apply_customer_credit`,
-  `create_adjustment`, `create_sale`, `void_adjustment`) con la versión
-  del repo. **Requisito**: reutiliza versiones del repo (= CC HOY), no
-  las de TS. Si algún `md5_norm` cambia respecto al baseline del gate
-  tras aplicar, actualizar baseline.
-- **Trazabilidad de anulaciones** (`voided_by`, `voided_at`,
-  `void_reason` + vista "Anulados"). Primero ajustes. **Requisito**:
-  la migración reescribe `void_adjustment` → rompe baseline
-  `33b md5_norm_void_adjustment` (hoy `58c2918a...`); en el mismo
-  commit actualizar baseline del gate.
-- **Rotación anon key y service_role de Solcraft**: pendiente sin fecha.
-- **Verificar consumo del AI Gateway con créditos pagos**: evaluar en
-  docs de Vercel si permite atribuir consumo por usuario/tag.
-- **(MEDIA) Campo `debug` del error de `/api/analyze-product` expone
-  mensaje interno**: el `catch` de `app/api/analyze-product/route.ts`
-  devuelve en el body `{ error, debug: error?.message || String(error) }`
-  con status 500. `debug` puede incluir texto propagado del AI Gateway
-  o de la provider (rate limit, "invalid api key", etc.). **Fix** en el
-  mismo commit que cierre la auth del endpoint — eliminar `debug` del
-  body público y loguearlo solo en server-side con `console.error`.
-  **No corregir dentro del refactor del perfil IA**: el fixture
-  mecánico (`tests/snapshots/rubro-ropa/outputs/response-gemini-throws.json`)
-  preserva el shape actual byte a byte para que el refactor sea una
-  identidad verificable; el fix queda como commit aparte que regenera
-  esa captura a propósito.
-- **Endpoint `/api/analyze-product` sin autenticación**: hoy acepta
-  POST anónimos y consume créditos del AI Gateway. Verificado por
-  lectura de código el 2026-10-15 (sin llamadas reales a producción):
-  el repo no tiene `middleware.ts` y `app/api/analyze-product/route.ts`
-  no llama `requireRole` ni lee sesión. Riesgo acotado hoy a saldo de
-  AI Gateway (no toca DB). **Fix** en commit propio (no mezclar con
-  el refactor del perfil IA): guard de sesión en la ruta, 401 explícito
-  sin cookie válida, prueba automática (401 anónimo + 200 con sesión).
-  En el refactor del perfil IA, la lectura de `business_settings.rubro`
-  debe ejecutarse **antes** de `generateObject` — así una llamada sin
-  sesión falla sin gastar créditos aunque el guard explícito aún no
-  esté. Riesgo inherente mientras no se mergee: cualquiera con la URL
-  pública puede quemar créditos del tenant.
-- **Cambios de comportamiento del endpoint tras merge de Y.1 (perfil
-  IA)** — anotar para las 3 instancias cuando `feat/ia-rubro-perfil`
-  se mergee a main:
-  - **Nuevo requisito de sesión implícito**: `POST /api/analyze-product`
-    ahora lee `business_settings.rubro` con la sesión del usuario antes
-    de llamar al modelo. **Sin sesión → status 401** (`rubro_missing`),
-    sin invocar `generateObject`. Es el 401 que reemplaza al signup
-    anónimo que hoy quema créditos. Esto cierra el flanco de AI Gateway
-    de facto, pero NO reemplaza al guard explícito pendiente arriba
-    (sigue haciendo falta un `requireRole` del lado del route para los
-    casos donde la lectura de `business_settings` no fuera suficiente
-    como gate; p.ej. si una RLS futura abre esa tabla).
-  - **Nueva lectura server-side**: `business_settings.rubro` en cada
-    request + (solo tecnología) `categories.name ORDER BY name`.
-    Latencia extra ~1 round-trip Supabase antes del modelo. Para
-    tecnología se agrega una segunda round-trip (categorías).
-  - **Nuevo modo de falla 503** (`rubro_read_error`): si Supabase
-    devuelve `error` al leer `business_settings` → status 503,
-    `{error, code: "rubro_read_error"}`, modelo NO invocado. No es un
-    error del usuario; es "configuración del negocio no disponible,
-    reintentá".
-  - **Modo de falla 500** (`rubro_invalid`): si `business_settings.rubro`
-    tiene un valor que no está en el whitelist `('ropa','tecnologia')`
-    → 500 sin invocar modelo. No debería pasar (hay CHECK en la columna),
-    pero el guard existe en el route por defensa en profundidad.
-  - **Pendientes separados que se abren con este merge**:
-    (a) commit propio del guard 401 explícito con `requireRole` o lectura
-    directa de `auth.uid()`;
-    (b) commit propio del fix del campo `debug` que expone el mensaje
-    interno del AI Gateway (ver bullet MEDIA arriba);
-    (c) nota en el runbook de aprovisionamiento: cualquier instancia
-    nueva necesita `business_settings` sembrado con un `rubro` válido
-    antes de que `/central` del cliente funcione (ya está cubierto por
-    la migración `20261014000000_add_business_settings_rubro` con
-    DEFAULT 'ropa' + CHECK, pero sumarlo al runbook como paso
-    verificable del gate `verify_provisioning.sql` chequeo 41).
-
-### Plan comercial — multi-tenant con diseño primero (SIN CÓDIGO)
-
-**6 clientes esperan**, rubro celulares y tecnología, sin DIAN por
-ahora. Camino A industrializado. Multi-tenant **sin código** hasta que
-Esteban lo pida explícitamente.
-
-**Archivos de diseño pendientes de crear** (no existen todavía en el
-repo): `docs/CAMINO-B-MULTITENANT.md` y
-`docs/PLAN-IMPLEMENTACION-CLIENTES.md`. Cuando se escriban, deben
-incorporar las 7 correcciones acordadas:
-
-0. **Supuesto implícito a romper**: hoy 25 tablas tienen policy de
-   SELECT `USING(true)` para `authenticated` — depende de que
-   **solo el personal interno** tenga cuenta en el proyecto Supabase.
-   Esto se sostiene mientras: (a) "Allow new users to sign up" esté
-   **OFF** en los 3 proyectos (verificado por Esteban), (b) las
-   altas pasen por `admin_create_user` que inyecta rol/sede. Cualquier
-   diseño multi-tenant que permita signup público desde el storefront
-   tiene que reemplazar esos `USING(true)` por policies con `tenant_id`
-   + rol **antes** de habilitar el signup abierto; de lo contrario
-   un cliente final autoregistrado del storefront lee datos operativos
-   del negocio.
-1. **36 tablas** en `public` (no 29). La suite de aislamiento debe
-   recorrer el catálogo entero y fallar si aparece una tabla sin
-   `tenant_id`.
-2. **Secretos por tenant cifrados en Supabase Vault v0.3.1**, no en
-   env vars por slug ni en texto plano.
-3. **IA usa AI Gateway con créditos pagos** (NO `GOOGLE_GENERATIVE_AI_API_KEY`
-   ni API directa de Google). Verificar atribución por usuario/tag.
-4. **El rubro es por instancia, no por tenant**: `business_settings.rubro`
-   ya existe; no depende de la tabla `tenants` (cuando exista).
-5. **Benchmark de `current_tenant()`** contra `tenant_id` como claim JWT
-   y contra `(SELECT current_tenant())` en policies, en staging, ANTES
-   de comprometer la reescritura de las 98 policies.
-6. **RPCs públicos**: `p_tenant_id` NO es frontera de seguridad (la
-   anon key es pública). Definir qué expone y qué valida cada RPC
-   público (tenant activo, tienda habilitada, anti-spam).
-7. **Auth**: comodín de redirect URLs `*.app-solcraft.com` + JWT secret
-   compartido como riesgos. **Evaluar si Vercel permite fijar rama de
-   producción por proyecto** → propuesta: `main` para Solcraft, rama
-   `release` para clientes promoviendo tras smoke en Solcraft + piloto.
-
-### Migración MCP suelta `catalog_facets_by_category` recuperada (2026-10-14)
-
-El 2026-08-31 21:57:28 UTC se aplicó por MCP una migración
-`catalog_facets_by_category` a `nxszaxwsrtlofqimbfig` y
-`aapchdjwpqhwsquffnxn` que reescribió `public_catalog_facets` para
-agrupar por `category_id` + ajustó `public_catalog_list`. La
-migración NO se versionó en `supabase/migrations/`, lo que generó
-deriva silenciosa entre repo y producción (el repo quedó con la
-versión del baseline que agrupa por `type_prefix`). Detectado durante
-aprovisionamiento de celulares-carmen el 2026-10-14 vs hash de
-referencia Taiwy Sport (`public_catalog_facets` esperado `cb9ce0a4`,
-baseline producía otro valor). Recuperado el SQL exacto del
-`statements[1]` de `supabase_migrations.schema_migrations` de Taiwy
-Sport (versión `20260831215728`) y versionado como
-`20260918000001_public_catalog_facets_by_category.sql`. **Solo la
-parte de `public_catalog_facets`** — el bloque de `public_catalog_list`
-del statement original se descarta porque `20260918000000` ya reescribió
-esa función con un shape más completo. Aplicado a celulares-carmen; hash
-coincide con Taiwy Sport. **Regla formalizada en `CONTEXT-POS.md §0.5`**:
-toda migración MCP se versiona en el mismo commit.
-
-### Deriva Taiwy Sport en 4 funciones del release 2C+D (2026-10-14)
-
-Durante el diff estricto celulares-carmen vs Taiwy Sport vs Solcraft se
-confirmó deriva cosmética en Taiwy Sport sobre `close_shift`,
-`create_adjustment`, `verify_adjustment_accounting_integrity` y
-`verify_credit_integrity`: `prosrc` reformateado (whitespace comprimido,
-alias `AS X` ausentes en SELECT, 2 mensajes de `RAISE EXCEPTION`
-levemente acortados). Lógica idéntica — guards de rol, secuencia SQL,
-cálculos WAC y comportamiento de retorno son byte-por-byte iguales al
-repo canónico. Origen probable: aplicación manual de los scripts desde
-SQL Editor del Dashboard con reformato propio durante el aprovisionamiento
-inicial (2026-08-25-26), sin registro de intervención. **Decisión
-Esteban 2026-10-14**: Taiwy Sport NO se toca por diferencias cosméticas.
-Solo se corregiría si un diff estricto futuro encuentra diferencia de
-lógica, y con aprobación explícita.
-
-### Decisiones adicionales (reanudación en-sesión 2026-10-13)
-
-- **Multi-tenant (Bloque D)**: **DISEÑO PRIMERO, SIN CÓDIGO.** No se
-  implementa hasta que Esteban lo pida explícitamente. El plan de 4
-  fases queda como documento vivo; la primera fase ejecutable
-  (`tenant_id` + RLS) requiere pedido explícito aparte.
-- **IA para celulares (Bloque C)**: **DESPUÉS del aprovisionamiento**.
-  El cliente arranca por el importador de Excel. El perfil de rubro
-  (prompt, campos extraídos, etiquetas UI, categorías semilla) se
-  diseña e implementa **por rama + preview + smoke**, no por
-  configuración in-prod ni por hotfix.
-- **DB password del proyecto Supabase**: **no se genera ni se
-  almacena**. `create_project` del Management API no la acepta y la
-  app no se conecta por `postgres://...` (todo via PostgREST/Auth).
-  Si en el futuro se necesita acceso directo (`psql`, `pg_dump`),
-  se resetea desde Dashboard → Settings → Database en ese momento y
-  se descarta tras uso. **Runbook §1.1 actualizado.**
-
-### Pendientes, en orden
-
-1. **Bloque B**: aprovisionar `celulares-carmen` fase por fase con el
-   runbook, pausando después de cada fase para que Esteban verifique.
-   Smoke real a cargo de Esteban: una venta en cada local, un
-   traslado Central → local con recepción, cierre de turno. Yo
-   verifico contra la DB.
-2. **Bloque C**: diseño del perfil de rubro **por instancia** para la
-   IA (sin FK a `tenants`, sin CHECK de lista fija de rubros).
-   Parametriza prompt, campos extraídos, etiquetas UI ("Talla" →
-   "Capacidad" / "Variante"), esquema de código, categorías semilla.
-   Implementación posterior por rama + preview + smoke. Cuando exista
-   la tabla `tenants`, el rubro se mueve ahí.
-3. **Bloque D**: `docs/CAMINO-B-MULTITENANT.md` +
-   `docs/PLAN-IMPLEMENTACION-CLIENTES.md` con las 7 correcciones
-   acordadas:
-   - Conteo real: 36 tablas en `public` (no 29).
-   - **Supabase Vault v0.3.1** está instalado — rehacer la decisión
-     Wompi con credenciales **cifradas por tenant en Vault**, no env
-     vars por slug ni texto plano.
-   - IA: el código ya volvió al **AI Gateway pago** (ya no usa
-     `GOOGLE_GENERATIVE_AI_API_KEY` ni la API directa de Google).
-     Verificar en docs de Vercel si el Gateway permite atribuir
-     consumo por usuario/tag.
-   - Perfil de rubro: fuera de Fase 6, pasa a Bloque C. FK a
-     `rubro_profiles` (no CHECK de lista fija).
-   - `current_tenant()`: benchmark contra `tenant_id` como claim JWT
-     y contra `(SELECT current_tenant())` en policies, en staging,
-     antes de comprometer la reescritura de las 97 policies.
-   - RPCs públicos: `p_tenant_id` NO es frontera de seguridad (la
-     anon key es pública). Definir qué expone y qué valida cada RPC
-     público (tenant activo, tienda habilitada, anti-spam).
-   - Auth: comodín de redirect URLs `*.app-solcraft.com` + JWT secret
-     compartido como riesgo.
-   - Modelo de releases: evaluar si Vercel permite fijar rama de
-     producción por proyecto. Propuesta: `main` corre Solcraft; los
-     clientes usan rama `release` que se promueve tras smoke en
-     Solcraft y en un cliente piloto. Solo reportar — no cambiar
-     Taiwy Sport.
-   Orden del plan: primero rubro y aprovisionamiento; después
-   staging, suite de aislamiento y, recién entonces, `tenant_id` y
-   RLS. **NO** migrar Solcraft ni Taiwy Sport. 4 fases, adaptado a:
-   celulares, sin DIAN por ahora, **seis clientes en espera**.
-4. **ALTA — sin tocar aún** (pendientes del backlog SECDEF/deriva):
-   - Alineación de los 4 guards de rol en Solcraft
-     (`apply_customer_credit`, `create_adjustment`, `create_sale`,
-     `void_adjustment`): adoptar la versión de Taiwy Sport,
-     `CREATE OR REPLACE` sin `DROP` (preserva REVOKE a anon). SQL no
-     escrito ni aplicado. **Requisito al aplicar**: la migración debe
-     usar las versiones del REPO (idénticas a celulares-carmen HOY),
-     no las de Taiwy Sport. En consecuencia los `prosrc` normalizados
-     NO van a cambiar en CC/TS/SC post-migración vs el baseline actual
-     del gate, así que `scripts/verify_provisioning.sql` NO requiere
-     actualización. **Verificar re-ejecutando el gate contra las 3
-     instancias tras aplicar — si cualquier `md5_norm` cambia respecto
-     a los baselines, actualizar los hashes referencia del script.**
-   - Trazabilidad de anulaciones (`voided_by`, `voided_at`,
-     `void_reason` + vista "Anulados"). Alcance primera pasada:
-     ajustes. Diseño aprobado; migración no aplicada. **Requisito al
-     aplicar**: la migración reescribe `void_adjustment` para asentar
-     los nuevos campos, cambiando su `prosrc`. Esto rompe el baseline
-     del gate `verify_provisioning.sql §33b md5_norm_void_adjustment`
-     (hoy `58c2918a...`). En el MISMO commit que aplica la migración:
-     (i) correr el gate contra celulares-carmen para capturar el nuevo
-     md5 normalizado de `void_adjustment`, (ii) actualizar el baseline
-     del script, (iii) verificar que CC, TS y SC post-migración dan el
-     mismo md5. Si TS o SC quedan en el valor viejo, documentar como
-     deriva nueva en el registro.
-   - Rotación anon key en Solcraft (`nxszaxwsrtlofqimbfig`) y
-     `SUPABASE_SERVICE_ROLE_KEY`: siguen pendientes, sin fecha.
-
 ### Reglas obligatorias (recordatorio)
 
 Diseño antes que código; mostrar SQL antes de aplicarlo; todo lo que
@@ -654,6 +288,7 @@ nada se borra a mano; cada intervención manual al registro;
 `service_role` nunca por chat.
 
 ---
+
 
 ## HISTORIAL — sesión 2026-08-31 (s25 pulido + guards + fix crítico)
 
