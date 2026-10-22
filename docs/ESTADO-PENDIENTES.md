@@ -219,12 +219,20 @@ se borra sin rastro").
    en §"Registro de intervenciones manuales" (2 filas, 2026-10-22).
    Pre-condición del merge `19ea1d7` sigue vigente: no se pueden crear
    nuevos duplicados vía Ingreso con IA (whitelist cerrada).
-2. **Catálogo público ordenado "más nuevo primero"**. Requiere
-   migración `public_catalog_list` para ordenar por `created_at` DESC
-   (verificar `md5(prosrc)` previo en las 3 instancias para no pisar
-   deriva; SQL va a revisión antes de aplicar). En código,
-   `revalidatePath("/catalog")` en los endpoints de ingreso IA, ajuste,
-   traslado y venta para que el storefront vea los productos nuevos.
+2. **Catálogo público ordenado "más nuevo primero"**. **CERRADO
+   2026-10-22**. Merge `28e90b9` (`feat/catalogo-nuevos-primero`
+   → `main`). Migración versionada `20261022000000_public_catalog_
+   list_order_by_created_at.sql` aplicada en las 3 instancias
+   (`lmuuilicckgderapyxma` → `nxszaxwsrtlofqimbfig` →
+   `aapchdjwpqhwsquffnxn`); md5 pre `c5f5c22991a2c537cbae140c7bd7dd3e`
+   → md5 post `b1b29b406c70f5e476d08a37e8688a88` en las 3. En código,
+   `revalidatePath("/catalog", "layout")` en `ingressNewProduct`,
+   `createAdjustment`, `voidAdjustment` (simple + bulk),
+   `createBulkTransfer`, `receiveTransfer`, `reconcileTransfer`,
+   `setProductsActive`, `saveProduct` y `createSale`. Se mantiene
+   `export const revalidate = 60` en `app/catalog/*` como respaldo.
+   No se registra fila en §"Registro de intervenciones manuales"
+   (migración versionada, regla 5).
 3. **Formulario de ajuste** (`AdjustmentDialog`): si todas las filas
    son "disminuir", **quitar el Select de motivo automáticamente**
    (el server ya exige `motivo=NULL` en ese caso vía `create_adjustment`)
