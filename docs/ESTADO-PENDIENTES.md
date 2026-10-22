@@ -41,6 +41,8 @@
 | 2026-10-14 19:27:59 UTC | `lmuuilicckgderapyxma` (celulares-carmen), `auth.users` + `user_profiles` | Cuenta `sebitas542010@hotmail.com` creada con rol `admin` (vía trigger `on_auth_user_created` + alta en Dashboard → Authentication → Add user). | Cuenta del cliente confirmada por Esteban el 2026-10-14. Rol definitivo (admin si es el dueño, encargado con sede si es colaborador) queda por confirmar con el cliente — no modificar la fila. | Esteban (confirmación 2026-10-14) |
 | 2026-10-18 (smoke Y.2) | `lmuuilicckgderapyxma` (celulares-carmen) | Producto de prueba `PU-12P-1-00` (Powerbank, stock 1) creado desde el panel de Ingreso con IA durante el smoke de la preview Y.2. Sigue **activo** y con stock 1. | Dato de smoke que quedó en la DB; pendiente anular (void del ajuste de ingreso que lo creó + `setProductsActive([…], false)` cuando el stock pase a 0). Está en los pendientes de Esteban del §0. | Esteban |
 | 2026-10-20 | `aapchdjwpqhwsquffnxn` (Taiwy Sport) | 14 ajustes de ingreso anulados por duplicados vía `void_adjustment` desde la UI: #1158, 1159, 1160, 1161, 1162, 1163, 1164, 1165, 1166, 1167, 1168, 1169, 1291, 1293. Productos afectados: `ST-20-110-00..03` (4), `ST-30-120-00..05` (6), `ST-40-130-00/01` (2), `TG-42-220-02/03` (2). Tras la anulación los productos quedaron con stock 0 y fueron desactivados; `verify_kardex_integrity` y las integridades contables y de crédito corren en 0. | Limpieza de duplicados detectados por Esteban en la lista de Ajustes nueva (filtros + paginación). `void_adjustment` revierte el stock sin asiento, lo que es lo correcto porque el ingreso original ya se desarmó entero — NO se usó un ajuste de disminución, porque `create_adjustment` registra un gasto "Merma / Ajuste negativo" en ese caso y el ingreso de duplicados nunca fue mercancía real. Sin gasto de merma registrado. | Esteban |
+| 2026-10-22 | `aapchdjwpqhwsquffnxn` (Taiwy Sport) | Aplicado `scripts/data-fixes/2026-10-22-unificar-categorias-taiwy.sql` vía MCP: `UPDATE products SET category_id='170d39a7-46f0-4046-b596-b670aa8dd0d3', updated_at=now() WHERE category_id='931b6d97-eef8-4eec-abf4-d89f378f2bce'` + `DELETE FROM categories WHERE category_id='931b6d97-eef8-4eec-abf4-d89f378f2bce'`. Par fusionado: `Uniformes Futbol` (canónica, 170d39a7…) ← `Uniforme Futbol` (retirada, 931b6d97…). 38 productos movidos. Post-check: canónica 147 productos; categoría duplicada inexistente; 0 productos huérfanos. | Pendiente (1) del §0 — unificación de categorías duplicadas generadas antes del merge `19ea1d7` (whitelist cerrada en Ingreso con IA). | Esteban |
+| 2026-10-22 | `nxszaxwsrtlofqimbfig` (Solcraft) | Aplicado `scripts/data-fixes/2026-10-22-unificar-categorias-solcraft.sql` vía MCP: 2 pares. Par 1: `UPDATE products SET category_id='6426c37b-4234-41be-8654-748316fceee2', updated_at=now() WHERE category_id='2859e636-e4e1-413d-bda2-dd0b8576b8b1'` + DELETE de la duplicada → `Camisetas` (canónica, 6426c37b…) ← `CAMISETAS` (retirada, 2859e636…), 9 productos movidos. Par 2: `UPDATE products SET category_id='1e3748cf-71d3-4bf7-b169-47f2d0b559d1', updated_at=now() WHERE category_id='94343ace-3cf4-4ac1-8139-a0f5c4386078'` + DELETE → `PANTALONETAS` (canónica, 1e3748cf…) ← `PANTALONETA` (retirada, 94343ace…), 1 producto movido. Post-check: Camisetas 439 productos, PANTALONETAS 24 productos; ambas categorías duplicadas inexistentes; 0 productos huérfanos. | Pendiente (1) del §0 — unificación de categorías duplicadas generadas antes del merge `19ea1d7`. | Esteban |
 
 > **Reglas de la tabla**:
 > - **No se borran filas** — una intervención antigua que se revierte se
@@ -207,20 +209,16 @@ se borra sin rastro").
 
 ### PENDIENTES (en orden de arranque sugerido)
 
-1. **Unificar categorías duplicadas** (datos, no código). Casos
-   conocidos: Solcraft `Camisetas / CAMISETAS` y
-   `PANTALONETA / PANTALONETAS`; Taiwy Sport `Uniforme Futbol /
-   Uniformes Futbol`. Plan: reasignar los productos de la variante
-   duplicada a la canónica (`UPDATE products SET category_id = <canónica>
-   WHERE category_id = <duplicada>`) y luego retirar la categoría
-   vacía (`DELETE FROM categories WHERE category_id = <duplicada> AND
-   NOT EXISTS (SELECT 1 FROM products WHERE category_id = <duplicada>)`).
-   SQL a **revisión de Esteban antes de aplicar**; **nunca** borrar
-   productos ni categorías con productos vivos; una fila por
-   instancia en el registro de intervenciones manuales. Pre-condición:
-   el merge `19ea1d7` ya impide crear nuevos duplicados vía ingreso
-   con IA (whitelist cerrada), así que el fix es por única vez salvo
-   que entren vías manuales nuevas.
+1. **Unificar categorías duplicadas** (datos, no código). **CERRADO
+   2026-10-22**. Aplicados `scripts/data-fixes/2026-10-22-unificar-
+   categorias-{taiwy,solcraft}.sql` vía MCP. Taiwy: `Uniformes Futbol`
+   ← `Uniforme Futbol` (38 productos movidos; canónica queda en 147).
+   Solcraft: `Camisetas` ← `CAMISETAS` (9 movidos; canónica queda en
+   439) y `PANTALONETAS` ← `PANTALONETA` (1 movido; canónica queda en
+   24). Las 3 categorías duplicadas retiradas de `categories`. Detalle
+   en §"Registro de intervenciones manuales" (2 filas, 2026-10-22).
+   Pre-condición del merge `19ea1d7` sigue vigente: no se pueden crear
+   nuevos duplicados vía Ingreso con IA (whitelist cerrada).
 2. **Catálogo público ordenado "más nuevo primero"**. Requiere
    migración `public_catalog_list` para ordenar por `created_at` DESC
    (verificar `md5(prosrc)` previo en las 3 instancias para no pisar
