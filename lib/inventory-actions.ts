@@ -151,7 +151,7 @@ export async function saveProduct(input: {
 
   revalidatePath("/inventory/products")
   revalidatePath("/pos")
-  revalidatePath("/catalog")
+  revalidatePath("/catalog", "layout")
   return { success: true, message: "Producto guardado correctamente.", product_id }
 }
 
@@ -309,7 +309,7 @@ export async function setProductsActive(
   revalidatePath("/inventory/products")
   revalidatePath("/central")
   revalidatePath("/pos")
-  revalidatePath("/catalog")
+  revalidatePath("/catalog", "layout")
 
   return { success: rejected.length === 0, updated: allowed, rejected }
 }
@@ -680,6 +680,7 @@ export async function voidAdjustmentsBulk(adjustment_ids: string[]) {
     }
   }
   revalidatePath("/inventory/adjustments")
+  revalidatePath("/catalog", "layout")
   const okCount = results.filter((r) => r.ok).length
   const failCount = results.length - okCount
   return {
@@ -748,6 +749,7 @@ export async function voidAdjustment(adjustment_id: string) {
   }
   revalidatePath("/inventory/adjustments")
   revalidatePath(`/inventory/adjustments/${adjustment_id}`)
+  revalidatePath("/catalog", "layout")
   return { success: true, message: "Ajuste anulado y stock revertido." }
 }
 
@@ -770,6 +772,7 @@ export async function createAdjustment(input: {
 
   revalidatePath("/inventory/adjustments")
   revalidatePath("/inventory/products")
+  revalidatePath("/catalog", "layout")
   return { success: true, message: "Ajuste creado correctamente.", adjustment_id: data as string }
 }
 
@@ -1210,6 +1213,7 @@ export async function createBulkTransfer(
   revalidatePath("/central")
   revalidatePath("/central/transfers")
   revalidatePath("/inventory/products")
+  revalidatePath("/catalog", "layout")
 
   const failed = results.filter((r) => !r.ok)
   if (failed.length) {
@@ -1757,6 +1761,7 @@ export async function receiveTransfer(
   revalidatePath('/transfers/receive')
   revalidatePath('/inventory/products')
   revalidatePath('/central')
+  revalidatePath('/catalog', 'layout')
 
   return {
     success: true,
@@ -1855,6 +1860,7 @@ export async function reconcileTransfer(
   revalidatePath("/transfers/receive")
   revalidatePath("/inventory/products")
   revalidatePath("/inventory/kardex")
+  revalidatePath("/catalog", "layout")
 
   const msg =
     res.lost > 0
@@ -2406,6 +2412,7 @@ export async function ingressNewProduct(input: IngressItemInput, warehouse_id: s
     revalidatePath("/central")
     revalidatePath("/inventory/products")
     revalidatePath("/pos")
+    revalidatePath("/catalog", "layout")
     return { success: true, message: "Producto ingresado.", code, product_id: product.product_id }
   } catch (e: any) {
     console.error("Unexpected ingress error:", e?.message || e)

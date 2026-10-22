@@ -508,6 +508,7 @@ export async function createSale(
   revalidatePath("/pos")
   revalidatePath("/products")
   revalidatePath("/accounting")
+  revalidatePath("/catalog", "layout")
   return { success: true, message: "Venta registrada correctamente.", sale_id }
 }
 
