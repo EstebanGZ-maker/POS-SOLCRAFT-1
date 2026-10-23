@@ -281,7 +281,17 @@ restaurada; `import_products_bulk_atomic` solo INSERT, no toca `code`.
    y en el catálogo público. Fuente del label: `uiProfile.ui.labels.size`.
    celulares-carmen carga por Excel → el header de la columna debe
    decir "Referencia" para `rubro='tecnologia'`.
-7. **Multi-tenant SOLO diseño** (sin código): ver "Plan comercial —
+7. **`deleteAccountingEntry` responde éxito aunque RLS borre 0 filas**
+   ([lib/accounting-actions.ts:50](lib/accounting-actions.ts:50)). No
+   existe política DELETE sobre `accounting_entries` (ni la vamos a
+   agregar — regla 6: nada se borra ni se sobrescribe sin rastro), así
+   que el `.delete()` vía PostgREST bajo cookie-auth (`authenticated`)
+   no afecta filas pero el server action devuelve `success: true`.
+   Reemplazar por **anulación con asiento de reversión** (nuevo RPC
+   `void_accounting_entry` o similar: insertar un segundo entry con
+   `amount` opuesto y un `voided_entry_id`/`void_reason`) y retirar
+   `.delete()` del server action.
+8. **Multi-tenant SOLO diseño** (sin código): ver "Plan comercial —
    multi-tenant con diseño primero" más abajo con las 7 correcciones
    acordadas (Vault, `current_tenant()`, 36 tablas, `USING(true)`,
    AI Gateway, rubro por instancia, Auth / rama de producción por
