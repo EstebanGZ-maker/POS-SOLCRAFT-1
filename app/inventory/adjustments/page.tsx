@@ -53,6 +53,7 @@ import {
 } from "@/lib/inventory-actions"
 import { getSitesWithWarehouses } from "@/lib/site-actions"
 import { AdjustmentDialog } from "@/components/inventory/adjustment-dialog"
+import { DeactivateAfterVoidDialog } from "@/components/inventory/deactivate-after-void-dialog"
 
 const PAGE_SIZE = 50
 const BULK_SELECT_MAX = 200
@@ -189,6 +190,17 @@ export default function AdjustmentsPage() {
   const [bulkVoidOpen, setBulkVoidOpen] = useState(false)
   const [bulkVoidRunning, setBulkVoidRunning] = useState(false)
   const [toDelete, setToDelete] = useState<any | null>(null)
+  // Tras anular, ofrecer "¿Desactivar también estos productos?" solo a admin
+  // (setProductsActive exige admin; para encargado no se abre).
+  const [deactivateOpen, setDeactivateOpen] = useState(false)
+  const [voidedIds, setVoidedIds] = useState<string[]>([])
+  const isAdmin = role === "admin"
+
+  const offerDeactivate = (ids: string[]) => {
+    if (!isAdmin || ids.length === 0) return
+    setVoidedIds(ids)
+    setDeactivateOpen(true)
+  }
 
   const runBulkVoid = async () => {
     setBulkVoidRunning(true)
@@ -198,8 +210,10 @@ export default function AdjustmentsPage() {
     setBulkVoidOpen(false)
     setSelectedIds(new Set())
     mutate()
+    const okIds = res.results.filter((r: any) => r.ok).map((r: any) => r.adjustment_id as string)
     if (res.failCount === 0) {
       toast({ title: `${res.okCount} ajuste(s) anulado(s)` })
+      offerDeactivate(okIds)
       return
     }
     const failures = res.results
@@ -214,16 +228,22 @@ export default function AdjustmentsPage() {
         failures + (more > 0 ? `\n…y ${more} más (revisa cada ajuste para el detalle).` : ""),
       variant: "destructive",
     })
+    offerDeactivate(okIds)
   }
 
   const confirmSingleDelete = async () => {
     if (!toDelete) return
-    const res = await voidAdjustmentsBulk([toDelete.adjustment_id])
-    if (res.okCount === 1) toast({ title: "Ajuste anulado" })
-    else {
-      const err = res.results[0]
-      toast({ title: "Error", description: err?.message || "No se pudo anular.", variant: "destructive" })
+    const id = toDelete.adjustment_id as string
+    const res = await voidAdjustmentsBulk([id])
+    if (res.okCount === 1) {
+      toast({ title: "Ajuste anulado" })
+      setToDelete(null)
+      mutate()
+      offerDeactivate([id])
+      return
     }
+    const err = res.results[0]
+    toast({ title: "Error", description: err?.message || "No se pudo anular.", variant: "destructive" })
     setToDelete(null)
     mutate()
   }
@@ -566,6 +586,13 @@ export default function AdjustmentsPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <DeactivateAfterVoidDialog
+        open={deactivateOpen}
+        onOpenChange={setDeactivateOpen}
+        adjustmentIds={voidedIds}
+        onDone={mutate}
+      />
     </div>
   )
 }

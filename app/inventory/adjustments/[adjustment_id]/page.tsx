@@ -31,6 +31,7 @@ import { toast } from "@/components/ui/use-toast"
 import { useAuth } from "@/lib/auth-context"
 import { formatCurrency } from "@/lib/utils"
 import { getAdjustmentById, voidAdjustment } from "@/lib/inventory-actions"
+import { DeactivateAfterVoidDialog } from "@/components/inventory/deactivate-after-void-dialog"
 
 const MOTIVO_LABEL: Record<string, string> = {
   compra: "Compra",
@@ -46,6 +47,8 @@ export default function AdjustmentDetailPage() {
   const adjustment_id = params.adjustment_id
   const [voidOpen, setVoidOpen] = useState(false)
   const [voiding, setVoiding] = useState(false)
+  const [deactivateOpen, setDeactivateOpen] = useState(false)
+  const isAdmin = role === "admin"
 
   const { data: adj, isLoading, mutate } = useSWR(
     ["adjustment", adjustment_id],
@@ -87,6 +90,7 @@ export default function AdjustmentDetailPage() {
     if (res.success) {
       toast({ title: "Ajuste anulado", description: res.message })
       mutate()
+      if (isAdmin) setDeactivateOpen(true)
     } else {
       toast({
         title: "No se pudo anular",
@@ -317,6 +321,13 @@ export default function AdjustmentDetailPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <DeactivateAfterVoidDialog
+        open={deactivateOpen}
+        onOpenChange={setDeactivateOpen}
+        adjustmentIds={[adjustment_id]}
+        onDone={mutate}
+      />
     </div>
   )
 }
