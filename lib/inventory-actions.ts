@@ -31,6 +31,24 @@ export async function getProductsWithStock(
   }
 }
 
+// true si el producto todavía no tiene movimientos de stock ni items de
+// venta — en ese caso el código es mutable (corrección de un tipeo antes
+// del primer ingreso). Lo usa el formulario de edición.
+export async function canChangeProductCode(product_id: string): Promise<boolean> {
+  const supabase = await createServerSupabaseClient()
+  const [{ count: moveCount }, { count: saleCount }] = await Promise.all([
+    supabase
+      .from("stock_movements")
+      .select("movement_id", { count: "exact", head: true })
+      .eq("product_id", product_id),
+    supabase
+      .from("sale_items")
+      .select("sale_item_id", { count: "exact", head: true })
+      .eq("product_id", product_id),
+  ])
+  return (moveCount ?? 0) === 0 && (saleCount ?? 0) === 0
+}
+
 export async function getProductById(product_id: string) {
   const supabase = await createServerSupabaseClient()
   const { data, error } = await supabase
@@ -95,6 +113,36 @@ export async function saveProduct(input: {
   let product_id = input.product_id || null
 
   if (product_id) {
+    // Invariante CLAUDE.md raíz: "Un código = un modelo. El código es inmutable."
+    // Si el code del payload difiere del code actual y el producto tiene
+    // movimientos de stock o items de venta, se rechaza el cambio. La UI muestra
+    // el campo de solo lectura en ese caso; esto es defensa contra bypass.
+    const { data: current } = await supabase
+      .from("products")
+      .select("code")
+      .eq("product_id", product_id)
+      .maybeSingle()
+    const currentCode = (current?.code ?? null) as string | null
+    const newCode = payload.code as string | null
+    if ((currentCode ?? "") !== (newCode ?? "")) {
+      const [{ count: moveCount }, { count: saleCount }] = await Promise.all([
+        supabase
+          .from("stock_movements")
+          .select("movement_id", { count: "exact", head: true })
+          .eq("product_id", product_id),
+        supabase
+          .from("sale_items")
+          .select("sale_item_id", { count: "exact", head: true })
+          .eq("product_id", product_id),
+      ])
+      if ((moveCount ?? 0) > 0 || (saleCount ?? 0) > 0) {
+        return {
+          success: false,
+          message:
+            "El código no se puede cambiar: este producto ya tiene movimientos o ventas. Se mantuvo el código original.",
+        }
+      }
+    }
     const { error } = await supabase.from("products").update(payload).eq("product_id", product_id)
     if (error) {
       console.error("Error updating product:", error)
