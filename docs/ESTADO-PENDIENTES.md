@@ -379,13 +379,24 @@ incorporar las 7 correcciones acordadas:
   `58c2918a…`); en el mismo commit actualizar baseline del gate.
 - **Rotación `anon` key y `service_role` de Solcraft**: pendiente sin
   fecha.
-- **Política `sale_items_update` con `USING(true)`** permite a cualquier
-  rol `authenticated` modificar ítems de venta directamente desde el
-  cliente (PostgREST) saltándose `create_sale`/`void_sale`. Restringir
-  a `service_role`/`postgres` (operaciones solo vía RPCs) o,
-  mínimo, exigir `is_admin_or_encargado()` sobre el `sale` padre.
-  Verificar antes `pg_policies` en las 3 instancias (puede haber
-  deriva); SQL a revisión antes de aplicar.
+- **Política `sale_items_update` con `USING(true)`**. **CERRADO
+  2026-10-23**. Merge `5dc9c03` (`fix/rls-escrituras-ventas` → `main`).
+  Migración versionada `20261023000001_cerrar_escrituras_directas_
+  ventas.sql` aplicada en las 3 instancias (`lmuuilicckgderapyxma` →
+  `nxszaxwsrtlofqimbfig` → `aapchdjwpqhwsquffnxn`). Dropea 10 políticas
+  abiertas (`sales_write/update`, `sale_items_write/update`,
+  `cash_movements_write/update`, `pos_shifts_write/update`,
+  `accounting_entries_update`, `counters_update_authenticated`) y
+  endurece `accounting_entries_write` con `WITH CHECK (user_role() IN
+  ('admin','contador') AND sale_id IS NULL AND adjustment_id IS NULL)`.
+  Las escrituras siguen por los RPCs SECDEF (`create_sale`, `void_sale`,
+  `register_payment`, `apply_customer_credit`, `add_cash_movement`,
+  `open_shift`, `close_shift`). RLS post-check en las 3: UPDATE
+  `sale_items`/`sales` como `authenticated` afecta 0 filas; INSERT
+  `accounting_entries` con `sale_id` no nulo rechazado; INSERT manual
+  por admin OK. Smoke RPC con ROLLBACK en celulares y Solcraft:
+  ajuste → venta a crédito → pago → void, kardex y asiento OK,
+  baseline (incluido `site_counters.last_numero`) intacto.
 
 ### Instancias productivas (3)
 
