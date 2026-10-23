@@ -8,8 +8,12 @@
 --        producto, lanza excepción. La UI y saveProduct ya bloquean el caso en
 --        capas más arriba; este trigger es defensa en profundidad para
 --        cualquier otra ruta (SQL manual, futuras RPCs, otro cliente).
--- Permisos: trigger normal, no SECDEF; corre bajo el rol de quien hace el
---           UPDATE. No requiere GRANTs.
+-- Permisos: función SECURITY DEFINER + SET search_path. Motivo: el EXISTS
+--           sobre stock_movements y sale_items no debe depender del RLS del
+--           caller — el plan multi-tenant va a restringir visibilidad por sede
+--           y el trigger necesita ver TODAS las filas del producto para
+--           decidir. REVOKE EXECUTE a PUBLIC/anon/authenticated al final:
+--           nadie debe invocar la función directamente (solo el trigger).
 -- Idempotente: CREATE OR REPLACE FUNCTION + DROP TRIGGER IF EXISTS + CREATE
 --              TRIGGER.
 -- NO afecta: INSERT, UPDATE de otras columnas (OF code → se dispara solo si
@@ -19,6 +23,8 @@
 CREATE OR REPLACE FUNCTION public.enforce_product_code_immutable()
 RETURNS trigger
 LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
 AS $function$
 BEGIN
   IF OLD.code IS DISTINCT FROM NEW.code THEN
@@ -39,3 +45,5 @@ CREATE TRIGGER trg_enforce_product_code_immutable
   BEFORE UPDATE OF code ON public.products
   FOR EACH ROW
   EXECUTE FUNCTION public.enforce_product_code_immutable();
+
+REVOKE EXECUTE ON FUNCTION public.enforce_product_code_immutable() FROM PUBLIC, anon, authenticated;
