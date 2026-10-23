@@ -242,6 +242,21 @@ se borra sin rastro").
    comportamiento desde "Ajustar seleccionados" y "Llevar a 0".
    `/inventory/adjustments` ahora lee `?search=` desde la URL.
    Sin cambios en `create_adjustment` ni el RPC.
+
+**Código de producto inmutable**. **CERRADO 2026-10-23**. Merge `2178450`
+(`fix/codigo-inmutable` → `main`), tras `b4b295c` (3 capas: UI readOnly
+en Editar + `canChangeProductCode`; `saveProduct` rechaza UPDATE de
+`code` si hay movimientos o ventas; migración versionada con trigger
+`BEFORE UPDATE OF code`) y `02df88d` (función SECURITY DEFINER +
+`SET search_path = public, pg_temp` + `REVOKE EXECUTE FROM PUBLIC, anon,
+authenticated`). Migración `20261023000000_products_code_immutable_
+trigger.sql` aplicada en las 3 instancias (`lmuuilicckgderapyxma` →
+`nxszaxwsrtlofqimbfig` → `aapchdjwpqhwsquffnxn`); post-check en cada
+una: trigger existe, UPDATE de `code` falla con el mensaje esperado,
+UPDATE de `price` del mismo producto funciona (rollback). Invariante
+del `CLAUDE.md` raíz "Un código = un modelo. El código es inmutable."
+restaurada; `import_products_bulk_atomic` solo INSERT, no toca `code`.
+
 4. **Anulación masiva**: tras anular, ofrecer "¿Desactivar también
    estos productos?" (ir al menú de productos ya no es un paso natural
    para operadores que anulan por "producto que no se vende"). Reusa
@@ -345,6 +360,13 @@ incorporar las 7 correcciones acordadas:
   `58c2918a…`); en el mismo commit actualizar baseline del gate.
 - **Rotación `anon` key y `service_role` de Solcraft**: pendiente sin
   fecha.
+- **Política `sale_items_update` con `USING(true)`** permite a cualquier
+  rol `authenticated` modificar ítems de venta directamente desde el
+  cliente (PostgREST) saltándose `create_sale`/`void_sale`. Restringir
+  a `service_role`/`postgres` (operaciones solo vía RPCs) o,
+  mínimo, exigir `is_admin_or_encargado()` sobre el `sale` padre.
+  Verificar antes `pg_policies` en las 3 instancias (puede haber
+  deriva); SQL a revisión antes de aplicar.
 
 ### Instancias productivas (3)
 
