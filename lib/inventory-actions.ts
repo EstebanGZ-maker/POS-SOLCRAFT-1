@@ -684,6 +684,57 @@ export async function getAdjustmentIdsForFilter(
   return { ids, capped: total > ids.length, total }
 }
 
+// Devuelve los productos (uno por product_id, deduplicados) referenciados por
+// los adjustment_ids dados, con el stock actual por bodega. Lo usa el flujo
+// "¿Desactivar también estos productos?" tras anular ajustes.
+export async function getProductsFromAdjustments(adjustment_ids: string[]) {
+  if (!adjustment_ids || adjustment_ids.length === 0) return []
+  const supabase = await createServerSupabaseClient()
+  const { data, error } = await supabase
+    .from("adjustment_items")
+    .select(
+      "product_id, products ( code, name, is_active, product_stock ( warehouse_id, quantity, warehouses ( name, is_system, sites ( name ) ) ) )",
+    )
+    .in("adjustment_id", adjustment_ids)
+  if (error) {
+    console.error("getProductsFromAdjustments:", error)
+    return []
+  }
+  const byId = new Map<
+    string,
+    {
+      product_id: string
+      code: string
+      name: string
+      is_active: boolean
+      stocks: { warehouse_id: string; warehouse_name: string; site_name: string | null; quantity: number }[]
+      total_stock: number
+    }
+  >()
+  for (const row of (data || []) as any[]) {
+    const p = row.products
+    if (!p) continue
+    const pid = String(row.product_id)
+    if (byId.has(pid)) continue
+    const stocks = ((p.product_stock || []) as any[]).map((s) => ({
+      warehouse_id: String(s.warehouse_id),
+      warehouse_name: String(s.warehouses?.name ?? ""),
+      site_name: s.warehouses?.sites?.name ?? null,
+      quantity: Number(s.quantity ?? 0),
+    }))
+    const total_stock = stocks.reduce((acc, s) => acc + s.quantity, 0)
+    byId.set(pid, {
+      product_id: pid,
+      code: String(p.code ?? ""),
+      name: String(p.name ?? ""),
+      is_active: Boolean(p.is_active),
+      stocks,
+      total_stock,
+    })
+  }
+  return Array.from(byId.values())
+}
+
 // Mantiene la firma legacy que esperan algunos callers (sin filtros, lista
 // activa de los últimos ajustes). Internamente usa el paginado con
 // pageSize=50 para no caer en el tope de 1000 de PostgREST.
