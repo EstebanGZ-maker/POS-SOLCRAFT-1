@@ -4,6 +4,16 @@ import { useEffect, useMemo, useState } from "react"
 import Link from "next/link"
 import { AlertCircle, AlertTriangle, Trash2 } from "lucide-react"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { MoneyInput } from "@/components/ui/money-input"
@@ -72,6 +82,7 @@ export function AdjustmentDialog({
   const [saving, setSaving] = useState(false)
   const [bulkObjective, setBulkObjective] = useState<"incrementar" | "disminuir" | "">("")
   const [bulkQty, setBulkQty] = useState<string>("")
+  const [mermaConfirmOpen, setMermaConfirmOpen] = useState(false)
 
   const productsById = useMemo(() => {
     const m = new Map<string, any>()
@@ -201,34 +212,7 @@ export function AdjustmentDialog({
     [rows, productsById, warehouseId],
   )
 
-  const submit = async () => {
-    if (!warehouseId) return toast({ title: "Selecciona una bodega", variant: "destructive" })
-    if (rows.length === 0) return toast({ title: "Agrega al menos un producto", variant: "destructive" })
-    if (hasRowErrors) {
-      return toast({
-        title: "Hay filas con errores",
-        description: "Revisa las filas marcadas en rojo antes de crear el ajuste.",
-        variant: "destructive",
-      })
-    }
-    if (hasIncrementar && !motivo) {
-      return toast({ title: "Selecciona un motivo", description: "Los ajustes con incrementos requieren motivo.", variant: "destructive" })
-    }
-    if (only100Disminuir && motivo) {
-      return toast({ title: "Motivo no aplica", description: "Los ajustes 100% disminución no llevan motivo.", variant: "destructive" })
-    }
-    if (motivo === "correccion" && !notes.trim()) {
-      return toast({ title: "Justificación requerida", description: "Los ajustes de corrección requieren observaciones.", variant: "destructive" })
-    }
-    if (mermaGasto > MERMA_CONFIRMATION_THRESHOLD) {
-      const ok = window.confirm(
-        `El gasto por merma de este ajuste es ${formatCurrency(mermaGasto)} y supera ` +
-          `${formatCurrency(MERMA_CONFIRMATION_THRESHOLD)}. ` +
-          `¿Confirmás que querés registrarlo como merma? ` +
-          `Si es un duplicado o ingreso equivocado, cancelá y anulá el ajuste de ingreso original.`,
-      )
-      if (!ok) return
-    }
+  const doSubmit = async () => {
     setSaving(true)
     const res = await createAdjustment({
       warehouse_id: warehouseId,
@@ -249,6 +233,32 @@ export function AdjustmentDialog({
     } else {
       toast({ title: "Error", description: res.message, variant: "destructive" })
     }
+  }
+
+  const submit = () => {
+    if (!warehouseId) return toast({ title: "Selecciona una bodega", variant: "destructive" })
+    if (rows.length === 0) return toast({ title: "Agrega al menos un producto", variant: "destructive" })
+    if (hasRowErrors) {
+      return toast({
+        title: "Hay filas con errores",
+        description: "Revisa las filas marcadas en rojo antes de crear el ajuste.",
+        variant: "destructive",
+      })
+    }
+    if (hasIncrementar && !motivo) {
+      return toast({ title: "Selecciona un motivo", description: "Los ajustes con incrementos requieren motivo.", variant: "destructive" })
+    }
+    if (only100Disminuir && motivo) {
+      return toast({ title: "Motivo no aplica", description: "Los ajustes 100% disminución no llevan motivo.", variant: "destructive" })
+    }
+    if (motivo === "correccion" && !notes.trim()) {
+      return toast({ title: "Justificación requerida", description: "Los ajustes de corrección requieren observaciones.", variant: "destructive" })
+    }
+    if (mermaGasto > MERMA_CONFIRMATION_THRESHOLD) {
+      setMermaConfirmOpen(true)
+      return
+    }
+    void doSubmit()
   }
 
   return (
@@ -495,6 +505,31 @@ export function AdjustmentDialog({
           </Button>
         </DialogFooter>
       </DialogContent>
+
+      <AlertDialog open={mermaConfirmOpen} onOpenChange={setMermaConfirmOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Registrar gasto por merma elevado</AlertDialogTitle>
+            <AlertDialogDescription>
+              El gasto por merma de este ajuste es {formatCurrency(mermaGasto)} y supera{" "}
+              {formatCurrency(MERMA_CONFIRMATION_THRESHOLD)}. ¿Confirmás que querés
+              registrarlo como merma? Si es un duplicado o ingreso equivocado, cancelá y
+              anulá el ajuste de ingreso original.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                setMermaConfirmOpen(false)
+                void doSubmit()
+              }}
+            >
+              Registrar merma
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </Dialog>
   )
 }
