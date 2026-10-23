@@ -1,6 +1,7 @@
 "use client"
 
 import { useMemo, useState } from "react"
+import { useSearchParams } from "next/navigation"
 import useSWR from "swr"
 import Link from "next/link"
 import { Filter, Plus, Trash2, X, ChevronLeft, ChevronRight, Search, Loader2 } from "lucide-react"
@@ -59,13 +60,15 @@ const BULK_SELECT_MAX = 200
 export default function AdjustmentsPage() {
   const { role } = useAuth()
   const canVoid = role === "admin" || role === "encargado"
+  const searchParams = useSearchParams()
+  const initialSearch = searchParams?.get("search") ?? ""
 
   const [open, setOpen] = useState(false)
   const [page, setPage] = useState(1)
 
   // Filtros (controlados). `applied` es la copia que efectivamente se
   // manda al servidor y resetea la página a 1.
-  const [search, setSearch] = useState("")
+  const [search, setSearch] = useState(initialSearch)
   const [motivo, setMotivo] = useState<AdjustmentsMotivo | "all">("all")
   const [tipo, setTipo] = useState<AdjustmentsTipo | "all">("all")
   const [estado, setEstado] = useState<AdjustmentsEstado>("active")

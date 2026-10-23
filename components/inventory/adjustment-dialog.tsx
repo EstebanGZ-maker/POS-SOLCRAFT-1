@@ -1,8 +1,19 @@
 "use client"
 
 import { useEffect, useMemo, useState } from "react"
-import { AlertCircle, Trash2 } from "lucide-react"
+import Link from "next/link"
+import { AlertCircle, AlertTriangle, Trash2 } from "lucide-react"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { MoneyInput } from "@/components/ui/money-input"
@@ -13,6 +24,10 @@ import { toast } from "@/components/ui/use-toast"
 import { formatCurrency } from "@/lib/utils"
 import { createAdjustment } from "@/lib/inventory-actions"
 import { MultiProductPicker } from "@/components/inventory/multi-product-picker"
+
+// Umbral de confirmación extra para merma — en pesos COP. Por encima de este
+// monto el diálogo pide confirmación explícita antes de llamar al RPC.
+const MERMA_CONFIRMATION_THRESHOLD = 500_000
 
 type Warehouse = { warehouse_id: string; name: string; site_name?: string }
 type Motivo = "compra" | "sobrante" | "correccion"
@@ -67,6 +82,7 @@ export function AdjustmentDialog({
   const [saving, setSaving] = useState(false)
   const [bulkObjective, setBulkObjective] = useState<"incrementar" | "disminuir" | "">("")
   const [bulkQty, setBulkQty] = useState<string>("")
+  const [mermaConfirmOpen, setMermaConfirmOpen] = useState(false)
 
   const productsById = useMemo(() => {
     const m = new Map<string, any>()
@@ -112,6 +128,22 @@ export function AdjustmentDialog({
   const total = useMemo(() => rows.reduce((s, r) => s + r.cost * r.quantity, 0), [rows])
   const hasIncrementar = useMemo(() => rows.some((r) => r.objective === "incrementar"), [rows])
   const only100Disminuir = rows.length > 0 && !hasIncrementar
+  // Gasto por merma anticipado: suma de disminuciones con costo > 0. El RPC
+  // registra el gasto real al cerrar la transacción; esto es solo el aviso UI.
+  const mermaGasto = useMemo(
+    () =>
+      rows.reduce(
+        (s, r) => (r.objective === "disminuir" && r.cost > 0 ? s + r.cost * r.quantity : s),
+        0,
+      ),
+    [rows],
+  )
+  const firstDisminuirCode = useMemo(() => {
+    const firstDis = rows.find((r) => r.objective === "disminuir" && r.cost > 0)
+    if (!firstDis) return null
+    const full = productsById.get(firstDis.product_id)
+    return (full?.code as string | undefined) || null
+  }, [rows, productsById])
 
   // Reglas por fila: la validación "Disminuir no puede exceder stock" la
   // hace el servidor también; acá la anticipamos para dar feedback inmediato
@@ -180,25 +212,7 @@ export function AdjustmentDialog({
     [rows, productsById, warehouseId],
   )
 
-  const submit = async () => {
-    if (!warehouseId) return toast({ title: "Selecciona una bodega", variant: "destructive" })
-    if (rows.length === 0) return toast({ title: "Agrega al menos un producto", variant: "destructive" })
-    if (hasRowErrors) {
-      return toast({
-        title: "Hay filas con errores",
-        description: "Revisa las filas marcadas en rojo antes de crear el ajuste.",
-        variant: "destructive",
-      })
-    }
-    if (hasIncrementar && !motivo) {
-      return toast({ title: "Selecciona un motivo", description: "Los ajustes con incrementos requieren motivo.", variant: "destructive" })
-    }
-    if (only100Disminuir && motivo) {
-      return toast({ title: "Motivo no aplica", description: "Los ajustes 100% disminución no llevan motivo.", variant: "destructive" })
-    }
-    if (motivo === "correccion" && !notes.trim()) {
-      return toast({ title: "Justificación requerida", description: "Los ajustes de corrección requieren observaciones.", variant: "destructive" })
-    }
+  const doSubmit = async () => {
     setSaving(true)
     const res = await createAdjustment({
       warehouse_id: warehouseId,
@@ -219,6 +233,32 @@ export function AdjustmentDialog({
     } else {
       toast({ title: "Error", description: res.message, variant: "destructive" })
     }
+  }
+
+  const submit = () => {
+    if (!warehouseId) return toast({ title: "Selecciona una bodega", variant: "destructive" })
+    if (rows.length === 0) return toast({ title: "Agrega al menos un producto", variant: "destructive" })
+    if (hasRowErrors) {
+      return toast({
+        title: "Hay filas con errores",
+        description: "Revisa las filas marcadas en rojo antes de crear el ajuste.",
+        variant: "destructive",
+      })
+    }
+    if (hasIncrementar && !motivo) {
+      return toast({ title: "Selecciona un motivo", description: "Los ajustes con incrementos requieren motivo.", variant: "destructive" })
+    }
+    if (only100Disminuir && motivo) {
+      return toast({ title: "Motivo no aplica", description: "Los ajustes 100% disminución no llevan motivo.", variant: "destructive" })
+    }
+    if (motivo === "correccion" && !notes.trim()) {
+      return toast({ title: "Justificación requerida", description: "Los ajustes de corrección requieren observaciones.", variant: "destructive" })
+    }
+    if (mermaGasto > MERMA_CONFIRMATION_THRESHOLD) {
+      setMermaConfirmOpen(true)
+      return
+    }
+    void doSubmit()
   }
 
   return (
@@ -245,30 +285,27 @@ export function AdjustmentDialog({
                 </SelectContent>
               </Select>
             </div>
-            <div className="space-y-1.5">
-              <Label>
-                Motivo{hasIncrementar ? " *" : ""}
-              </Label>
-              <Select
-                value={motivo}
-                onValueChange={(v) => setMotivo(v as Motivo)}
-                disabled={only100Disminuir}
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder={only100Disminuir ? "No aplica (100% merma)" : "Seleccionar"} />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="compra">Compra</SelectItem>
-                  <SelectItem value="sobrante">Sobrante</SelectItem>
-                  <SelectItem value="correccion">Corrección</SelectItem>
-                </SelectContent>
-              </Select>
-              {hasIncrementar && (
+            {hasIncrementar ? (
+              <div className="space-y-1.5">
+                <Label>Motivo *</Label>
+                <Select
+                  value={motivo}
+                  onValueChange={(v) => setMotivo(v as Motivo)}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Seleccionar" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="compra">Compra</SelectItem>
+                    <SelectItem value="sobrante">Sobrante</SelectItem>
+                    <SelectItem value="correccion">Corrección</SelectItem>
+                  </SelectContent>
+                </Select>
                 <p className="text-xs text-muted-foreground">
                   Los incrementos requieren motivo. Compra/sobrante capitalizan al inventario; corrección no genera asiento.
                 </p>
-              )}
-            </div>
+              </div>
+            ) : null}
           </div>
 
           <div className="space-y-1.5">
@@ -428,6 +465,32 @@ export function AdjustmentDialog({
             </div>
           )}
 
+          {mermaGasto > 0 && (
+            <div className="flex items-start gap-2 rounded-md border border-amber-500/60 bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+              <div className="space-y-1">
+                <p>
+                  Las disminuciones registran un gasto por merma de{" "}
+                  <span className="font-semibold">{formatCurrency(mermaGasto)}</span> en el
+                  estado de resultados. Si el producto es un duplicado o un ingreso
+                  equivocado, anulá su ajuste de ingreso en lugar de disminuir.
+                </p>
+                {firstDisminuirCode && (
+                  <p>
+                    <Link
+                      href={`/inventory/adjustments?search=${encodeURIComponent(firstDisminuirCode)}`}
+                      className="font-medium underline underline-offset-2"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      Ver ajustes de {firstDisminuirCode}
+                    </Link>
+                  </p>
+                )}
+              </div>
+            </div>
+          )}
+
           <div className="flex justify-end rounded-md bg-muted/50 px-3 py-2 text-sm">
             Total ajustado:&nbsp;<span className="font-semibold">{formatCurrency(total)}</span>
           </div>
@@ -442,6 +505,31 @@ export function AdjustmentDialog({
           </Button>
         </DialogFooter>
       </DialogContent>
+
+      <AlertDialog open={mermaConfirmOpen} onOpenChange={setMermaConfirmOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Registrar gasto por merma elevado</AlertDialogTitle>
+            <AlertDialogDescription>
+              El gasto por merma de este ajuste es {formatCurrency(mermaGasto)} y supera{" "}
+              {formatCurrency(MERMA_CONFIRMATION_THRESHOLD)}. ¿Confirmás que querés
+              registrarlo como merma? Si es un duplicado o ingreso equivocado, cancelá y
+              anulá el ajuste de ingreso original.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                setMermaConfirmOpen(false)
+                void doSubmit()
+              }}
+            >
+              Registrar merma
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </Dialog>
   )
 }
