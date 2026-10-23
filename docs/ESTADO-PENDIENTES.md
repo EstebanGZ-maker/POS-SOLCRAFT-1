@@ -233,12 +233,15 @@ se borra sin rastro").
    `export const revalidate = 60` en `app/catalog/*` como respaldo.
    No se registra fila en §"Registro de intervenciones manuales"
    (migración versionada, regla 5).
-3. **Formulario de ajuste** (`AdjustmentDialog`): si todas las filas
-   son "disminuir", **quitar el Select de motivo automáticamente**
-   (el server ya exige `motivo=NULL` en ese caso vía `create_adjustment`)
-   y mostrar un aviso explícito "Este ajuste 100% disminución registra
-   gasto por merma". Hoy la UI lo deshabilita pero deja el select
-   visible, confunde al operador.
+3. **Formulario de ajuste** (`AdjustmentDialog`). **CERRADO 2026-10-23**.
+   Merge `bbcbb76` (`fix/ajuste-motivo-merma` → `main`). Motivo oculto
+   cuando no hay items Incrementar (el RPC ya exige `motivo=NULL` en ese
+   caso); aviso ámbar con monto del gasto por merma + link a Ajustes
+   filtrado por el código del primer producto disminuido; confirmación
+   AlertDialog si el gasto por merma supera $500.000; mismo
+   comportamiento desde "Ajustar seleccionados" y "Llevar a 0".
+   `/inventory/adjustments` ahora lee `?search=` desde la URL.
+   Sin cambios en `create_adjustment` ni el RPC.
 4. **Anulación masiva**: tras anular, ofrecer "¿Desactivar también
    estos productos?" (ir al menú de productos ya no es un paso natural
    para operadores que anulan por "producto que no se vende"). Reusa
@@ -321,6 +324,14 @@ incorporar las 7 correcciones acordadas:
 - **Anular el Powerbank de prueba `PU-12P-1-00`** en celulares-carmen
   (sigue activo con stock 1 de la fase Y.2 — ver registro de
   intervenciones manuales).
+- **Decidir si se pausa el proyecto Vercel viejo `pos-solcraft-1`**
+  (`prj_7k1v4Kvjo2KwnCT6zzAnTi1qgWul`). Sigue conectado al mismo repo
+  GitHub y despliega producción en cada push a `main` en paralelo al
+  oficial `pos-solcraft-1-a1x2` (`prj_vpWz8de8VIziMknXIaqZhlQKJGl6`).
+  Mientras conviva, dobla costo de minutos de build y crea
+  deploys/aliases ruido en la lista. Opciones: pausar
+  (`mcp__…__pause_project`) o desconectar la integración GitHub del
+  proyecto viejo.
 
 ### Pendientes ALTA (sin cambios respecto a sesión anterior)
 
