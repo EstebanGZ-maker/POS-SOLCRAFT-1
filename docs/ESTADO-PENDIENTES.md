@@ -258,9 +258,18 @@ del `CLAUDE.md` raíz "Un código = un modelo. El código es inmutable."
 restaurada; `import_products_bulk_atomic` solo INSERT, no toca `code`.
 
 4. **Anulación masiva**: tras anular, ofrecer "¿Desactivar también
-   estos productos?" (ir al menú de productos ya no es un paso natural
-   para operadores que anulan por "producto que no se vende"). Reusa
-   `setProductsActive` del commit `f834ccd`.
+   estos productos?". **CERRADO 2026-10-23**. Merge `b4be2ce`
+   (`feat/anular-y-desactivar` → `main`). Nuevo
+   `DeactivateAfterVoidDialog` que se abre tras `voidAdjustmentsBulk`
+   (bulk) y `voidAdjustment` (detalle) solo para rol admin, con los
+   productos activos de los ajustes anulados agrupados en "Quedaron en
+   0 en todas las bodegas" (checkbox marcado por defecto) y "Todavía
+   tienen stock" (deshabilitado, con el detalle de bodega y cantidad).
+   Confirmación llama `setProductsActive(ids, false)`; toast reporta
+   desactivados vs rechazados. Nuevo server action
+   `getProductsFromAdjustments(adjustment_ids)` deduplica product_ids
+   y trae `product_stock` por bodega. Sin cambios en `void_adjustment`
+   ni el RPC.
 5. **Ingreso IA en lotes** (1 ajuste por "Ingresar todo", no uno por
    producto). **Decisión de Esteban pendiente**: hoy crea N ajustes
    independientes, lo que fragmenta el reporte de Compras. Alternativa:
