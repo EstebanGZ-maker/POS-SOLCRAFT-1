@@ -1,7 +1,8 @@
 "use client"
 
 import { useEffect, useMemo, useState } from "react"
-import { AlertCircle, Trash2 } from "lucide-react"
+import Link from "next/link"
+import { AlertCircle, AlertTriangle, Trash2 } from "lucide-react"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -13,6 +14,10 @@ import { toast } from "@/components/ui/use-toast"
 import { formatCurrency } from "@/lib/utils"
 import { createAdjustment } from "@/lib/inventory-actions"
 import { MultiProductPicker } from "@/components/inventory/multi-product-picker"
+
+// Umbral de confirmación extra para merma — en pesos COP. Por encima de este
+// monto el diálogo pide confirmación explícita antes de llamar al RPC.
+const MERMA_CONFIRMATION_THRESHOLD = 500_000
 
 type Warehouse = { warehouse_id: string; name: string; site_name?: string }
 type Motivo = "compra" | "sobrante" | "correccion"
@@ -112,6 +117,22 @@ export function AdjustmentDialog({
   const total = useMemo(() => rows.reduce((s, r) => s + r.cost * r.quantity, 0), [rows])
   const hasIncrementar = useMemo(() => rows.some((r) => r.objective === "incrementar"), [rows])
   const only100Disminuir = rows.length > 0 && !hasIncrementar
+  // Gasto por merma anticipado: suma de disminuciones con costo > 0. El RPC
+  // registra el gasto real al cerrar la transacción; esto es solo el aviso UI.
+  const mermaGasto = useMemo(
+    () =>
+      rows.reduce(
+        (s, r) => (r.objective === "disminuir" && r.cost > 0 ? s + r.cost * r.quantity : s),
+        0,
+      ),
+    [rows],
+  )
+  const firstDisminuirCode = useMemo(() => {
+    const firstDis = rows.find((r) => r.objective === "disminuir" && r.cost > 0)
+    if (!firstDis) return null
+    const full = productsById.get(firstDis.product_id)
+    return (full?.code as string | undefined) || null
+  }, [rows, productsById])
 
   // Reglas por fila: la validación "Disminuir no puede exceder stock" la
   // hace el servidor también; acá la anticipamos para dar feedback inmediato
@@ -199,6 +220,15 @@ export function AdjustmentDialog({
     if (motivo === "correccion" && !notes.trim()) {
       return toast({ title: "Justificación requerida", description: "Los ajustes de corrección requieren observaciones.", variant: "destructive" })
     }
+    if (mermaGasto > MERMA_CONFIRMATION_THRESHOLD) {
+      const ok = window.confirm(
+        `El gasto por merma de este ajuste es ${formatCurrency(mermaGasto)} y supera ` +
+          `${formatCurrency(MERMA_CONFIRMATION_THRESHOLD)}. ` +
+          `¿Confirmás que querés registrarlo como merma? ` +
+          `Si es un duplicado o ingreso equivocado, cancelá y anulá el ajuste de ingreso original.`,
+      )
+      if (!ok) return
+    }
     setSaving(true)
     const res = await createAdjustment({
       warehouse_id: warehouseId,
@@ -245,30 +275,27 @@ export function AdjustmentDialog({
                 </SelectContent>
               </Select>
             </div>
-            <div className="space-y-1.5">
-              <Label>
-                Motivo{hasIncrementar ? " *" : ""}
-              </Label>
-              <Select
-                value={motivo}
-                onValueChange={(v) => setMotivo(v as Motivo)}
-                disabled={only100Disminuir}
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder={only100Disminuir ? "No aplica (100% merma)" : "Seleccionar"} />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="compra">Compra</SelectItem>
-                  <SelectItem value="sobrante">Sobrante</SelectItem>
-                  <SelectItem value="correccion">Corrección</SelectItem>
-                </SelectContent>
-              </Select>
-              {hasIncrementar && (
+            {hasIncrementar ? (
+              <div className="space-y-1.5">
+                <Label>Motivo *</Label>
+                <Select
+                  value={motivo}
+                  onValueChange={(v) => setMotivo(v as Motivo)}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Seleccionar" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="compra">Compra</SelectItem>
+                    <SelectItem value="sobrante">Sobrante</SelectItem>
+                    <SelectItem value="correccion">Corrección</SelectItem>
+                  </SelectContent>
+                </Select>
                 <p className="text-xs text-muted-foreground">
                   Los incrementos requieren motivo. Compra/sobrante capitalizan al inventario; corrección no genera asiento.
                 </p>
-              )}
-            </div>
+              </div>
+            ) : null}
           </div>
 
           <div className="space-y-1.5">
@@ -425,6 +452,32 @@ export function AdjustmentDialog({
                   </div>
                 )
               })}
+            </div>
+          )}
+
+          {mermaGasto > 0 && (
+            <div className="flex items-start gap-2 rounded-md border border-amber-500/60 bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+              <div className="space-y-1">
+                <p>
+                  Las disminuciones registran un gasto por merma de{" "}
+                  <span className="font-semibold">{formatCurrency(mermaGasto)}</span> en el
+                  estado de resultados. Si el producto es un duplicado o un ingreso
+                  equivocado, anulá su ajuste de ingreso en lugar de disminuir.
+                </p>
+                {firstDisminuirCode && (
+                  <p>
+                    <Link
+                      href={`/inventory/adjustments?search=${encodeURIComponent(firstDisminuirCode)}`}
+                      className="font-medium underline underline-offset-2"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      Ver ajustes de {firstDisminuirCode}
+                    </Link>
+                  </p>
+                )}
+              </div>
             </div>
           )}
 
