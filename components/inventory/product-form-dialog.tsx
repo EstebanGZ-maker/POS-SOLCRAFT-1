@@ -10,7 +10,12 @@ import { Button } from "@/components/ui/button"
 import { Switch } from "@/components/ui/switch"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { toast } from "@/components/ui/use-toast"
-import { saveProduct, uploadProductMedia, setProductsActive } from "@/lib/inventory-actions"
+import {
+  saveProduct,
+  uploadProductMedia,
+  setProductsActive,
+  canChangeProductCode,
+} from "@/lib/inventory-actions"
 import { compressImage, formatBytes } from "@/lib/image-compress"
 import { ProductGalleryManager } from "@/components/inventory/product-gallery-manager"
 import { useAuth } from "@/lib/auth-context"
@@ -47,6 +52,11 @@ export function ProductFormDialog({
   const [imageUrl, setImageUrl] = useState<string>("")
   const [uploadingImage, setUploadingImage] = useState(false)
   const imageInputRef = useRef<HTMLInputElement>(null)
+  // Mutabilidad del código. Al editar, se consulta al servidor; mientras
+  // tanto el campo queda deshabilitado por defecto. En modo creación es
+  // siempre editable.
+  const [codeMutable, setCodeMutable] = useState<boolean>(!editing)
+  const [codeMutabilityChecked, setCodeMutabilityChecked] = useState<boolean>(!editing)
   const [form, setForm] = useState({
     name: "",
     code: "",
@@ -85,6 +95,19 @@ export function ProductFormDialog({
         initial_stock: "0",
         initial_warehouse_id: warehouses[0]?.warehouse_id ?? "",
       })
+      if (product?.product_id) {
+        setCodeMutable(false)
+        setCodeMutabilityChecked(false)
+        canChangeProductCode(product.product_id)
+          .then((can) => {
+            setCodeMutable(can)
+            setCodeMutabilityChecked(true)
+          })
+          .catch(() => setCodeMutabilityChecked(true))
+      } else {
+        setCodeMutable(true)
+        setCodeMutabilityChecked(true)
+      }
     }
   }, [open, product, warehouses])
 
@@ -284,7 +307,25 @@ export function ProductFormDialog({
               </div>
               <div className="space-y-1.5">
                 <Label>Referencia / Código</Label>
-                <Input value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })} />
+                <Input
+                  value={form.code}
+                  onChange={(e) => setForm({ ...form, code: e.target.value })}
+                  readOnly={editing && !codeMutable}
+                  disabled={editing && !codeMutabilityChecked}
+                  className={editing && !codeMutable ? "bg-muted text-muted-foreground" : undefined}
+                />
+                {editing && codeMutabilityChecked && !codeMutable && (
+                  <p className="text-xs text-muted-foreground">
+                    El código no se puede cambiar una vez que el producto tiene
+                    movimientos.
+                  </p>
+                )}
+                {editing && codeMutabilityChecked && codeMutable && (
+                  <p className="text-xs text-muted-foreground">
+                    Todavía podés corregir el código: el producto aún no tiene
+                    movimientos ni ventas.
+                  </p>
+                )}
               </div>
               <div className="space-y-1.5">
                 <Label>Unidad de medida</Label>
