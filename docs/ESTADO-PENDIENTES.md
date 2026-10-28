@@ -370,9 +370,23 @@ incorporar las 7 correcciones acordadas:
 ### Pendientes ALTA (sin cambios respecto a sesión anterior)
 
 - **Alineación de los 4 guards de Solcraft** (`apply_customer_credit`,
-  `create_adjustment`, `create_sale`, `void_adjustment`) con la versión
-  del repo (= CC HOY). Si algún `md5_norm` cambia respecto al baseline
-  del gate tras aplicar, actualizar baseline en el mismo commit.
+  `create_adjustment`, `create_sale`, `void_adjustment`). **CERRADO
+  2026-10-28**. Merge `094f31f` (`fix/guards-solcraft` → `main`).
+  Migración `20261028000000_solcraft_guards_endurecidos.sql` aplicada
+  SOLO en Solcraft (Taiwy y celulares ya tenían el guard endurecido;
+  apply_customer_credit ya estaba endurecida en Solcraft previamente).
+  Patch quirúrgico: 1 línea por función — `IF v_role NOT IN (…)` →
+  `IF v_role IS NULL OR v_role NOT IN (…)`. md5(prosrc) post coincide
+  exactamente con los esperados (`041f63e6…`, `3412302f…`, `9b8f29cd…`).
+  Smoke pre-merge: huérfano `admin@taiwy.com` (sin `user_profiles`)
+  bloqueado por "Sin permisos" en las 3 funciones; admin real ejecuta
+  ajuste → venta a crédito → pago → void con `verify_kardex_integrity`
+  y `verify_adjustment_accounting_integrity` en 0, baseline del
+  producto y counter intactos (rollback). Gate: Solcraft matchea
+  ahora el baseline del gate en `create_sale` y `void_adjustment`;
+  `create_adjustment` conserva drift cosmético (mensaje
+  "Falta product_id." + whitespace) — cosmético aceptado, no se
+  actualiza baseline.
 - **Trazabilidad de anulaciones** (`voided_by`, `voided_at`,
   `void_reason` + vista "Anulados"). Primero ajustes. La migración
   reescribe `void_adjustment` → rompe baseline `33b md5_norm` (hoy
