@@ -208,6 +208,15 @@ guard_check AS (
 -- 4 hashes cosméticos conocidos: close_shift, create_adjustment,
 -- verify_adjustment_accounting_integrity, verify_credit_integrity.
 -- Nuevas instancias aprovisionadas desde el repo deben dar 10/10.
+--
+-- 2026-10-28: tras `20261028000000_solcraft_guards_endurecidos.sql`,
+-- la lógica de los 4 guards de Solcraft (apply_customer_credit,
+-- create_adjustment, create_sale, void_adjustment) quedó alineada
+-- con Taiwy / celulares / repo. Solcraft ahora matchea el baseline
+-- en create_sale y void_adjustment (2 hashes recuperados). El drift
+-- cosmético restante es solo en create_adjustment (mensajes
+-- "Falta product_id." y whitespace) — se mantiene en la lista de
+-- cosméticos aceptados; no es un fix pendiente, es wording.
 -- ============================================================
 critical_baseline AS (
   SELECT * FROM (VALUES
