@@ -393,6 +393,17 @@ incorporar las 7 correcciones acordadas:
   `58c2918a…`); en el mismo commit actualizar baseline del gate.
 - **Rotación `anon` key y `service_role` de Solcraft**: pendiente sin
   fecha.
+- **`transfers_update` y `transfer_items_update` con `USING(true)`**:
+  cualquier rol `authenticated` puede modificar cantidades, estado o
+  bodegas de traslados vía PostgREST (saltándose `dispatch_transfer_atomic`
+  / `receive_transfer` / `reconcile_transfer`). Diagnosticar
+  `pg_policies` en las 3 instancias (puede haber deriva), confirmar
+  cero escrituras directas en código fuera de los RPCs, y cerrar como
+  se hizo con ventas (`20261023000001_cerrar_escrituras_directas_
+  ventas.sql`): DROP de las policies abiertas; las escrituras siguen
+  por los RPCs SECDEF. El trigger `trg_enforce_transfer_item_cost_
+  frozen` (2026-10-31) ya bloquea el vector específico sobre
+  `unit_cost`/`cost_is_estimated` pero no sobre `quantity`/`status`.
 - **Política `sale_items_update` con `USING(true)`**. **CERRADO
   2026-10-23**. Merge `5dc9c03` (`fix/rls-escrituras-ventas` → `main`).
   Migración versionada `20261023000001_cerrar_escrituras_directas_
