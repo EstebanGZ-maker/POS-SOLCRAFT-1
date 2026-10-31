@@ -28,7 +28,8 @@ import {
 } from "@/components/ui/alert-dialog"
 import { useToast } from "@/hooks/use-toast"
 import { useAuth } from "@/lib/auth-context"
-import { dispatchPendingTransfer, getTransfersPaginated, getTransferSummary } from "@/lib/inventory-actions"
+import { dispatchPendingTransfer, getTransfersPaginated, getTransfersTotals, getTransferSummary } from "@/lib/inventory-actions"
+import { formatCurrency } from "@/lib/utils"
 import { CancelTransferDialog } from "@/components/central/cancel-transfer-dialog"
 import { ChevronLeft, ChevronRight, X } from "lucide-react"
 import { getSites, type Site } from "@/lib/site-actions"
@@ -67,6 +68,7 @@ export default function TransfersPage() {
   const { toast } = useToast()
   const { role } = useAuth()
   const canDispatch = role === "admin" || role === "encargado"
+  const canSeeValue = role === "admin" || role === "contador"
   const [dispatchTarget, setDispatchTarget] = useState<{ id: string; label: string } | null>(null)
   const [dispatching, setDispatching] = useState(false)
   const [cancelTarget, setCancelTarget] = useState<{ transfer_id: string; status: string; label: string } | null>(null)
@@ -142,6 +144,25 @@ export default function TransfersPage() {
   const total = transfersData?.total ?? 0
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
 
+  // Totales sobre TODOS los resultados filtrados (admin|contador). El
+  // server devuelve null para otros roles → no se dispara el fetch.
+  const { data: totals } = useSWR(
+    canSeeValue
+      ? ["transfers-totals", status, siteFilter, fromSiteFilter, toSiteFilter, dateFrom, dateTo, urlQ, numeroStr]
+      : null,
+    () =>
+      getTransfersTotals({
+        status: status === "all" ? null : status,
+        site_id: siteFilter === "all" ? null : siteFilter,
+        from_site_id: fromSiteFilter === "all" ? null : fromSiteFilter,
+        to_site_id: toSiteFilter === "all" ? null : toSiteFilter,
+        date_from: dateFrom || null,
+        date_to: dateTo ? `${dateTo}T23:59:59.999Z` : null,
+        q: urlQ || null,
+        numero: numeroStr.trim() ? Number(numeroStr) : null,
+      }),
+  )
+
   async function handleDispatch() {
     if (!dispatchTarget) return
     setDispatching(true)
@@ -214,6 +235,64 @@ export default function TransfersPage() {
               <ArrowRight className="ml-1.5 h-3.5 w-3.5" />
             </Link>
           </Button>
+        </div>
+      )}
+
+      {canSeeValue && totals && (
+        <div className="space-y-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <Card>
+              <CardContent className="pt-4">
+                <div className="text-xs text-muted-foreground">Unidades enviadas</div>
+                <div className="text-2xl font-bold">{totals.units_total}</div>
+                <div className="mt-1 text-xs text-muted-foreground">
+                  Excluye cancelados.
+                </div>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardContent className="pt-4">
+                <div className="text-xs text-muted-foreground">Valor a costo</div>
+                <div className="text-2xl font-bold">{formatCurrency(totals.value_total)}</div>
+                <div className="mt-1 text-xs text-muted-foreground">
+                  {totals.has_estimated
+                    ? "Incluye valores aproximados (traslados pendientes o backfill)."
+                    : "Costo congelado al despacho."}
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+          {totals.by_destination.length > 0 && (
+            <Card>
+              <CardContent className="p-0">
+                <div className="border-b px-3 py-2 text-xs font-medium uppercase text-muted-foreground">
+                  Desglose por sede destino
+                </div>
+                <table className="w-full text-sm">
+                  <thead className="bg-muted/40">
+                    <tr className="text-left">
+                      <th className="px-3 py-2 font-medium">Sede</th>
+                      <th className="px-3 py-2 text-right font-medium">Traslados</th>
+                      <th className="px-3 py-2 text-right font-medium">Unidades</th>
+                      <th className="px-3 py-2 text-right font-medium">Valor a costo</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {totals.by_destination.map((d: any) => (
+                      <tr key={d.site_id} className="border-t">
+                        <td className="px-3 py-2">{d.site_name}</td>
+                        <td className="px-3 py-2 text-right">{d.transfers_count}</td>
+                        <td className="px-3 py-2 text-right">{d.units}</td>
+                        <td className="px-3 py-2 text-right font-medium">
+                          {formatCurrency(d.value)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </CardContent>
+            </Card>
+          )}
         </div>
       )}
 
@@ -341,19 +420,20 @@ export default function TransfersPage() {
                 <th className="p-3 font-medium">Destino</th>
                 <th className="p-3 font-medium text-right">Productos</th>
                 <th className="p-3 font-medium">Estado</th>
+                {canSeeValue && <th className="p-3 font-medium text-right">Valor</th>}
                 <th className="p-3 font-medium text-right">Acciones</th>
               </tr>
             </thead>
             <tbody>
               {isLoading ? (
                 <tr>
-                  <td colSpan={7} className="p-6 text-center text-muted-foreground">
+                  <td colSpan={canSeeValue ? 8 : 7} className="p-6 text-center text-muted-foreground">
                     Cargando...
                   </td>
                 </tr>
               ) : transfers.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="p-6 text-center text-muted-foreground">
+                  <td colSpan={canSeeValue ? 8 : 7} className="p-6 text-center text-muted-foreground">
                     No hay traslados con los filtros seleccionados.
                   </td>
                 </tr>
@@ -380,6 +460,22 @@ export default function TransfersPage() {
                         {statusLabel(t.status)}
                       </Badge>
                     </td>
+                    {canSeeValue && (
+                      <td className="p-3 text-right">
+                        <span
+                          className={
+                            t.status === "cancelado"
+                              ? "text-muted-foreground line-through"
+                              : t.has_estimated
+                              ? "text-amber-700 dark:text-amber-300"
+                              : ""
+                          }
+                          title={t.has_estimated ? "Incluye valores aproximados" : undefined}
+                        >
+                          {formatCurrency(Number(t.value_at_cost ?? 0))}
+                        </span>
+                      </td>
+                    )}
                     <td className="p-3 text-right">
                       <div className="flex justify-end gap-1.5">
                         {t.status === "pendiente" && canDispatch && (

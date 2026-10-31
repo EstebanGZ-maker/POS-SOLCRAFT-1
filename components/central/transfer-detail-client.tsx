@@ -28,6 +28,7 @@ import {
 import { AlertTriangle, ArrowLeft, Loader2, Send, X } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
 import { dispatchPendingTransfer, getTransferDetail } from "@/lib/inventory-actions"
+import { formatCurrency } from "@/lib/utils"
 import { TRANSFER_STATUS_LABELS, isTransferStatus } from "@/lib/transfer-status"
 import { useAuth } from "@/lib/auth-context"
 import { CancelTransferDialog } from "@/components/central/cancel-transfer-dialog"
@@ -73,6 +74,23 @@ export function TransferDetailClient({ initialDetail }: Props) {
     startTransition(() => router.refresh())
   }
   const items = (t.transfer_items ?? []) as Array<any>
+  // Visibilidad de valores: la decide el servidor (admin|contador).
+  // El flag `can_see_value` viene de getTransferDetail.
+  const canSeeValue = Boolean(t.can_see_value)
+  const hasEstimated = canSeeValue && items.some((it) => it.is_estimated)
+  const totals = items.reduce(
+    (acc, it) => {
+      const qty = Number(it.quantity ?? 0)
+      const qtyRecv = Number(it.quantity_received ?? 0)
+      const unit = canSeeValue ? Number(it.effective_unit_cost ?? 0) : 0
+      acc.units_sent += qty
+      acc.units_received += qtyRecv
+      acc.value_sent += qty * unit
+      acc.value_received += qtyRecv * unit
+      return acc
+    },
+    { units_sent: 0, units_received: 0, value_sent: 0, value_received: 0 },
+  )
 
   async function handleDispatch() {
     setDispatching(true)
@@ -212,6 +230,12 @@ export function TransferDetailClient({ initialDetail }: Props) {
 
       <Card>
         <CardContent className="p-0">
+          {canSeeValue && hasEstimated && (
+            <div className="flex items-center gap-2 border-b bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
+              <AlertTriangle className="h-3.5 w-3.5" />
+              Valor aproximado: hay ítems con costo estimado (pendientes de despacho o backfill).
+            </div>
+          )}
           <Table>
             <TableHeader>
               <TableRow>
@@ -219,12 +243,14 @@ export function TransferDetailClient({ initialDetail }: Props) {
                 <TableHead>Código</TableHead>
                 <TableHead className="text-right">Cantidad</TableHead>
                 <TableHead className="text-right">Recibido</TableHead>
+                {canSeeValue && <TableHead className="text-right">Costo unit.</TableHead>}
+                {canSeeValue && <TableHead className="text-right">Subtotal</TableHead>}
               </TableRow>
             </TableHeader>
             <TableBody>
               {items.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={4} className="p-6 text-center text-sm text-muted-foreground">
+                  <TableCell colSpan={canSeeValue ? 6 : 4} className="p-6 text-center text-sm text-muted-foreground">
                     Sin ítems.
                   </TableCell>
                 </TableRow>
@@ -237,10 +263,47 @@ export function TransferDetailClient({ initialDetail }: Props) {
                   <TableCell className="text-right">
                     {it.quantity_received != null ? it.quantity_received : "—"}
                   </TableCell>
+                  {canSeeValue && (
+                    <TableCell className="text-right">
+                      {formatCurrency(Number(it.effective_unit_cost ?? 0))}
+                      {it.is_estimated && (
+                        <span className="ml-1 text-xs text-amber-700 dark:text-amber-300">(est.)</span>
+                      )}
+                    </TableCell>
+                  )}
+                  {canSeeValue && (
+                    <TableCell className="text-right">
+                      {formatCurrency(Number(it.quantity ?? 0) * Number(it.effective_unit_cost ?? 0))}
+                    </TableCell>
+                  )}
                 </TableRow>
               ))}
             </TableBody>
           </Table>
+          <div className="flex flex-wrap items-center justify-between gap-3 border-t bg-muted/40 px-3 py-2 text-sm">
+            <div className="flex flex-wrap gap-4">
+              <div>
+                <span className="text-xs text-muted-foreground">Unidades enviadas: </span>
+                <span className="font-semibold">{totals.units_sent}</span>
+              </div>
+              <div>
+                <span className="text-xs text-muted-foreground">Unidades recibidas: </span>
+                <span className="font-semibold">{totals.units_received}</span>
+              </div>
+            </div>
+            {canSeeValue && (
+              <div className="flex flex-wrap gap-4">
+                <div>
+                  <span className="text-xs text-muted-foreground">Valor enviado: </span>
+                  <span className="font-semibold">{formatCurrency(totals.value_sent)}</span>
+                </div>
+                <div>
+                  <span className="text-xs text-muted-foreground">Valor recibido: </span>
+                  <span className="font-semibold">{formatCurrency(totals.value_received)}</span>
+                </div>
+              </div>
+            )}
+          </div>
         </CardContent>
       </Card>
 

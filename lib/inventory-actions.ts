@@ -1000,7 +1000,8 @@ export interface TransfersPaginatedFilter extends GetTransfersOpts {
  * Orden estable: transfer_date DESC + transfer_id DESC.
  */
 export async function getTransfersPaginated(opts: TransfersPaginatedFilter) {
-  await requireRole("admin", "contador", "encargado", "vendedor")
+  const profile = await requireRole("admin", "contador", "encargado", "vendedor")
+  const canSeeValue = profile.role === "admin" || profile.role === "contador"
   const supabase = await createServerSupabaseClient()
   const page = Math.max(1, opts.page ?? 1)
   const pageSize = Math.min(200, Math.max(1, opts.pageSize ?? 50))
@@ -1050,10 +1051,14 @@ export async function getTransfersPaginated(opts: TransfersPaginatedFilter) {
 
   const fromRange = (page - 1) * pageSize
   const toRange = fromRange + pageSize - 1
+  const selectWithValue =
+    "*, from_wh:warehouses!transfers_from_warehouse_id_fkey ( name, site_id, sites ( name ) ), to_wh:warehouses!transfers_to_warehouse_id_fkey ( name, site_id, sites ( name ) ), transfer_items ( transfer_item_id, quantity, unit_cost, cost_is_estimated, products ( cost ) )"
+  const selectNoValue =
+    "*, from_wh:warehouses!transfers_from_warehouse_id_fkey ( name, site_id, sites ( name ) ), to_wh:warehouses!transfers_to_warehouse_id_fkey ( name, site_id, sites ( name ) ), transfer_items ( transfer_item_id, quantity )"
   let q = supabase
     .from("transfers")
     .select(
-      "*, from_wh:warehouses!transfers_from_warehouse_id_fkey ( name, site_id, sites ( name ) ), to_wh:warehouses!transfers_to_warehouse_id_fkey ( name, site_id, sites ( name ) ), transfer_items ( transfer_item_id, quantity )",
+      canSeeValue ? selectWithValue : selectNoValue,
       { count: "exact" },
     )
     .order("transfer_date", { ascending: false })
@@ -1077,7 +1082,134 @@ export async function getTransfersPaginated(opts: TransfersPaginatedFilter) {
     console.error("getTransfersPaginated:", error)
     return { rows: [], total: 0, page, pageSize }
   }
-  return { rows: data || [], total: count ?? 0, page, pageSize }
+  // Enriquecer con value_at_cost y has_estimated por fila solo si el rol lo
+  // permite. Para ítems sin unit_cost (traslados creados tras la migración
+  // pero aún no despachados), se valoriza con products.cost actual y se
+  // marca como estimado.
+  const rows = (data || []).map((r: any) => {
+    if (!canSeeValue) return r
+    let value = 0
+    let hasEstimated = false
+    for (const it of (r.transfer_items || []) as any[]) {
+      const qty = Number(it.quantity ?? 0)
+      const unit = it.unit_cost != null ? Number(it.unit_cost) : Number(it.products?.cost ?? 0)
+      if (it.unit_cost == null) hasEstimated = true
+      if (it.cost_is_estimated) hasEstimated = true
+      value += qty * unit
+    }
+    return { ...r, value_at_cost: value, has_estimated: hasEstimated }
+  })
+  return { rows, total: count ?? 0, page, pageSize }
+}
+
+/**
+ * Totales de "valor a costo" y unidades para el Historial de envíos. Solo
+ * admin|contador: devuelve null para otros roles.
+ *
+ * - Aplica los MISMOS filtros que getTransfersPaginated.
+ * - Excluye `status='cancelado'` de las sumas.
+ * - Ítems de traslados pendientes (unit_cost NULL) se valorizan con
+ *   products.cost actual y se marcan como estimados.
+ * - Pagina por fetchAllPages de transfer_ids que matchean el filtro para
+ *   agregar sobre TODOS los resultados, no sobre la página de 50.
+ */
+export async function getTransfersTotals(opts: TransfersPaginatedFilter) {
+  const profile = await requireRole("admin", "contador", "encargado", "vendedor")
+  if (profile.role !== "admin" && profile.role !== "contador") {
+    return null
+  }
+  const supabase = await createServerSupabaseClient()
+
+  async function siteWarehouseIds(site_id: string | null | undefined): Promise<string[] | null> {
+    if (!site_id) return null
+    const { data: whs } = await supabase.from("warehouses").select("warehouse_id").eq("site_id", site_id)
+    return (whs ?? []).map((w: any) => w.warehouse_id as string)
+  }
+  const siteIdsAny = await siteWarehouseIds(opts.site_id)
+  if (opts.site_id && (!siteIdsAny || siteIdsAny.length === 0)) {
+    return { units_total: 0, value_total: 0, has_estimated: false, by_destination: [] as any[] }
+  }
+  const fromIds = await siteWarehouseIds(opts.from_site_id)
+  if (opts.from_site_id && (!fromIds || fromIds.length === 0)) {
+    return { units_total: 0, value_total: 0, has_estimated: false, by_destination: [] as any[] }
+  }
+  const toIds = await siteWarehouseIds(opts.to_site_id)
+  if (opts.to_site_id && (!toIds || toIds.length === 0)) {
+    return { units_total: 0, value_total: 0, has_estimated: false, by_destination: [] as any[] }
+  }
+
+  let matchedTransferIds: string[] | null = null
+  const rawQ = (opts.q ?? "").trim()
+  if (rawQ) {
+    const pattern = `%${rawQ}%`
+    const { data: hits } = await supabase
+      .from("transfer_items")
+      .select("transfer_id, products!inner(name, code)")
+      .or(`name.ilike.${pattern},code.ilike.${pattern}`, { foreignTable: "products" })
+    matchedTransferIds = Array.from(new Set((hits ?? []).map((r: any) => r.transfer_id as string)))
+    if (matchedTransferIds.length === 0) {
+      return { units_total: 0, value_total: 0, has_estimated: false, by_destination: [] as any[] }
+    }
+  }
+
+  // Traer TODOS los traslados filtrados (sin paginar) con sus ítems y la
+  // bodega destino. Se usa un `.range(0, 9999)` que cubre el aforo esperado
+  // de la aplicación — si en el futuro se superan 10 000 traslados filtrados
+  // habrá que pasar a agregación SQL.
+  let q = supabase
+    .from("transfers")
+    .select(
+      "transfer_id, status, to_wh:warehouses!transfers_to_warehouse_id_fkey ( site_id, sites ( name ) ), transfer_items ( quantity, unit_cost, cost_is_estimated, products ( cost ) )",
+    )
+    .neq("status", "cancelado")
+    .range(0, 9999)
+  if (opts.status) q = q.eq("status", opts.status)
+  if (opts.date_from) q = q.gte("transfer_date", opts.date_from)
+  if (opts.date_to) q = q.lte("transfer_date", opts.date_to)
+  if (typeof opts.numero === "number") q = q.eq("numero", opts.numero)
+  if (siteIdsAny) {
+    const list = siteIdsAny.join(",")
+    q = q.or(`from_warehouse_id.in.(${list}),to_warehouse_id.in.(${list})`)
+  }
+  if (fromIds) q = q.in("from_warehouse_id", fromIds)
+  if (toIds) q = q.in("to_warehouse_id", toIds)
+  if (matchedTransferIds) q = q.in("transfer_id", matchedTransferIds)
+
+  const { data, error } = await q
+  if (error) {
+    console.error("getTransfersTotals:", error)
+    return { units_total: 0, value_total: 0, has_estimated: false, by_destination: [] as any[] }
+  }
+
+  let unitsTotal = 0
+  let valueTotal = 0
+  let hasEstimated = false
+  const byDest = new Map<string, { site_id: string; site_name: string; transfers_count: number; units: number; value: number }>()
+  for (const r of (data as any[])) {
+    const siteId = r.to_wh?.site_id ?? ""
+    const siteName = r.to_wh?.sites?.name ?? "—"
+    let trUnits = 0
+    let trValue = 0
+    for (const it of (r.transfer_items ?? []) as any[]) {
+      const qty = Number(it.quantity ?? 0)
+      trUnits += qty
+      const unit = it.unit_cost != null ? Number(it.unit_cost) : Number(it.products?.cost ?? 0)
+      if (it.unit_cost == null) hasEstimated = true
+      if (it.cost_is_estimated) hasEstimated = true
+      trValue += qty * unit
+    }
+    unitsTotal += trUnits
+    valueTotal += trValue
+    const key = siteId
+    const prev = byDest.get(key) ?? { site_id: siteId, site_name: siteName, transfers_count: 0, units: 0, value: 0 }
+    prev.transfers_count += 1
+    prev.units += trUnits
+    prev.value += trValue
+    byDest.set(key, prev)
+  }
+
+  const by_destination = Array.from(byDest.values()).sort((a, b) => b.value - a.value)
+  return { units_total: unitsTotal, value_total: valueTotal, has_estimated: hasEstimated, by_destination }
 }
 
 export async function getTransfers(opts?: GetTransfersOpts) {
@@ -1330,18 +1462,26 @@ export async function createBulkTransfer(
 // scope del sidebar y del historial: cualquier admin/contador/encargado/
 // vendedor puede consultar; RLS filtra por sede vía warehouses.
 export async function getTransferDetail(transfer_id: string) {
-  await requireRole("admin", "contador", "encargado", "vendedor")
+  const profile = await requireRole("admin", "contador", "encargado", "vendedor")
+  const canSeeValue = profile.role === "admin" || profile.role === "contador"
   const supabase = await createServerSupabaseClient()
-  const { data, error } = await supabase
-    .from("transfers")
-    .select(
-      `transfer_id, status, notes, transfer_date, received_at,
+  const selectCost = canSeeValue
+    ? `transfer_id, status, notes, transfer_date, received_at,
        from_warehouse_id, to_warehouse_id, sent_by, received_by,
        from_wh:warehouses!transfers_from_warehouse_id_fkey ( name, site_id, sites ( name ) ),
        to_wh:warehouses!transfers_to_warehouse_id_fkey ( name, site_id, sites ( name ) ),
        transfer_items ( transfer_item_id, product_id, quantity, quantity_received,
-         products ( name, code, unit ) )`,
-    )
+         unit_cost, cost_is_estimated,
+         products ( name, code, unit, cost ) )`
+    : `transfer_id, status, notes, transfer_date, received_at,
+       from_warehouse_id, to_warehouse_id, sent_by, received_by,
+       from_wh:warehouses!transfers_from_warehouse_id_fkey ( name, site_id, sites ( name ) ),
+       to_wh:warehouses!transfers_to_warehouse_id_fkey ( name, site_id, sites ( name ) ),
+       transfer_items ( transfer_item_id, product_id, quantity, quantity_received,
+         products ( name, code, unit ) )`
+  const { data, error } = await supabase
+    .from("transfers")
+    .select(selectCost)
     .eq("transfer_id", transfer_id)
     .maybeSingle()
   if (error) {
@@ -1349,6 +1489,21 @@ export async function getTransferDetail(transfer_id: string) {
     return null
   }
   if (!data) return null
+  // Enriquecer ítems con unit_cost efectivo + estimated flag si el rol lo
+  // permite. Pending items (unit_cost NULL) → products.cost actual.
+  if (canSeeValue) {
+    const items = ((data as any).transfer_items ?? []) as any[]
+    for (const it of items) {
+      if (it.unit_cost == null) {
+        it.effective_unit_cost = Number(it.products?.cost ?? 0)
+        it.is_estimated = true
+      } else {
+        it.effective_unit_cost = Number(it.unit_cost)
+        it.is_estimated = Boolean(it.cost_is_estimated)
+      }
+    }
+  }
+  ;(data as any).can_see_value = canSeeValue
 
   // Flag ghost = en_transito sin ningún stock_movements asociado. Sirve para
   // que el detalle muestre el CTA de cierre administrativo (adminCloseGhost
